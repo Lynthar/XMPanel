@@ -41,11 +41,8 @@ export default function Login() {
         setMfaRequired(true)
         toast(t('auth.mfaDescription'), { icon: '🔐' })
       } else {
-        setAuth(
-          response.data.user,
-          response.data.access_token,
-          response.data.refresh_token
-        )
+        // refresh token is delivered via HttpOnly cookie set by the server
+        setAuth(response.data.user, response.data.access_token)
         toast.success(t('common.success'))
         navigate('/')
       }

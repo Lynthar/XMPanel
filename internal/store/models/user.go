@@ -79,14 +79,14 @@ type LoginRequest struct {
 	TOTPCode string `json:"totp_code,omitempty"`
 }
 
-// LoginResponse represents a login response
+// LoginResponse represents a login response. The refresh token is delivered
+// out-of-band via an HttpOnly cookie and intentionally not exposed in JSON.
 type LoginResponse struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	TokenType    string    `json:"token_type"`
-	User         *User     `json:"user"`
-	MFARequired  bool      `json:"mfa_required,omitempty"`
+	AccessToken string    `json:"access_token,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	TokenType   string    `json:"token_type,omitempty"`
+	User        *User     `json:"user,omitempty"`
+	MFARequired bool      `json:"mfa_required,omitempty"`
 }
 
 // Permissions defines what each role can do

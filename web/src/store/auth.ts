@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 
 interface User {
   id: number
@@ -9,57 +8,41 @@ interface User {
   mfa_enabled: boolean
 }
 
+// Auth store is in-memory only. The refresh token lives in an HttpOnly cookie
+// (managed by the browser) and is invisible to JS, so we never persist tokens
+// to localStorage. On page load the app calls /auth/refresh to mint a new
+// access token from the cookie; if the cookie is missing or invalid the user
+// is sent through /login.
 interface AuthState {
   user: User | null
   accessToken: string | null
-  refreshToken: string | null
   isAuthenticated: boolean
-  setAuth: (user: User, accessToken: string, refreshToken: string) => void
-  setTokens: (accessToken: string, refreshToken: string) => void
+  setAuth: (user: User, accessToken: string) => void
+  setAccessToken: (accessToken: string) => void
   setUser: (user: User) => void
   logout: () => void
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
+export const useAuthStore = create<AuthState>()((set) => ({
+  user: null,
+  accessToken: null,
+  isAuthenticated: false,
+
+  setAuth: (user, accessToken) =>
+    set({
+      user,
+      accessToken,
+      isAuthenticated: true,
+    }),
+
+  setAccessToken: (accessToken) => set({ accessToken }),
+
+  setUser: (user) => set({ user }),
+
+  logout: () =>
+    set({
       user: null,
       accessToken: null,
-      refreshToken: null,
       isAuthenticated: false,
-
-      setAuth: (user, accessToken, refreshToken) =>
-        set({
-          user,
-          accessToken,
-          refreshToken,
-          isAuthenticated: true,
-        }),
-
-      setTokens: (accessToken, refreshToken) =>
-        set({
-          accessToken,
-          refreshToken,
-        }),
-
-      setUser: (user) => set({ user }),
-
-      logout: () =>
-        set({
-          user: null,
-          accessToken: null,
-          refreshToken: null,
-          isAuthenticated: false,
-        }),
     }),
-    {
-      name: 'xmpanel-auth',
-      partialize: (state) => ({
-        user: state.user,
-        accessToken: state.accessToken,
-        refreshToken: state.refreshToken,
-        isAuthenticated: state.isAuthenticated,
-      }),
-    }
-  )
-)
+}))

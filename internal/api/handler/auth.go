@@ -18,6 +18,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// Cookie names for authentication. The refresh cookie is HttpOnly so JS can't
+// read it. The CSRF cookie is intentionally readable so the SPA can mirror its
+// value into the X-CSRF-Token header (double-submit pattern).
+const (
+	refreshCookieName = "xmpanel_refresh"
+	csrfCookieName    = "csrf_token"
+	authCookiePath    = "/api/v1/auth"
+)
+
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
 	db                *store.DB
@@ -27,10 +36,15 @@ type AuthHandler struct {
 	totpManager       *auth.TOTPManager
 	loginLimiter      *middleware.LoginRateLimiter
 	audit             *AuditService
+	refreshTTL        time.Duration
+	secureCookies     bool
 	logger            *zap.Logger
 }
 
-// NewAuthHandler creates a new auth handler
+// NewAuthHandler creates a new auth handler.
+// secureCookies should be true when the deployment terminates TLS (so cookies
+// get the Secure attribute). refreshTTL controls cookie Max-Age and matches
+// the refresh JWT lifetime.
 func NewAuthHandler(
 	db *store.DB,
 	jwtManager *auth.JWTManager,
@@ -38,6 +52,8 @@ func NewAuthHandler(
 	passwordValidator *password.Validator,
 	loginLimiter *middleware.LoginRateLimiter,
 	audit *AuditService,
+	refreshTTL time.Duration,
+	secureCookies bool,
 	logger *zap.Logger,
 ) *AuthHandler {
 	return &AuthHandler{
@@ -48,8 +64,65 @@ func NewAuthHandler(
 		totpManager:       auth.NewTOTPManager("XMPanel"),
 		loginLimiter:      loginLimiter,
 		audit:             audit,
+		refreshTTL:        refreshTTL,
+		secureCookies:     secureCookies,
 		logger:            logger,
 	}
+}
+
+// setRefreshCookie writes the refresh JWT as an HttpOnly cookie scoped to the
+// auth endpoints, so the browser ships it on /auth/refresh and /auth/logout
+// but never on other API calls.
+func (h *AuthHandler) setRefreshCookie(w http.ResponseWriter, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Value:    value,
+		Path:     authCookiePath,
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(h.refreshTTL.Seconds()),
+	})
+}
+
+// setCSRFCookie writes a fresh random token as a non-HttpOnly cookie. The SPA
+// reads it via document.cookie and mirrors the value to X-CSRF-Token; the CSRF
+// middleware on /auth/refresh checks header == cookie.
+func (h *AuthHandler) setCSRFCookie(w http.ResponseWriter) error {
+	token, err := crypto.GenerateRandomString(32)
+	if err != nil {
+		return err
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(h.refreshTTL.Seconds()),
+	})
+	return nil
+}
+
+// clearAuthCookies expires both auth cookies. Browsers delete cookies when a
+// matching name+path is sent with MaxAge<=0.
+func (h *AuthHandler) clearAuthCookies(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshCookieName,
+		Path:     authCookiePath,
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Path:     "/",
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
 }
 
 // Login handles user login
@@ -187,34 +260,41 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionLogin, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 		map[string]interface{}{"session_id": sessionID})
 
+	// Set the refresh JWT as an HttpOnly cookie (out-of-band) and a paired CSRF
+	// token in a JS-readable cookie. The SPA never sees the refresh token.
+	h.setRefreshCookie(w, tokenPair.RefreshToken)
+	if err := h.setCSRFCookie(w); err != nil {
+		h.logger.Error("failed to set CSRF cookie", zap.Error(err))
+	}
+
 	// Return response
 	user.PasswordHash = ""
 	user.MFASecret = sql.NullString{}
 	user.RecoveryCodes = sql.NullString{}
 
 	writeJSON(w, http.StatusOK, models.LoginResponse{
-		AccessToken:  tokenPair.AccessToken,
-		RefreshToken: tokenPair.RefreshToken,
-		ExpiresAt:    tokenPair.ExpiresAt,
-		TokenType:    tokenPair.TokenType,
-		User:         &user,
+		AccessToken: tokenPair.AccessToken,
+		ExpiresAt:   tokenPair.ExpiresAt,
+		TokenType:   tokenPair.TokenType,
+		User:        &user,
 	})
 }
 
-// Refresh handles token refresh
+// Refresh handles token refresh. The refresh JWT is delivered via the
+// xmpanel_refresh HttpOnly cookie (the request body is ignored) and is
+// rotated on every call.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	locale := middleware.GetLocale(r.Context())
 
-	var req struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+	cookie, err := r.Cookie(refreshCookieName)
+	if err != nil || cookie.Value == "" {
+		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgTokenInvalid)
 		return
 	}
+	refreshToken := cookie.Value
 
 	// First validate the refresh token
-	claims, err := h.jwtManager.ValidateToken(req.RefreshToken, auth.TokenTypeRefresh)
+	claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 	if err != nil {
 		switch err {
 		case auth.ErrExpiredToken:
@@ -243,13 +323,15 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	incomingHash := crypto.HashToken(req.RefreshToken)
+	incomingHash := crypto.HashToken(refreshToken)
 	if !storedHash.Valid || storedHash.String != incomingHash {
-		// Possible token theft: revoke the session.
+		// Possible token theft: revoke the session and clear cookies so the
+		// client falls back to /login instead of looping on /auth/refresh.
 		h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID)
 		h.logger.Warn("refresh token reuse detected, revoking session",
 			zap.Int64("user_id", claims.UserID),
 			zap.String("session_id", claims.SessionID))
+		h.clearAuthCookies(w)
 		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgSessionRevoked)
 		return
 	}
@@ -299,7 +381,18 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, tokenPair)
+	// Re-issue cookies (refresh JWT rotates; CSRF token rotates with it).
+	h.setRefreshCookie(w, tokenPair.RefreshToken)
+	if err := h.setCSRFCookie(w); err != nil {
+		h.logger.Error("failed to set CSRF cookie", zap.Error(err))
+	}
+
+	// Only the access token (and metadata) leaves via JSON.
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"access_token": tokenPair.AccessToken,
+		"expires_at":   tokenPair.ExpiresAt,
+		"token_type":   tokenPair.TokenType,
+	})
 }
 
 // Logout handles user logout
@@ -320,6 +413,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionLogout, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "",
 		map[string]interface{}{"session_id": claims.SessionID})
 
+	h.clearAuthCookies(w)
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgLogoutSuccess)})
 }
 

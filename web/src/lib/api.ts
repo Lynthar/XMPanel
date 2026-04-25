@@ -1,57 +1,76 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/auth'
 
+const CSRF_COOKIE = 'csrf_token'
+
+// Read a cookie value by name. The CSRF cookie is intentionally not HttpOnly
+// (server-side at internal/api/handler/auth.go) so we can mirror it into the
+// X-CSRF-Token header — the double-submit pattern that the CSRFMiddleware
+// validates on /auth/refresh.
+function readCookie(name: string): string | undefined {
+  const match = document.cookie.match(new RegExp(`(^|; )${name}=([^;]+)`))
+  return match ? decodeURIComponent(match[2]) : undefined
+}
+
 const api = axios.create({
   baseURL: '/api/v1',
   headers: {
     'Content-Type': 'application/json',
   },
+  // Required for the browser to attach the xmpanel_refresh HttpOnly cookie on
+  // /auth/refresh and the csrf_token cookie on every request, both for
+  // same-origin and CORS contexts.
+  withCredentials: true,
 })
 
-// Request interceptor to add auth token
+// Request interceptor: attach Bearer access token + mirror CSRF cookie.
 api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     const { accessToken } = useAuthStore.getState()
     if (accessToken) {
       config.headers.Authorization = `Bearer ${accessToken}`
     }
+
+    const method = (config.method || 'get').toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const csrf = readCookie(CSRF_COOKIE)
+      if (csrf) {
+        config.headers['X-CSRF-Token'] = csrf
+      }
+    }
     return config
   },
   (error) => Promise.reject(error)
 )
 
-// Response interceptor to handle token refresh
+// Response interceptor: silently exchange the refresh cookie for a new access
+// token on 401 and replay the original request once.
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
-
-    // If unauthorized and not already retrying
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true
-
-      const { refreshToken, setTokens, logout } = useAuthStore.getState()
-
-      if (refreshToken) {
-        try {
-          const response = await axios.post('/api/v1/auth/refresh', {
-            refresh_token: refreshToken,
-          })
-
-          const { access_token, refresh_token } = response.data
-          setTokens(access_token, refresh_token)
-
-          originalRequest.headers.Authorization = `Bearer ${access_token}`
-          return api(originalRequest)
-        } catch {
-          logout()
-        }
-      } else {
-        logout()
-      }
+    if (!originalRequest || error.response?.status !== 401 || originalRequest._retry) {
+      return Promise.reject(error)
     }
 
-    return Promise.reject(error)
+    // Don't try to refresh on the refresh endpoint itself or on login —
+    // both are loops/no-ops.
+    const url = originalRequest.url || ''
+    if (url.includes('/auth/refresh') || url.includes('/auth/login')) {
+      return Promise.reject(error)
+    }
+
+    originalRequest._retry = true
+    try {
+      const { data } = await api.post('/auth/refresh')
+      const accessToken: string = data.access_token
+      useAuthStore.getState().setAccessToken(accessToken)
+      originalRequest.headers.Authorization = `Bearer ${accessToken}`
+      return api(originalRequest)
+    } catch {
+      useAuthStore.getState().logout()
+      return Promise.reject(error)
+    }
   }
 )
 
@@ -62,8 +81,8 @@ export const authApi = {
 
   logout: () => api.post('/auth/logout'),
 
-  refresh: (refreshToken: string) =>
-    api.post('/auth/refresh', { refresh_token: refreshToken }),
+  // Refresh has no body — the browser ships the xmpanel_refresh HttpOnly cookie.
+  refresh: () => api.post('/auth/refresh'),
 
   me: () => api.get('/auth/me'),
 

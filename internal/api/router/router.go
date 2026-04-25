@@ -130,11 +130,15 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 
 	// Initialize handlers (auditService is shared across all mutation handlers)
 	auditService := handler.NewAuditService(db, logger)
-	authHandler := handler.NewAuthHandler(db, jwtManager, hasher, passwordValidator, loginLimiter, auditService, logger)
+	authHandler := handler.NewAuthHandler(
+		db, jwtManager, hasher, passwordValidator, loginLimiter, auditService,
+		cfg.Security.JWT.RefreshTokenTTL, cfg.Server.TLS.Enabled, logger,
+	)
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
 	serverHandler := handler.NewServerHandler(db, keyRing, auditService, logger)
 	xmppHandler := handler.NewXMPPHandler(db, keyRing, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
+	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Server.TLS.Enabled)
 
 	// Health check (public)
 	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +148,11 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 
 	// Auth routes (public)
 	router.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
-	router.HandleFunc("POST /api/v1/auth/refresh", authHandler.Refresh)
+	// /auth/refresh relies on the xmpanel_refresh HttpOnly cookie which the
+	// browser auto-attaches; CSRF middleware enforces double-submit so a
+	// cross-origin form can't ride the cookie.
+	router.Handle("POST /api/v1/auth/refresh",
+		csrfMiddleware.Protect(http.HandlerFunc(authHandler.Refresh)))
 
 	// Protected API routes
 	api := router.Group("/api/v1", authMiddleware.Authenticate)
