@@ -19,15 +19,17 @@ type UserHandler struct {
 	db      *store.DB
 	hasher  *crypto.Argon2Hasher
 	keyRing *crypto.KeyRing
+	audit   *AuditService
 	logger  *zap.Logger
 }
 
 // NewUserHandler creates a new user handler
-func NewUserHandler(db *store.DB, hasher *crypto.Argon2Hasher, keyRing *crypto.KeyRing, logger *zap.Logger) *UserHandler {
+func NewUserHandler(db *store.DB, hasher *crypto.Argon2Hasher, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *UserHandler {
 	return &UserHandler{
 		db:      db,
 		hasher:  hasher,
 		keyRing: keyRing,
+		audit:   audit,
 		logger:  logger,
 	}
 }
@@ -127,11 +129,13 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert user
-	result, err := h.db.Exec(`
+	// Insert user (PostgreSQL: use RETURNING since LastInsertId is unsupported)
+	var id int64
+	err = h.db.QueryRow(`
 		INSERT INTO users (username, email, password_hash, role, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, req.Username, req.Email, passwordHash, req.Role, time.Now(), time.Now())
+		RETURNING id
+	`, req.Username, req.Email, passwordHash, req.Role, time.Now(), time.Now()).Scan(&id)
 
 	if err != nil {
 		h.logger.Error("failed to create user", zap.Error(err))
@@ -139,7 +143,8 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, _ := result.LastInsertId()
+	h.audit.LogEvent(r, models.AuditActionUserCreate, models.ResourceTypeUser, strconv.FormatInt(id, 10), "",
+		map[string]interface{}{"username": req.Username, "role": string(req.Role)})
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":      id,
@@ -221,6 +226,15 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	updatedFields := make([]string, 0, len(updates))
+	for k := range updates {
+		if k != "updated_at" {
+			updatedFields = append(updatedFields, k)
+		}
+	}
+	h.audit.LogEvent(r, models.AuditActionUserUpdate, models.ResourceTypeUser, idStr, "",
+		map[string]interface{}{"fields": updatedFields})
+
 	writeJSON(w, http.StatusOK, map[string]string{"message": "User updated successfully"})
 }
 
@@ -257,6 +271,9 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "User not found")
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionUserDelete, models.ResourceTypeUser, idStr, "",
+		map[string]interface{}{"role": userRole})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "User deleted successfully"})
 }

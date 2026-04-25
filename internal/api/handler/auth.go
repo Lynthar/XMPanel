@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
@@ -25,6 +26,7 @@ type AuthHandler struct {
 	passwordValidator *password.Validator
 	totpManager       *auth.TOTPManager
 	loginLimiter      *middleware.LoginRateLimiter
+	audit             *AuditService
 	logger            *zap.Logger
 }
 
@@ -35,6 +37,7 @@ func NewAuthHandler(
 	hasher *crypto.Argon2Hasher,
 	passwordValidator *password.Validator,
 	loginLimiter *middleware.LoginRateLimiter,
+	audit *AuditService,
 	logger *zap.Logger,
 ) *AuthHandler {
 	return &AuthHandler{
@@ -44,6 +47,7 @@ func NewAuthHandler(
 		passwordValidator: passwordValidator,
 		totpManager:       auth.NewTOTPManager("XMPanel"),
 		loginLimiter:      loginLimiter,
+		audit:             audit,
 		logger:            logger,
 	}
 }
@@ -58,8 +62,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check rate limit
-	clientIP := r.RemoteAddr
+	// Check rate limit (use IP without port — RemoteAddr includes ephemeral port)
+	clientIP := middleware.GetClientIP(r)
 	allowed, lockDuration := h.loginLimiter.Check(clientIP + ":" + req.Username)
 	if !allowed {
 		w.Header().Set("Retry-After", lockDuration.String())
@@ -81,6 +85,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err == sql.ErrNoRows {
+		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, "", req.Username,
+			map[string]interface{}{"reason": "user_not_found"})
 		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgInvalidCredentials)
 		return
 	}
@@ -92,6 +98,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Check if account is locked
 	if user.IsLocked() {
+		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
+			map[string]interface{}{"reason": "account_locked"})
 		writeErrorI18n(w, http.StatusForbidden, locale, i18n.MsgAccountLocked)
 		return
 	}
@@ -105,6 +113,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			       locked_until = CASE WHEN failed_login_attempts >= 4 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END
 			WHERE id = $1
 		`, user.ID)
+		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
+			map[string]interface{}{"reason": "invalid_password"})
 		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgInvalidCredentials)
 		return
 	}
@@ -123,6 +133,8 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		if user.MFASecret.Valid {
 			valid, err := h.totpManager.ValidateCode(user.MFASecret.String, req.TOTPCode)
 			if err != nil || !valid {
+				h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
+					map[string]interface{}{"reason": "mfa_invalid"})
 				writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgMFAInvalid)
 				return
 			}
@@ -155,7 +167,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	_, err = h.db.Exec(`
 		INSERT INTO sessions (user_id, session_id, ip_address, user_agent, expires_at)
 		VALUES ($1, $2, $3, $4, $5)
-	`, user.ID, sessionID, r.RemoteAddr, r.UserAgent(), tokenPair.ExpiresAt.Add(7*24*time.Hour))
+	`, user.ID, sessionID, clientIP, r.UserAgent(), tokenPair.ExpiresAt.Add(7*24*time.Hour))
 	if err != nil {
 		h.logger.Error("failed to create session", zap.Error(err))
 	}
@@ -164,10 +176,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	h.db.Exec(`
 		UPDATE users SET last_login_at = $1, last_login_ip = $2, failed_login_attempts = 0, locked_until = NULL
 		WHERE id = $3
-	`, time.Now(), r.RemoteAddr, user.ID)
+	`, time.Now(), clientIP, user.ID)
 
 	// Clear rate limiter on success
 	h.loginLimiter.RecordSuccess(clientIP + ":" + req.Username)
+
+	// Audit successful login (claims aren't set on login request, so pass username explicitly)
+	h.audit.LogEvent(r, models.AuditActionLogin, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
+		map[string]interface{}{"session_id": sessionID})
 
 	// Return response
 	user.PasswordHash = ""
@@ -278,6 +294,9 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("failed to delete session", zap.Error(err))
 	}
+
+	h.audit.LogEvent(r, models.AuditActionLogout, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "",
+		map[string]interface{}{"session_id": claims.SessionID})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgLogoutSuccess)})
 }
@@ -394,6 +413,8 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		h.db.Exec(`UPDATE users SET recovery_codes = $1 WHERE id = $2`, string(codesJSON), claims.UserID)
 	}
 
+	h.audit.LogEvent(r, models.AuditActionMFAEnabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"message":        i18n.T(locale, i18n.MsgMFASetupSuccess),
 		"recovery_codes": codes,
@@ -450,6 +471,8 @@ func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionMFADisabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgMFADisabled)})
 }
@@ -516,6 +539,8 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("failed to invalidate sessions", zap.Error(err))
 	}
+
+	h.audit.LogEvent(r, models.AuditActionPasswordChange, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgPasswordChanged)})
 }

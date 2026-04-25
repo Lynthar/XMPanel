@@ -20,14 +20,16 @@ import (
 type ServerHandler struct {
 	db      *store.DB
 	keyRing *crypto.KeyRing
+	audit   *AuditService
 	logger  *zap.Logger
 }
 
 // NewServerHandler creates a new server handler
-func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger) *ServerHandler {
+func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *ServerHandler {
 	return &ServerHandler{
 		db:      db,
 		keyRing: keyRing,
+		audit:   audit,
 		logger:  logger,
 	}
 }
@@ -131,11 +133,13 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		encryptedAPIKey = encrypted
 	}
 
-	// Insert server
-	result, err := h.db.Exec(`
+	// Insert server (PostgreSQL: use RETURNING since LastInsertId is unsupported)
+	var id int64
+	err := h.db.QueryRow(`
 		INSERT INTO xmpp_servers (name, type, host, port, api_key_encrypted, tls_enabled, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8)
-	`, req.Name, req.Type, req.Host, req.Port, encryptedAPIKey, req.TLSEnabled, time.Now(), time.Now())
+		RETURNING id
+	`, req.Name, req.Type, req.Host, req.Port, encryptedAPIKey, req.TLSEnabled, time.Now(), time.Now()).Scan(&id)
 
 	if err != nil {
 		h.logger.Error("failed to create server", zap.Error(err))
@@ -143,7 +147,8 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, _ := result.LastInsertId()
+	h.audit.LogEvent(r, models.AuditActionServerAdd, models.ResourceTypeServer, strconv.FormatInt(id, 10), "",
+		map[string]interface{}{"name": req.Name, "type": string(req.Type), "host": req.Host, "port": req.Port})
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":      id,
@@ -224,6 +229,15 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	updatedFields := make([]string, 0, len(updates))
+	for k := range updates {
+		if k != "updated_at" {
+			updatedFields = append(updatedFields, k)
+		}
+	}
+	h.audit.LogEvent(r, models.AuditActionServerUpdate, models.ResourceTypeServer, idStr, "",
+		map[string]interface{}{"fields": updatedFields})
+
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Server updated successfully"})
 }
 
@@ -248,6 +262,8 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Server not found")
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionServerRemove, models.ResourceTypeServer, idStr, "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Server deleted successfully"})
 }

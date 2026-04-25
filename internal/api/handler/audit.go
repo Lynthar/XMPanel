@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
@@ -305,6 +306,48 @@ func NewAuditService(db *store.DB, logger *zap.Logger) *AuditService {
 	return &AuditService{
 		db:     db,
 		logger: logger,
+	}
+}
+
+// LogEvent records an audit event derived from an HTTP request. Identity is
+// taken from JWT claims when available; otherwise fallbackUsername is recorded
+// (used for pre-auth events like login failures). Failures are logged but do
+// not propagate — audit is best-effort and must never break the user request.
+//
+// Callers may pass nil for details. resourceID may be empty for events that
+// don't reference a specific resource.
+func (s *AuditService) LogEvent(
+	r *http.Request,
+	action models.AuditAction,
+	resourceType models.ResourceType,
+	resourceID string,
+	fallbackUsername string,
+	details map[string]interface{},
+) {
+	if s == nil {
+		return
+	}
+	entry := &models.AuditLogEntry{
+		Action:       action,
+		ResourceType: resourceType,
+		ResourceID:   resourceID,
+		Details:      details,
+		IPAddress:    middleware.GetClientIP(r),
+		UserAgent:    r.UserAgent(),
+		RequestID:    middleware.GetRequestID(r.Context()),
+	}
+	if claims := middleware.GetClaims(r.Context()); claims != nil {
+		uid := claims.UserID
+		entry.UserID = &uid
+		entry.Username = claims.Username
+	} else if fallbackUsername != "" {
+		entry.Username = fallbackUsername
+	}
+	if err := s.Log(entry); err != nil {
+		s.logger.Warn("audit log write failed",
+			zap.String("action", string(action)),
+			zap.Error(err),
+		)
 	}
 }
 

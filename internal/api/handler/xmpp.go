@@ -20,14 +20,16 @@ import (
 type XMPPHandler struct {
 	db      *store.DB
 	keyRing *crypto.KeyRing
+	audit   *AuditService
 	logger  *zap.Logger
 }
 
 // NewXMPPHandler creates a new XMPP handler
-func NewXMPPHandler(db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger) *XMPPHandler {
+func NewXMPPHandler(db *store.DB, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *XMPPHandler {
 	return &XMPPHandler{
 		db:      db,
 		keyRing: keyRing,
+		audit:   audit,
 		logger:  logger,
 	}
 }
@@ -151,9 +153,13 @@ func (h *XMPPHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	jid := req.Username + "@" + req.Domain
+	h.audit.LogEvent(r, models.AuditActionXMPPUserCreate, models.ResourceTypeXMPP, jid, "",
+		map[string]interface{}{"server_id": serverID, "username": req.Username, "domain": req.Domain})
+
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"message": "User created successfully",
-		"jid":     req.Username + "@" + req.Domain,
+		"jid":     jid,
 	})
 }
 
@@ -192,6 +198,9 @@ func (h *XMPPHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.audit.LogEvent(r, models.AuditActionXMPPUserDelete, models.ResourceTypeXMPP, username+"@"+domain, "",
+		map[string]interface{}{"server_id": serverID})
+
 	writeJSON(w, http.StatusOK, map[string]string{"message": "User deleted successfully"})
 }
 
@@ -225,6 +234,9 @@ func (h *XMPPHandler) KickUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "Failed to kick user")
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionXMPPUserKick, models.ResourceTypeXMPP, username+"@"+domain, "",
+		map[string]interface{}{"server_id": serverID, "scope": "all_sessions"})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "User kicked successfully"})
 }
@@ -281,6 +293,9 @@ func (h *XMPPHandler) KickSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "Failed to kick session")
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionXMPPUserKick, models.ResourceTypeXMPP, jid, "",
+		map[string]interface{}{"server_id": serverID, "scope": "single_session"})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Session kicked successfully"})
 }
@@ -400,9 +415,13 @@ func (h *XMPPHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	jid := req.Name + "@" + req.Domain
+	h.audit.LogEvent(r, models.AuditActionXMPPRoomCreate, models.ResourceTypeRoom, jid, "",
+		map[string]interface{}{"server_id": serverID, "public": req.Public, "persistent": req.Persistent, "members_only": req.MembersOnly})
+
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"message": "Room created successfully",
-		"jid":     req.Name + "@" + req.Domain,
+		"jid":     jid,
 	})
 }
 
@@ -440,6 +459,9 @@ func (h *XMPPHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "Failed to delete room")
 		return
 	}
+
+	h.audit.LogEvent(r, models.AuditActionXMPPRoomDelete, models.ResourceTypeRoom, room+"@"+mucDomain, "",
+		map[string]interface{}{"server_id": serverID})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Room deleted successfully"})
 }

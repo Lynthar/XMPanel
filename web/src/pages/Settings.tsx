@@ -161,12 +161,15 @@ function ChangePasswordSection() {
 }
 
 function MFASection() {
-  const { user } = useAuthStore()
+  const { user, setUser } = useAuthStore()
   const [setupData, setSetupData] = useState<MFASetupData | null>(null)
   const [verificationCode, setVerificationCode] = useState('')
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [disablePromptOpen, setDisablePromptOpen] = useState(false)
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
 
   const handleSetupMFA = async () => {
     setLoading(true)
@@ -193,9 +196,42 @@ function MFASection() {
       setRecoveryCodes(response.data.recovery_codes)
       toast.success('MFA enabled successfully!')
       setSetupData(null)
+      // Refresh user so mfa_enabled flips locally
+      try {
+        const me = await authApi.me()
+        setUser(me.data)
+      } catch {
+        /* non-fatal: user can re-login to refresh state */
+      }
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } }
       toast.error(err.response?.data?.error || 'Invalid verification code')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDisableMFA = async () => {
+    if (!disablePassword || disableCode.length !== 6) {
+      toast.error('Enter your password and a 6-digit code')
+      return
+    }
+    setLoading(true)
+    try {
+      await authApi.disableMFA(disablePassword, disableCode)
+      toast.success('MFA disabled')
+      setDisablePromptOpen(false)
+      setDisablePassword('')
+      setDisableCode('')
+      try {
+        const me = await authApi.me()
+        setUser(me.data)
+      } catch {
+        /* non-fatal */
+      }
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } }
+      toast.error(err.response?.data?.error || 'Failed to disable MFA')
     } finally {
       setLoading(false)
     }
@@ -222,9 +258,78 @@ function MFASection() {
       </div>
 
       {user?.mfa_enabled ? (
-        <div className="flex items-center gap-3 p-4 bg-green-900/20 border border-green-800 rounded-lg">
-          <Shield className="w-5 h-5 text-green-400" />
-          <span className="text-green-400">Two-factor authentication is enabled</span>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-3 p-4 bg-green-900/20 border border-green-800 rounded-lg">
+            <div className="flex items-center gap-3">
+              <Shield className="w-5 h-5 text-green-400" />
+              <span className="text-green-400">Two-factor authentication is enabled</span>
+            </div>
+            {!disablePromptOpen && (
+              <button
+                onClick={() => setDisablePromptOpen(true)}
+                className="text-sm text-red-400 hover:text-red-300 underline"
+              >
+                Disable
+              </button>
+            )}
+          </div>
+
+          {disablePromptOpen && (
+            <div className="space-y-4 p-4 bg-red-900/20 border border-red-800 rounded-lg">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-gray-300">
+                  Disabling two-factor authentication weakens your account security. Confirm with your
+                  current password and a code from your authenticator.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Current Password</label>
+                <input
+                  type="password"
+                  className="input"
+                  value={disablePassword}
+                  onChange={(e) => setDisablePassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Verification Code</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  className="input w-32 text-center text-xl tracking-widest"
+                  placeholder="000000"
+                  value={disableCode}
+                  onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ''))}
+                  autoComplete="one-time-code"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={handleDisableMFA}
+                  disabled={loading || !disablePassword || disableCode.length !== 6}
+                  className="btn btn-primary"
+                >
+                  {loading ? 'Disabling...' : 'Confirm Disable'}
+                </button>
+                <button
+                  onClick={() => {
+                    setDisablePromptOpen(false)
+                    setDisablePassword('')
+                    setDisableCode('')
+                  }}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : setupData ? (
         <div className="space-y-6">

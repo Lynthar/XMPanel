@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueries } from '@tanstack/react-query'
 import { serversApi } from '@/lib/api'
 import { Server, Users, MessageSquare, Activity, AlertCircle } from 'lucide-react'
 import clsx from 'clsx'
@@ -30,6 +30,31 @@ export default function Dashboard() {
   // Get stats for each enabled server
   const enabledServers = servers?.filter((s) => s.enabled) || []
 
+  // Aggregate stats across all enabled servers. Each query is also keyed by
+  // server id so ServerRow below shares the same cache entry — no duplicate fetches.
+  const statsResults = useQueries({
+    queries: enabledServers.map((server) => ({
+      queryKey: ['server-stats', server.id],
+      queryFn: async () => {
+        const response = await serversApi.stats(server.id)
+        return response.data as ServerStats
+      },
+      refetchInterval: 30000,
+    })),
+  })
+
+  const aggregateStats = statsResults.reduce(
+    (acc, q) => {
+      if (q.data) {
+        acc.online_users += q.data.online_users || 0
+        acc.active_sessions += q.data.active_sessions || 0
+      }
+      return acc
+    },
+    { online_users: 0, active_sessions: 0 }
+  )
+  const allStatsResolved = statsResults.length === 0 || statsResults.every((q) => !q.isLoading)
+
   return (
     <div className="space-y-6">
       {/* Page header */}
@@ -55,13 +80,13 @@ export default function Dashboard() {
         <StatCard
           icon={Users}
           label="Online Users"
-          value="-"
+          value={allStatsResolved ? aggregateStats.online_users : '...'}
           color="purple"
         />
         <StatCard
           icon={MessageSquare}
           label="Active Sessions"
-          value="-"
+          value={allStatsResolved ? aggregateStats.active_sessions : '...'}
           color="orange"
         />
       </div>

@@ -128,11 +128,12 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	// Initialize password validator
 	passwordValidator := password.NewValidator(cfg.Security.Password)
 
-	// Initialize handlers
-	authHandler := handler.NewAuthHandler(db, jwtManager, hasher, passwordValidator, loginLimiter, logger)
-	userHandler := handler.NewUserHandler(db, hasher, keyRing, logger)
-	serverHandler := handler.NewServerHandler(db, keyRing, logger)
-	xmppHandler := handler.NewXMPPHandler(db, keyRing, logger)
+	// Initialize handlers (auditService is shared across all mutation handlers)
+	auditService := handler.NewAuditService(db, logger)
+	authHandler := handler.NewAuthHandler(db, jwtManager, hasher, passwordValidator, loginLimiter, auditService, logger)
+	userHandler := handler.NewUserHandler(db, hasher, keyRing, auditService, logger)
+	serverHandler := handler.NewServerHandler(db, keyRing, auditService, logger)
+	xmppHandler := handler.NewXMPPHandler(db, keyRing, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
 
 	// Health check (public)
