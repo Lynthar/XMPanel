@@ -201,3 +201,25 @@ func TestGenerateRandomString_Length(t *testing.T) {
 		t.Errorf("len(s)=%d, want 24", len(s))
 	}
 }
+
+func TestHashToken_Deterministic(t *testing.T) {
+	a := HashToken("some.refresh.token")
+	b := HashToken("some.refresh.token")
+	if a != b {
+		t.Errorf("HashToken non-deterministic: %s vs %s", a, b)
+	}
+}
+
+func TestHashToken_DistinctInputs(t *testing.T) {
+	if HashToken("a") == HashToken("b") {
+		t.Error("HashToken returned same hash for distinct inputs")
+	}
+}
+
+func TestHashToken_Length(t *testing.T) {
+	// SHA-256 = 32 bytes = 43 chars in base64url without padding.
+	got := HashToken("anything")
+	if len(got) != 43 {
+		t.Errorf("HashToken length = %d, want 43", len(got))
+	}
+}

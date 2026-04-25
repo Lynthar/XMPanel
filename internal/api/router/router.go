@@ -131,7 +131,7 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	// Initialize handlers (auditService is shared across all mutation handlers)
 	auditService := handler.NewAuditService(db, logger)
 	authHandler := handler.NewAuthHandler(db, jwtManager, hasher, passwordValidator, loginLimiter, auditService, logger)
-	userHandler := handler.NewUserHandler(db, hasher, keyRing, auditService, logger)
+	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
 	serverHandler := handler.NewServerHandler(db, keyRing, auditService, logger)
 	xmppHandler := handler.NewXMPPHandler(db, keyRing, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)

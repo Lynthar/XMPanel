@@ -72,6 +72,20 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		paramNum++
 	}
 
+	// details_contains: filter by JSONB containment, e.g.
+	// ?details_contains={"reason":"invalid_password"} matches any row whose
+	// details JSONB contains those key-value pairs at the top level.
+	if dc := r.URL.Query().Get("details_contains"); dc != "" {
+		var probe interface{}
+		if err := json.Unmarshal([]byte(dc), &probe); err != nil {
+			writeError(w, http.StatusBadRequest, "details_contains must be valid JSON")
+			return
+		}
+		whereClause += " AND details @> $" + strconv.Itoa(paramNum) + "::jsonb"
+		args = append(args, dc)
+		paramNum++
+	}
+
 	// Get total count with same filters
 	var total int
 	countQuery := "SELECT COUNT(*) FROM audit_logs" + whereClause
@@ -353,11 +367,12 @@ func (s *AuditService) LogEvent(
 
 // Log writes an audit log entry using a transaction to prevent race conditions
 func (s *AuditService) Log(entry *models.AuditLogEntry) error {
-	// Convert details to JSON
-	var detailsJSON string
+	// Convert details to JSON. Use sql.NullString so nil details lands as
+	// SQL NULL (the JSONB column rejects empty strings).
+	var detailsJSON sql.NullString
 	if entry.Details != nil {
 		data, _ := json.Marshal(entry.Details)
-		detailsJSON = string(data)
+		detailsJSON = sql.NullString{String: string(data), Valid: true}
 	}
 
 	// Use a transaction to ensure atomicity

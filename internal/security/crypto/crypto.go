@@ -278,3 +278,11 @@ func GenerateKey() (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(key), nil
 }
+
+// HashToken returns a base64url-encoded SHA-256 hash of a token, suitable for
+// storing refresh-token identifiers. Collision resistance is what we need here
+// — preimage resistance is incidental — so SHA-256 (not Argon2) is appropriate.
+func HashToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}

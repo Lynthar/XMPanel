@@ -188,6 +188,7 @@ func Migrate(db *DB) error {
 		)`,
 
 		// Audit Logs table (with chain hash for integrity)
+		// details is JSONB so callers can filter by structured fields via @>.
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id SERIAL PRIMARY KEY,
 			user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -195,7 +196,7 @@ func Migrate(db *DB) error {
 			action VARCHAR(100) NOT NULL,
 			resource_type VARCHAR(100),
 			resource_id VARCHAR(255),
-			details TEXT,
+			details JSONB,
 			ip_address VARCHAR(45),
 			user_agent TEXT,
 			request_id VARCHAR(255),
@@ -203,6 +204,27 @@ func Migrate(db *DB) error {
 			hash VARCHAR(64) NOT NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+		// Upgrade existing TEXT details columns to JSONB. The USING clause
+		// rewrites empty strings (legacy nil-details encoding) to NULL and
+		// parses the rest. Idempotent: only runs if the column is still TEXT.
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema()
+				  AND table_name = 'audit_logs'
+				  AND column_name = 'details'
+				  AND data_type = 'text'
+			) THEN
+				ALTER TABLE audit_logs
+				ALTER COLUMN details TYPE JSONB
+				USING (CASE
+					WHEN details IS NULL OR details = '' THEN NULL
+					ELSE details::jsonb
+				END);
+			END IF;
+		END $$`,
 
 		// Settings table (key-value store for system settings)
 		`CREATE TABLE IF NOT EXISTS settings (

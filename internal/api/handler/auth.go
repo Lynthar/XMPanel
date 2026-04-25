@@ -163,11 +163,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create session record
+	// Create session record. Store a hash of the refresh token so /auth/refresh
+	// can detect token reuse — old refresh tokens become invalid after rotation.
+	refreshHash := crypto.HashToken(tokenPair.RefreshToken)
 	_, err = h.db.Exec(`
-		INSERT INTO sessions (user_id, session_id, ip_address, user_agent, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-	`, user.ID, sessionID, clientIP, r.UserAgent(), tokenPair.ExpiresAt.Add(7*24*time.Hour))
+		INSERT INTO sessions (user_id, session_id, refresh_token_hash, ip_address, user_agent, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, user.ID, sessionID, refreshHash, clientIP, r.UserAgent(), tokenPair.ExpiresAt.Add(7*24*time.Hour))
 	if err != nil {
 		h.logger.Error("failed to create session", zap.Error(err))
 	}
@@ -223,18 +225,32 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if session still exists in database (hasn't been revoked)
-	var exists int
-	err = h.db.QueryRow(`SELECT 1 FROM sessions WHERE session_id = $1 AND user_id = $2`,
-		claims.SessionID, claims.UserID).Scan(&exists)
+	// Look up session and current refresh-token hash. Session row gone =
+	// session was revoked (logout, password change). Hash mismatch = token
+	// reuse — refresh tokens are single-use; the previous /auth/refresh has
+	// already rotated this session's hash. Treat reuse as a possible theft and
+	// kill the entire session.
+	var storedHash sql.NullString
+	err = h.db.QueryRow(`SELECT refresh_token_hash FROM sessions WHERE session_id = $1 AND user_id = $2`,
+		claims.SessionID, claims.UserID).Scan(&storedHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			// Session has been revoked (user logged out or password changed)
 			writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgSessionRevoked)
 			return
 		}
 		h.logger.Error("failed to check session", zap.Error(err))
 		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		return
+	}
+
+	incomingHash := crypto.HashToken(req.RefreshToken)
+	if !storedHash.Valid || storedHash.String != incomingHash {
+		// Possible token theft: revoke the session.
+		h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID)
+		h.logger.Warn("refresh token reuse detected, revoking session",
+			zap.Int64("user_id", claims.UserID),
+			zap.String("session_id", claims.SessionID))
+		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgSessionRevoked)
 		return
 	}
 
@@ -273,9 +289,15 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update session expiry
-	h.db.Exec(`UPDATE sessions SET expires_at = $1 WHERE session_id = $2`,
-		tokenPair.ExpiresAt.Add(7*24*time.Hour), claims.SessionID)
+	// Rotate: persist the new refresh token's hash. Any further use of the old
+	// refresh token will hit the mismatch branch above.
+	newHash := crypto.HashToken(tokenPair.RefreshToken)
+	if _, err := h.db.Exec(`UPDATE sessions SET refresh_token_hash = $1, expires_at = $2, last_used_at = NOW() WHERE session_id = $3`,
+		newHash, tokenPair.ExpiresAt.Add(7*24*time.Hour), claims.SessionID); err != nil {
+		h.logger.Error("failed to rotate refresh token", zap.Error(err))
+		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, tokenPair)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
+	"github.com/xmpanel/xmpanel/internal/security/password"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
@@ -16,21 +17,23 @@ import (
 
 // UserHandler handles user management endpoints
 type UserHandler struct {
-	db      *store.DB
-	hasher  *crypto.Argon2Hasher
-	keyRing *crypto.KeyRing
-	audit   *AuditService
-	logger  *zap.Logger
+	db                *store.DB
+	hasher            *crypto.Argon2Hasher
+	keyRing           *crypto.KeyRing
+	passwordValidator *password.Validator
+	audit             *AuditService
+	logger            *zap.Logger
 }
 
 // NewUserHandler creates a new user handler
-func NewUserHandler(db *store.DB, hasher *crypto.Argon2Hasher, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *UserHandler {
+func NewUserHandler(db *store.DB, hasher *crypto.Argon2Hasher, keyRing *crypto.KeyRing, passwordValidator *password.Validator, audit *AuditService, logger *zap.Logger) *UserHandler {
 	return &UserHandler{
-		db:      db,
-		hasher:  hasher,
-		keyRing: keyRing,
-		audit:   audit,
-		logger:  logger,
+		db:                db,
+		hasher:            hasher,
+		keyRing:           keyRing,
+		passwordValidator: passwordValidator,
+		audit:             audit,
+		logger:            logger,
 	}
 }
 
@@ -108,8 +111,8 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Username must be 3-32 characters")
 		return
 	}
-	if len(req.Password) < 12 {
-		writeError(w, http.StatusBadRequest, "Password must be at least 12 characters")
+	if err := h.passwordValidator.Validate(req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -176,8 +179,8 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		updates["role"] = *req.Role
 	}
 	if req.Password != nil {
-		if len(*req.Password) < 12 {
-			writeError(w, http.StatusBadRequest, "Password must be at least 12 characters")
+		if err := h.passwordValidator.Validate(*req.Password); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		hash, err := h.hasher.Hash(*req.Password)
