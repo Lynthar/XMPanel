@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useTranslation, Trans } from 'react-i18next'
 import { serversApi, xmppApi } from '@/lib/api'
 import toast from 'react-hot-toast'
 import {
@@ -16,6 +17,7 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useForm } from 'react-hook-form'
+import ConfirmDialog from '@/components/ConfirmDialog'
 
 interface ServerData {
   id: number
@@ -52,6 +54,7 @@ interface XMPPRoom {
 }
 
 export default function ServerDetail() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -61,6 +64,7 @@ export default function ServerDetail() {
   const [domain, setDomain] = useState('')
   const [mucDomain, setMucDomain] = useState('')
   const [showAddUserModal, setShowAddUserModal] = useState(false)
+  const [pendingDeleteUser, setPendingDeleteUser] = useState<XMPPUser | null>(null)
 
   const { data: server, isLoading: serverLoading } = useQuery({
     queryKey: ['server', serverId],
@@ -114,20 +118,21 @@ export default function ServerDetail() {
     mutationFn: ({ username, domain }: { username: string; domain: string }) =>
       xmppApi.kickUser(serverId, username, domain),
     onSuccess: () => {
-      toast.success('User kicked')
+      toast.success(t('xmpp.users.kickSuccess'))
       queryClient.invalidateQueries({ queryKey: ['xmpp-sessions', serverId] })
     },
-    onError: () => toast.error('Failed to kick user'),
+    onError: () => toast.error(t('xmpp.users.kickFailed')),
   })
 
   const deleteUserMutation = useMutation({
     mutationFn: ({ username, domain }: { username: string; domain: string }) =>
       xmppApi.deleteUser(serverId, username, domain),
     onSuccess: () => {
-      toast.success('User deleted')
+      toast.success(t('xmpp.users.deleteSuccess'))
       queryClient.invalidateQueries({ queryKey: ['xmpp-users', serverId, domain] })
     },
-    onError: () => toast.error('Failed to delete user'),
+    onError: () => toast.error(t('xmpp.users.deleteFailed')),
+    onSettled: () => setPendingDeleteUser(null),
   })
 
   if (serverLoading) {
@@ -141,7 +146,7 @@ export default function ServerDetail() {
   if (!server) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-400">Server not found</p>
+        <p className="text-gray-400">{t('xmpp.noServerFound')}</p>
       </div>
     )
   }
@@ -167,17 +172,17 @@ export default function ServerDetail() {
           className="btn btn-secondary flex items-center gap-2"
         >
           <RefreshCw className="w-4 h-4" />
-          Refresh
+          {t('common.refresh')}
         </button>
       </div>
 
       {/* Stats */}
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard icon={Users} label="Online Users" value={stats.online_users} />
-          <StatCard icon={Users} label="Registered" value={stats.registered_users} />
-          <StatCard icon={Activity} label="Sessions" value={stats.active_sessions} />
-          <StatCard icon={MessageSquare} label="S2S" value={stats.s2s_connections} />
+          <StatCard icon={Users} label={t('servers.stats.onlineUsers')} value={stats.online_users} />
+          <StatCard icon={Users} label={t('servers.stats.registeredUsers')} value={stats.registered_users} />
+          <StatCard icon={Activity} label={t('dashboard.activeSessions')} value={stats.active_sessions} />
+          <StatCard icon={MessageSquare} label={t('servers.stats.s2sConnections')} value={stats.s2s_connections} />
         </div>
       )}
 
@@ -188,19 +193,19 @@ export default function ServerDetail() {
             active={activeTab === 'users'}
             onClick={() => setActiveTab('users')}
             icon={Users}
-            label="Users"
+            label={t('xmpp.tabUsers')}
           />
           <TabButton
             active={activeTab === 'sessions'}
             onClick={() => setActiveTab('sessions')}
             icon={Activity}
-            label="Sessions"
+            label={t('xmpp.tabSessions')}
           />
           <TabButton
             active={activeTab === 'rooms'}
             onClick={() => setActiveTab('rooms')}
             icon={MessageSquare}
-            label="Rooms"
+            label={t('xmpp.tabRooms')}
           />
         </div>
       </div>
@@ -215,11 +220,7 @@ export default function ServerDetail() {
             onDomainChange={setDomain}
             onAddUser={() => setShowAddUserModal(true)}
             onKickUser={(u) => kickUserMutation.mutate({ username: u.username, domain: u.domain })}
-            onDeleteUser={(u) => {
-              if (confirm(`Delete user ${u.jid}?`)) {
-                deleteUserMutation.mutate({ username: u.username, domain: u.domain })
-              }
-            }}
+            onDeleteUser={(u) => setPendingDeleteUser(u)}
           />
         )}
 
@@ -248,6 +249,31 @@ export default function ServerDetail() {
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={pendingDeleteUser !== null}
+        title={t('xmpp.users.deleteTitle')}
+        message={
+          <Trans
+            i18nKey="xmpp.users.deletePrompt"
+            values={{ jid: pendingDeleteUser?.jid ?? '' }}
+            components={{ strong: <span className="font-semibold text-white" /> }}
+          />
+        }
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        variant="danger"
+        loading={deleteUserMutation.isPending}
+        onConfirm={() => {
+          if (pendingDeleteUser) {
+            deleteUserMutation.mutate({
+              username: pendingDeleteUser.username,
+              domain: pendingDeleteUser.domain,
+            })
+          }
+        }}
+        onCancel={() => setPendingDeleteUser(null)}
+      />
     </div>
   )
 }
@@ -297,37 +323,38 @@ function UsersTab({
   onKickUser: (u: XMPPUser) => void
   onDeleteUser: (u: XMPPUser) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <input
           type="text"
           className="input w-64"
-          placeholder="Enter domain (e.g., example.com)"
+          placeholder={t('xmpp.domainPlaceholder')}
           value={domain}
           onChange={(e) => onDomainChange(e.target.value)}
         />
         <button onClick={onAddUser} className="btn btn-primary flex items-center gap-2">
           <UserPlus className="w-4 h-4" />
-          Add User
+          {t('xmpp.users.addUser')}
         </button>
       </div>
 
       {!domain ? (
-        <p className="text-center text-gray-400 py-8">Enter a domain to list users</p>
+        <p className="text-center text-gray-400 py-8">{t('xmpp.domainHint')}</p>
       ) : loading ? (
         <div className="flex justify-center py-8">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500" />
         </div>
       ) : users.length === 0 ? (
-        <p className="text-center text-gray-400 py-8">No users found</p>
+        <p className="text-center text-gray-400 py-8">{t('xmpp.users.noUsers')}</p>
       ) : (
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-700">
-              <th className="table-header">JID</th>
-              <th className="table-header">Status</th>
-              <th className="table-header">Actions</th>
+              <th className="table-header">{t('xmpp.users.jid')}</th>
+              <th className="table-header">{t('common.status')}</th>
+              <th className="table-header">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
@@ -336,7 +363,7 @@ function UsersTab({
                 <td className="table-cell">{user.jid}</td>
                 <td className="table-cell">
                   <span className={clsx('badge', user.online ? 'badge-green' : 'badge-gray')}>
-                    {user.online ? 'Online' : 'Offline'}
+                    {user.online ? t('xmpp.users.online') : t('xmpp.users.offline')}
                   </span>
                 </td>
                 <td className="table-cell">
@@ -345,7 +372,7 @@ function UsersTab({
                       <button
                         onClick={() => onKickUser(user)}
                         className="p-1 text-yellow-400 hover:text-yellow-300"
-                        title="Kick"
+                        title={t('xmpp.users.kick')}
                       >
                         <LogOut className="w-4 h-4" />
                       </button>
@@ -353,7 +380,7 @@ function UsersTab({
                     <button
                       onClick={() => onDeleteUser(user)}
                       className="p-1 text-red-400 hover:text-red-300"
-                      title="Delete"
+                      title={t('common.delete')}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -369,6 +396,7 @@ function UsersTab({
 }
 
 function SessionsTab({ sessions, loading }: { sessions: XMPPSession[]; loading: boolean }) {
+  const { t } = useTranslation()
   if (loading) {
     return (
       <div className="flex justify-center py-8">
@@ -378,17 +406,17 @@ function SessionsTab({ sessions, loading }: { sessions: XMPPSession[]; loading: 
   }
 
   if (sessions.length === 0) {
-    return <p className="text-center text-gray-400 py-8">No active sessions</p>
+    return <p className="text-center text-gray-400 py-8">{t('xmpp.sessions.noSessions')}</p>
   }
 
   return (
     <table className="w-full">
       <thead>
         <tr className="border-b border-gray-700">
-          <th className="table-header">JID</th>
-          <th className="table-header">IP Address</th>
-          <th className="table-header">Status</th>
-          <th className="table-header">Priority</th>
+          <th className="table-header">{t('xmpp.sessions.jid')}</th>
+          <th className="table-header">{t('xmpp.sessions.ip')}</th>
+          <th className="table-header">{t('common.status')}</th>
+          <th className="table-header">{t('xmpp.sessions.priority')}</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-gray-700">
@@ -413,34 +441,35 @@ function RoomsTab({
   mucDomain: string
   onMucDomainChange: (d: string) => void
 }) {
+  const { t } = useTranslation()
   return (
     <div>
       <div className="mb-4">
         <input
           type="text"
           className="input w-64"
-          placeholder="Enter MUC domain (e.g., conference.example.com)"
+          placeholder={t('xmpp.mucDomainPlaceholder')}
           value={mucDomain}
           onChange={(e) => onMucDomainChange(e.target.value)}
         />
       </div>
 
       {!mucDomain ? (
-        <p className="text-center text-gray-400 py-8">Enter a MUC domain to list rooms</p>
+        <p className="text-center text-gray-400 py-8">{t('xmpp.mucDomainHint')}</p>
       ) : loading ? (
         <div className="flex justify-center py-8">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500" />
         </div>
       ) : rooms.length === 0 ? (
-        <p className="text-center text-gray-400 py-8">No rooms found</p>
+        <p className="text-center text-gray-400 py-8">{t('xmpp.rooms.noRooms')}</p>
       ) : (
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-700">
-              <th className="table-header">Room</th>
-              <th className="table-header">Occupants</th>
-              <th className="table-header">Public</th>
-              <th className="table-header">Persistent</th>
+              <th className="table-header">{t('xmpp.rooms.roomName')}</th>
+              <th className="table-header">{t('xmpp.rooms.occupants')}</th>
+              <th className="table-header">{t('xmpp.rooms.public')}</th>
+              <th className="table-header">{t('xmpp.rooms.persistent')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
@@ -450,12 +479,12 @@ function RoomsTab({
                 <td className="table-cell">{room.occupants}</td>
                 <td className="table-cell">
                   <span className={clsx('badge', room.public ? 'badge-green' : 'badge-gray')}>
-                    {room.public ? 'Yes' : 'No'}
+                    {room.public ? t('common.yes') : t('common.no')}
                   </span>
                 </td>
                 <td className="table-cell">
                   <span className={clsx('badge', room.persistent ? 'badge-blue' : 'badge-gray')}>
-                    {room.persistent ? 'Yes' : 'No'}
+                    {room.persistent ? t('common.yes') : t('common.no')}
                   </span>
                 </td>
               </tr>
@@ -478,6 +507,7 @@ function AddUserModal({ serverId, onClose, onSuccess }: {
   onClose: () => void
   onSuccess: () => void
 }) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const { register, handleSubmit, formState: { errors } } = useForm<AddUserForm>()
 
@@ -485,11 +515,11 @@ function AddUserModal({ serverId, onClose, onSuccess }: {
     setLoading(true)
     try {
       await xmppApi.createUser(serverId, data)
-      toast.success('User created')
+      toast.success(t('xmpp.users.createSuccess'))
       onSuccess()
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || 'Failed to create user')
+      toast.error(err.response?.data?.error || t('xmpp.users.createFailed'))
     } finally {
       setLoading(false)
     }
@@ -499,7 +529,7 @@ function AddUserModal({ serverId, onClose, onSuccess }: {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
       <div className="w-full max-w-md bg-gray-800 rounded-xl border border-gray-700">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-semibold text-white">Add XMPP User</h2>
+          <h2 className="text-lg font-semibold text-white">{t('xmpp.users.addUserTitle')}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-white">
             <X className="w-5 h-5" />
           </button>
@@ -507,40 +537,43 @@ function AddUserModal({ serverId, onClose, onSuccess }: {
 
         <form onSubmit={handleSubmit(onSubmit)} className="p-4 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Username</label>
+            <label className="block text-sm font-medium text-gray-300 mb-1">{t('xmpp.users.username')}</label>
             <input
               type="text"
               className="input"
-              {...register('username', { required: 'Required' })}
+              {...register('username', { required: t('validation.required') })}
             />
             {errors.username && <p className="mt-1 text-sm text-red-400">{errors.username.message}</p>}
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Domain</label>
+            <label className="block text-sm font-medium text-gray-300 mb-1">{t('xmpp.users.domain')}</label>
             <input
               type="text"
               className="input"
-              placeholder="example.com"
-              {...register('domain', { required: 'Required' })}
+              placeholder={t('xmpp.users.domainPlaceholder')}
+              {...register('domain', { required: t('validation.required') })}
             />
             {errors.domain && <p className="mt-1 text-sm text-red-400">{errors.domain.message}</p>}
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Password</label>
+            <label className="block text-sm font-medium text-gray-300 mb-1">{t('auth.password')}</label>
             <input
               type="password"
               className="input"
-              {...register('password', { required: 'Required', minLength: { value: 8, message: 'Min 8 characters' } })}
+              {...register('password', {
+                required: t('validation.required'),
+                minLength: { value: 8, message: t('validation.minLength', { min: 8 }) },
+              })}
             />
             {errors.password && <p className="mt-1 text-sm text-red-400">{errors.password.message}</p>}
           </div>
 
           <div className="flex justify-end gap-3 pt-4">
-            <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
+            <button type="button" onClick={onClose} className="btn btn-secondary">{t('common.cancel')}</button>
             <button type="submit" disabled={loading} className="btn btn-primary">
-              {loading ? 'Creating...' : 'Create User'}
+              {loading ? '...' : t('users.createUser')}
             </button>
           </div>
         </form>

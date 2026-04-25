@@ -1,4 +1,6 @@
 import { useQuery, useQueries } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { serversApi } from '@/lib/api'
 import { Server, Users, MessageSquare, Activity, AlertCircle } from 'lucide-react'
 import clsx from 'clsx'
@@ -19,6 +21,8 @@ interface ServerData {
 }
 
 export default function Dashboard() {
+  const { t } = useTranslation()
+
   const { data: servers, isLoading: serversLoading } = useQuery({
     queryKey: ['servers'],
     queryFn: async () => {
@@ -59,33 +63,33 @@ export default function Dashboard() {
     <div className="space-y-6">
       {/* Page header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        <p className="text-gray-400 mt-1">Overview of your XMPP infrastructure</p>
+        <h1 className="text-2xl font-bold text-white">{t('dashboard.title')}</h1>
+        <p className="text-gray-400 mt-1">{t('dashboard.subtitle')}</p>
       </div>
 
       {/* Stats overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           icon={Server}
-          label="Total Servers"
+          label={t('dashboard.totalServers')}
           value={servers?.length || 0}
           color="blue"
         />
         <StatCard
           icon={Activity}
-          label="Active Servers"
+          label={t('dashboard.activeServers')}
           value={enabledServers.length}
           color="green"
         />
         <StatCard
           icon={Users}
-          label="Online Users"
+          label={t('dashboard.onlineUsers')}
           value={allStatsResolved ? aggregateStats.online_users : '...'}
           color="purple"
         />
         <StatCard
           icon={MessageSquare}
-          label="Active Sessions"
+          label={t('dashboard.activeSessions')}
           value={allStatsResolved ? aggregateStats.active_sessions : '...'}
           color="orange"
         />
@@ -94,7 +98,7 @@ export default function Dashboard() {
       {/* Servers list */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-white">XMPP Servers</h2>
+          <h2 className="text-lg font-semibold text-white">{t('dashboard.serversList')}</h2>
         </div>
 
         {serversLoading ? (
@@ -104,20 +108,18 @@ export default function Dashboard() {
         ) : servers?.length === 0 ? (
           <div className="text-center py-12">
             <Server className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400">No servers configured</p>
-            <p className="text-gray-500 text-sm mt-1">
-              Add a server to get started
-            </p>
+            <p className="text-gray-400">{t('dashboard.noServers')}</p>
+            <p className="text-gray-500 text-sm mt-1">{t('dashboard.addFirstServerHint')}</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
                 <tr className="border-b border-gray-700">
-                  <th className="table-header">Name</th>
-                  <th className="table-header">Type</th>
-                  <th className="table-header">Host</th>
-                  <th className="table-header">Status</th>
+                  <th className="table-header">{t('common.name')}</th>
+                  <th className="table-header">{t('common.type')}</th>
+                  <th className="table-header">{t('servers.hostname')}</th>
+                  <th className="table-header">{t('common.status')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
@@ -133,20 +135,20 @@ export default function Dashboard() {
       {/* Quick actions */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <QuickAction
-          title="Add Server"
-          description="Configure a new XMPP server"
+          title={t('dashboard.addServer')}
+          description={t('dashboard.addServerDesc')}
           href="/servers"
           icon={Server}
         />
         <QuickAction
-          title="Manage Users"
-          description="View and manage system users"
+          title={t('dashboard.manageUsers')}
+          description={t('dashboard.manageUsersDesc')}
           href="/users"
           icon={Users}
         />
         <QuickAction
-          title="View Audit Logs"
-          description="Review system activity"
+          title={t('dashboard.viewAuditLogs')}
+          description={t('dashboard.viewAuditLogsDesc')}
           href="/audit"
           icon={Activity}
         />
@@ -184,6 +186,7 @@ function StatCard({ icon: Icon, label, value, color }: StatCardProps) {
 }
 
 function ServerRow({ server }: { server: ServerData }) {
+  const { t } = useTranslation()
   const { data: stats, isError } = useQuery({
     queryKey: ['server-stats', server.id],
     queryFn: async () => {
@@ -204,18 +207,18 @@ function ServerRow({ server }: { server: ServerData }) {
       <td className="table-cell">{server.host}</td>
       <td className="table-cell">
         {!server.enabled ? (
-          <span className="badge badge-gray">Disabled</span>
+          <span className="badge badge-gray">{t('dashboard.disabled')}</span>
         ) : isError ? (
           <span className="badge badge-red flex items-center gap-1">
             <AlertCircle className="w-3 h-3" />
-            Error
+            {t('dashboard.errorState')}
           </span>
         ) : stats ? (
           <span className="badge badge-green">
-            {stats.online_users} online
+            {t('dashboard.onlineCount', { count: stats.online_users })}
           </span>
         ) : (
-          <span className="badge badge-yellow">Checking...</span>
+          <span className="badge badge-yellow">{t('dashboard.checking')}</span>
         )}
       </td>
     </tr>
@@ -231,8 +234,8 @@ interface QuickActionProps {
 
 function QuickAction({ title, description, href, icon: Icon }: QuickActionProps) {
   return (
-    <a
-      href={href}
+    <Link
+      to={href}
       className="card hover:border-primary-500/50 transition-colors group"
     >
       <div className="flex items-start gap-4">
@@ -246,6 +249,6 @@ function QuickAction({ title, description, href, icon: Icon }: QuickActionProps)
           <p className="text-sm text-gray-400 mt-1">{description}</p>
         </div>
       </div>
-    </a>
+    </Link>
   )
 }

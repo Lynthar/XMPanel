@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useTranslation } from 'react-i18next'
 import { auditApi } from '@/lib/api'
 import {
   FileText,
@@ -46,6 +47,7 @@ const actionColors: Record<string, string> = {
 }
 
 export default function AuditLogs() {
+  const { t } = useTranslation()
   const [filters, setFilters] = useState({
     action: '',
     username: '',
@@ -84,18 +86,18 @@ export default function AuditLogs() {
       a.download = `audit_logs_${new Date().toISOString().slice(0, 10)}.csv`
       a.click()
       window.URL.revokeObjectURL(url)
-      toast.success('Export downloaded')
+      toast.success(t('audit.exportSuccess'))
     } catch {
-      toast.error('Failed to export logs')
+      toast.error(t('audit.exportError'))
     }
   }
 
   const handleVerify = async () => {
     await verifyChain()
     if (verifyResult?.valid) {
-      toast.success('Audit log integrity verified')
+      toast.success(t('audit.verifySuccess'))
     } else {
-      toast.error('Audit log integrity check failed!')
+      toast.error(t('audit.verifyFailure'))
     }
   }
 
@@ -108,8 +110,8 @@ export default function AuditLogs() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Audit Logs</h1>
-          <p className="text-gray-400 mt-1">Review system activity and security events</p>
+          <h1 className="text-2xl font-bold text-white">{t('audit.title')}</h1>
+          <p className="text-gray-400 mt-1">{t('audit.subtitle')}</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -126,11 +128,11 @@ export default function AuditLogs() {
             ) : (
               <CheckCircle className="w-4 h-4" />
             )}
-            Verify Integrity
+            {t('audit.verify.button')}
           </button>
           <button onClick={handleExport} className="btn btn-secondary flex items-center gap-2">
             <Download className="w-4 h-4" />
-            Export CSV
+            {t('audit.export.button')}
           </button>
         </div>
       </div>
@@ -147,24 +149,30 @@ export default function AuditLogs() {
               setPage(0)
             }}
           >
-            <option value="">All Actions</option>
-            <option value="auth.login">Login</option>
-            <option value="auth.login_failed">Login Failed</option>
-            <option value="auth.logout">Logout</option>
-            <option value="user.create">User Created</option>
-            <option value="user.update">User Updated</option>
-            <option value="user.delete">User Deleted</option>
-            <option value="server.add">Server Added</option>
-            <option value="server.update">Server Updated</option>
-            <option value="server.remove">Server Removed</option>
-            <option value="xmpp.user_create">XMPP User Created</option>
-            <option value="xmpp.user_delete">XMPP User Deleted</option>
-            <option value="xmpp.user_kick">XMPP User Kicked</option>
+            <option value="">{t('audit.allActions')}</option>
+            {[
+              'auth.login',
+              'auth.login_failed',
+              'auth.logout',
+              'user.create',
+              'user.update',
+              'user.delete',
+              'server.add',
+              'server.update',
+              'server.remove',
+              'xmpp.user_create',
+              'xmpp.user_delete',
+              'xmpp.user_kick',
+            ].map((action) => (
+              <option key={action} value={action}>
+                {t(`audit.actions.${action}`, { defaultValue: action })}
+              </option>
+            ))}
           </select>
           <input
             type="text"
             className="input w-48"
-            placeholder="Filter by username"
+            placeholder={t('audit.filterByUser')}
             value={filters.username}
             onChange={(e) => {
               setFilters({ ...filters, username: e.target.value })
@@ -186,7 +194,7 @@ export default function AuditLogs() {
         ) : logs.length === 0 ? (
           <div className="text-center py-12">
             <FileText className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400">No audit logs found</p>
+            <p className="text-gray-400">{t('audit.noLogs')}</p>
           </div>
         ) : (
           <>
@@ -194,11 +202,11 @@ export default function AuditLogs() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-gray-700">
-                    <th className="table-header">Timestamp</th>
-                    <th className="table-header">User</th>
-                    <th className="table-header">Action</th>
-                    <th className="table-header">Resource</th>
-                    <th className="table-header">IP Address</th>
+                    <th className="table-header">{t('audit.timestamp')}</th>
+                    <th className="table-header">{t('audit.user')}</th>
+                    <th className="table-header">{t('audit.action')}</th>
+                    <th className="table-header">{t('audit.resource')}</th>
+                    <th className="table-header">{t('audit.ipAddress')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-700">
@@ -233,7 +241,11 @@ export default function AuditLogs() {
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-700">
               <p className="text-sm text-gray-400">
-                Showing {page * limit + 1} to {Math.min((page + 1) * limit, total)} of {total} entries
+                {t('audit.showingCount', {
+                  from: page * limit + 1,
+                  to: Math.min((page + 1) * limit, total),
+                  total,
+                })}
               </p>
               <div className="flex gap-2">
                 <button
@@ -241,14 +253,14 @@ export default function AuditLogs() {
                   disabled={page === 0}
                   className="btn btn-secondary text-sm"
                 >
-                  Previous
+                  {t('common.previous')}
                 </button>
                 <button
                   onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
                   disabled={page >= totalPages - 1}
                   className="btn btn-secondary text-sm"
                 >
-                  Next
+                  {t('common.next')}
                 </button>
               </div>
             </div>
