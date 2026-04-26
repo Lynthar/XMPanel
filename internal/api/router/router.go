@@ -146,7 +146,9 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Auth routes (public)
+	// Auth routes (public). Login has no CSRF — the user has no session yet
+	// so there's no cookie to mirror; SameSite=Strict on the cookies set by a
+	// successful login is what defends against login CSRF.
 	router.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
 	// /auth/refresh relies on the xmpanel_refresh HttpOnly cookie which the
 	// browser auto-attaches; CSRF middleware enforces double-submit so a
@@ -154,8 +156,10 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	router.Handle("POST /api/v1/auth/refresh",
 		csrfMiddleware.Protect(http.HandlerFunc(authHandler.Refresh)))
 
-	// Protected API routes
-	api := router.Group("/api/v1", authMiddleware.Authenticate)
+	// Protected API routes. CSRFMiddleware skips safe methods, so attaching it
+	// at the group level only enforces the double-submit pattern on POST/PUT/
+	// DELETE/PATCH while leaving GETs untouched.
+	api := router.Group("/api/v1", authMiddleware.Authenticate, csrfMiddleware.Protect)
 
 	// Auth (protected)
 	api.HandleFunc("POST /auth/logout", authHandler.Logout)
@@ -168,6 +172,7 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	// User management (admin only)
 	adminGroup := router.Group("/api/v1",
 		authMiddleware.Authenticate,
+		csrfMiddleware.Protect,
 		middleware.RequireRole(models.RoleSuperAdmin, models.RoleAdmin),
 	)
 	adminGroup.HandleFunc("GET /users", userHandler.List)
@@ -200,9 +205,11 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	api.Handle("POST /servers/{serverId}/rooms", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.CreateRoom)))
 	api.Handle("DELETE /servers/{serverId}/rooms/{room}", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.DeleteRoom)))
 
-	// Audit logs
+	// Audit logs (currently read-only; CSRF is a no-op on GETs but kept for
+	// consistency in case write endpoints are added later).
 	auditGroup := router.Group("/api/v1",
 		authMiddleware.Authenticate,
+		csrfMiddleware.Protect,
 		middleware.RequirePermission("audit:read"),
 	)
 	auditGroup.HandleFunc("GET /audit", auditHandler.List)
