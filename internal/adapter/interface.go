@@ -26,6 +26,28 @@ type (
 	ModuleInfo = types.ModuleInfo
 )
 
+// Capabilities advertises what an adapter can actually do against the
+// underlying server. Different XMPP servers (and different versions of the
+// same server) expose different admin endpoints — the panel uses these
+// flags to hide UI elements and stat tiles that would otherwise return 502.
+type Capabilities struct {
+	// Stats counters available via GetStats. Booleans rather than per-field
+	// flags so callers don't need to introspect the struct.
+	OnlineUsersCount    bool `json:"online_users_count"`
+	RegisteredUsersCount bool `json:"registered_users_count"`
+	ActiveSessionsCount bool `json:"active_sessions_count"`
+	S2SConnectionsCount bool `json:"s2s_connections_count"`
+
+	// Live session listing & disconnection (GetOnlineSessions / KickSession / KickUser).
+	Sessions bool `json:"sessions"`
+
+	// MUC room listing & management.
+	Rooms bool `json:"rooms"`
+
+	// Module enable/disable.
+	Modules bool `json:"modules"`
+}
+
 // XMPPAdapter defines the interface for XMPP server adapters
 // Both Prosody and ejabberd adapters implement this interface
 type XMPPAdapter interface {
@@ -61,5 +83,10 @@ type XMPPAdapter interface {
 	ListModules(ctx context.Context) ([]types.ModuleInfo, error)
 	EnableModule(ctx context.Context, module string) error
 	DisableModule(ctx context.Context, module string) error
+
+	// Capabilities returns which features this adapter supports against
+	// the configured server. Cheap (no network call); the handler layer
+	// caches it per-server-record on the frontend.
+	Capabilities() Capabilities
 }
 

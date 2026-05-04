@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 	apperrors "github.com/xmpanel/xmpanel/pkg/errors"
 	"github.com/xmpanel/xmpanel/pkg/types"
@@ -225,6 +226,22 @@ func (a *Adapter) ChangePassword(ctx context.Context, username, domain, newPassw
 	_, err := a.doRequest(ctx, http.MethodPatch,
 		fmt.Sprintf("/admin_api/users/%s", username), body)
 	return err
+}
+
+// Capabilities reports what mod_http_admin_api in Prosody 13 actually
+// supports. /server/info gives version + site name (no live counts);
+// /users gives a flat user list (we count it for "registered users");
+// nothing else.
+func (a *Adapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{
+		OnlineUsersCount:     false,
+		RegisteredUsersCount: true,
+		ActiveSessionsCount:  false,
+		S2SConnectionsCount:  false,
+		Sessions:             false,
+		Rooms:                false,
+		Modules:              false,
+	}
 }
 
 // --- Sessions: NOT supported by mod_http_admin_api in Prosody 13 ---

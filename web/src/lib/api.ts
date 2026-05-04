@@ -134,7 +134,19 @@ export const serversApi = {
 
   stats: (id: number) => api.get(`/servers/${id}/stats`),
 
+  capabilities: (id: number) => api.get(`/servers/${id}/capabilities`),
+
   test: (id: number) => api.post(`/servers/${id}/test`),
+}
+
+export interface ServerCapabilities {
+  online_users_count: boolean
+  registered_users_count: boolean
+  active_sessions_count: boolean
+  s2s_connections_count: boolean
+  sessions: boolean
+  rooms: boolean
+  modules: boolean
 }
 
 // XMPP API

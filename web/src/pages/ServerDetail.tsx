@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { serversApi, xmppApi } from '@/lib/api'
+import { serversApi, xmppApi, ServerCapabilities } from '@/lib/api'
 import toast from 'react-hot-toast'
 import {
   ArrowLeft,
@@ -84,6 +84,27 @@ export default function ServerDetail() {
     refetchInterval: 30000,
   })
 
+  // Capabilities — what this adapter/server actually supports. Drives which
+  // tabs and stat tiles render. Cache for 5 minutes; capabilities are
+  // effectively static per server record.
+  const { data: caps } = useQuery({
+    queryKey: ['server-caps', serverId],
+    queryFn: async () => {
+      const response = await serversApi.capabilities(serverId)
+      return response.data as ServerCapabilities
+    },
+    enabled: !!server?.enabled,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  // If the active tab gets hidden by capability filtering (e.g. user
+  // navigated to a different server), fall back to users.
+  useEffect(() => {
+    if (!caps) return
+    if (activeTab === 'sessions' && !caps.sessions) setActiveTab('users')
+    if (activeTab === 'rooms' && !caps.rooms) setActiveTab('users')
+  }, [caps, activeTab])
+
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['xmpp-users', serverId, domain],
     queryFn: async () => {
@@ -100,7 +121,7 @@ export default function ServerDetail() {
       const response = await xmppApi.listSessions(serverId)
       return response.data as XMPPSession[]
     },
-    enabled: activeTab === 'sessions',
+    enabled: activeTab === 'sessions' && caps?.sessions === true,
     refetchInterval: 10000,
   })
 
@@ -111,7 +132,7 @@ export default function ServerDetail() {
       const response = await xmppApi.listRooms(serverId, mucDomain)
       return response.data as XMPPRoom[]
     },
-    enabled: activeTab === 'rooms' && !!mucDomain,
+    enabled: activeTab === 'rooms' && !!mucDomain && caps?.rooms === true,
   })
 
   const kickUserMutation = useMutation({
@@ -176,17 +197,26 @@ export default function ServerDetail() {
         </button>
       </div>
 
-      {/* Stats */}
-      {stats && (
+      {/* Stats — only show tiles the adapter reports as supported. We wait
+          for both stats and caps to land so the grid doesn't flash empty. */}
+      {stats && caps && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard icon={Users} label={t('servers.stats.onlineUsers')} value={stats.online_users} />
-          <StatCard icon={Users} label={t('servers.stats.registeredUsers')} value={stats.registered_users} />
-          <StatCard icon={Activity} label={t('dashboard.activeSessions')} value={stats.active_sessions} />
-          <StatCard icon={MessageSquare} label={t('servers.stats.s2sConnections')} value={stats.s2s_connections} />
+          {caps.online_users_count && (
+            <StatCard icon={Users} label={t('servers.stats.onlineUsers')} value={stats.online_users} />
+          )}
+          {caps.registered_users_count && (
+            <StatCard icon={Users} label={t('servers.stats.registeredUsers')} value={stats.registered_users} />
+          )}
+          {caps.active_sessions_count && (
+            <StatCard icon={Activity} label={t('dashboard.activeSessions')} value={stats.active_sessions} />
+          )}
+          {caps.s2s_connections_count && (
+            <StatCard icon={MessageSquare} label={t('servers.stats.s2sConnections')} value={stats.s2s_connections} />
+          )}
         </div>
       )}
 
-      {/* Tabs */}
+      {/* Tabs — sessions and rooms only render if the adapter supports them. */}
       <div className="border-b border-gray-700">
         <div className="flex gap-4">
           <TabButton
@@ -195,18 +225,22 @@ export default function ServerDetail() {
             icon={Users}
             label={t('xmpp.tabUsers')}
           />
-          <TabButton
-            active={activeTab === 'sessions'}
-            onClick={() => setActiveTab('sessions')}
-            icon={Activity}
-            label={t('xmpp.tabSessions')}
-          />
-          <TabButton
-            active={activeTab === 'rooms'}
-            onClick={() => setActiveTab('rooms')}
-            icon={MessageSquare}
-            label={t('xmpp.tabRooms')}
-          />
+          {caps?.sessions && (
+            <TabButton
+              active={activeTab === 'sessions'}
+              onClick={() => setActiveTab('sessions')}
+              icon={Activity}
+              label={t('xmpp.tabSessions')}
+            />
+          )}
+          {caps?.rooms && (
+            <TabButton
+              active={activeTab === 'rooms'}
+              onClick={() => setActiveTab('rooms')}
+              icon={MessageSquare}
+              label={t('xmpp.tabRooms')}
+            />
+          )}
         </div>
       </div>
 

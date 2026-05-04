@@ -106,6 +106,60 @@ func EnsureInitialAdmin(db *DB, hasher PasswordHasher) (*InitResult, error) {
 	return result, nil
 }
 
+// ResetAdmin force-recreates the "admin" account with a fresh random password.
+// Other user accounts are left untouched. Used by the --reset-admin CLI flag
+// when the operator has lost the initial password.
+func ResetAdmin(db *DB, hasher PasswordHasher) (*InitResult, error) {
+	password, err := generateSecurePassword(16)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate password: %w", err)
+	}
+	passwordHash, err := hasher(password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	now := time.Now()
+	// UPSERT on username — recreate the row if it exists, insert if not.
+	// Forces role back to superadmin and clears MFA + lockout so the operator
+	// is guaranteed to be able to log in.
+	_, err = db.Exec(`
+		INSERT INTO users (username, email, password_hash, role, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (username) DO UPDATE SET
+			password_hash = EXCLUDED.password_hash,
+			role          = EXCLUDED.role,
+			mfa_enabled   = FALSE,
+			mfa_secret    = NULL,
+			recovery_codes = NULL,
+			failed_login_attempts = 0,
+			locked_until  = NULL,
+			updated_at    = EXCLUDED.updated_at
+	`, "admin", "admin@localhost", passwordHash, "superadmin", now, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upsert admin: %w", err)
+	}
+
+	// Revoke any existing sessions for the admin account so old refresh
+	// tokens stop working immediately. Old access tokens are still valid
+	// until their 15-minute TTL expires (acceptable trade-off — operator
+	// can wait or restart the server to invalidate JWT issuer state).
+	_, _ = db.Exec(`DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = $1)`, "admin")
+
+	log.Printf("========================================")
+	log.Printf("ADMIN ACCOUNT RESET")
+	log.Printf("Username: admin")
+	log.Printf("Password: %s", password)
+	log.Printf("MFA has been DISABLED. Re-enroll after login if you want it back.")
+	log.Printf("========================================")
+
+	return &InitResult{
+		AdminCreated:  true,
+		AdminUsername: "admin",
+		AdminPassword: password,
+	}, nil
+}
+
 // generateSecurePassword generates a cryptographically secure password
 func generateSecurePassword(length int) (string, error) {
 	bytes := make([]byte, length)
