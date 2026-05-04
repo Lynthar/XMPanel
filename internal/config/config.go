@@ -50,11 +50,25 @@ type DatabaseConfig struct {
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	JWT      JWTConfig      `yaml:"jwt"`
-	MFA      MFAConfig      `yaml:"mfa"`
-	Password PasswordConfig `yaml:"password"`
+	JWT       JWTConfig       `yaml:"jwt"`
+	MFA       MFAConfig       `yaml:"mfa"`
+	Password  PasswordConfig  `yaml:"password"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	CORS     CORSConfig     `yaml:"cors"`
+	CORS      CORSConfig      `yaml:"cors"`
+	Cookies   CookieConfig    `yaml:"cookies"`
+}
+
+// CookieConfig controls how auth cookies (xmpanel_refresh, csrf_token) are
+// emitted. By default, the Secure flag tracks `server.tls.enabled` — but in
+// production deployments where nginx terminates TLS and XMPanel itself runs
+// HTTP on loopback, that derivation gives the wrong answer. Use SecureOverride
+// to force the flag.
+//
+//   - "auto"   (default): mirror server.tls.enabled
+//   - "always": always set Secure (correct for nginx-fronted deployments)
+//   - "never":  never set Secure (only for local dev over plain HTTP)
+type CookieConfig struct {
+	SecureOverride string `yaml:"secure_override"`
 }
 
 // JWTConfig holds JWT configuration
@@ -158,6 +172,19 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
+// CookieSecure decides whether auth cookies get the Secure attribute,
+// applying the security.cookies.secure_override setting on top of the
+// derived-from-TLS default.
+func (c *Config) CookieSecure() bool {
+	switch c.Security.Cookies.SecureOverride {
+	case "always":
+		return true
+	case "never":
+		return false
+	}
+	return c.Server.TLS.Enabled
+}
+
 // Validate validates the configuration and returns an error if invalid
 func (c *Config) Validate() error {
 	// Validate JWT secret
@@ -190,6 +217,15 @@ func (c *Config) Validate() error {
 		if origin == "*" && c.Security.CORS.AllowCredentials {
 			return errors.New("CORS: cannot use wildcard origin (*) with allow_credentials=true")
 		}
+	}
+
+	// Validate cookies.secure_override
+	switch c.Security.Cookies.SecureOverride {
+	case "", "auto", "always", "never":
+		// ok
+	default:
+		return fmt.Errorf("security.cookies.secure_override must be one of auto/always/never, got %q",
+			c.Security.Cookies.SecureOverride)
 	}
 
 	return nil

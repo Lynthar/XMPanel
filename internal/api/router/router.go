@@ -143,13 +143,13 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	auditService := handler.NewAuditService(db, logger)
 	authHandler := handler.NewAuthHandler(
 		db, jwtManager, hasher, passwordValidator, loginLimiter, auditService,
-		cfg.Security.JWT.RefreshTokenTTL, cfg.Server.TLS.Enabled, logger,
+		cfg.Security.JWT.RefreshTokenTTL, cfg.CookieSecure(), logger,
 	)
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
 	serverHandler := handler.NewServerHandler(db, keyRing, auditService, logger)
 	xmppHandler := handler.NewXMPPHandler(db, keyRing, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
-	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.Server.TLS.Enabled)
+	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.CookieSecure())
 
 	// Health check (public)
 	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +199,7 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	api.Handle("PUT /servers/{id}", middleware.RequirePermission("servers:write")(http.HandlerFunc(serverHandler.Update)))
 	api.Handle("DELETE /servers/{id}", middleware.RequirePermission("servers:write")(http.HandlerFunc(serverHandler.Delete)))
 	api.HandleFunc("GET /servers/{id}/stats", serverHandler.Stats)
+	api.HandleFunc("GET /servers/{id}/capabilities", serverHandler.Capabilities)
 	api.HandleFunc("POST /servers/{id}/test", serverHandler.Test)
 
 	// XMPP operations

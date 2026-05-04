@@ -1,7 +1,7 @@
 import { useQuery, useQueries } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { serversApi } from '@/lib/api'
+import { serversApi, ServerCapabilities } from '@/lib/api'
 import { Server, Users, MessageSquare, Activity, AlertCircle } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -47,6 +47,22 @@ export default function Dashboard() {
     })),
   })
 
+  // Capabilities decide whether each aggregated stat is meaningful. If no
+  // server reports a capability, we render "—" instead of a misleading 0.
+  const capsResults = useQueries({
+    queries: enabledServers.map((server) => ({
+      queryKey: ['server-caps', server.id],
+      queryFn: async () => {
+        const response = await serversApi.capabilities(server.id)
+        return response.data as ServerCapabilities
+      },
+      staleTime: 5 * 60 * 1000,
+    })),
+  })
+
+  const anyCap = (key: keyof ServerCapabilities) =>
+    capsResults.some((q) => q.data?.[key])
+
   const aggregateStats = statsResults.reduce(
     (acc, q) => {
       if (q.data) {
@@ -58,6 +74,9 @@ export default function Dashboard() {
     { online_users: 0, active_sessions: 0 }
   )
   const allStatsResolved = statsResults.length === 0 || statsResults.every((q) => !q.isLoading)
+  const allCapsResolved = capsResults.length === 0 || capsResults.every((q) => !q.isLoading)
+  const showOnlineUsers = !allCapsResolved || anyCap('online_users_count')
+  const showActiveSessions = !allCapsResolved || anyCap('active_sessions_count')
 
   return (
     <div className="space-y-6">
@@ -84,13 +103,25 @@ export default function Dashboard() {
         <StatCard
           icon={Users}
           label={t('dashboard.onlineUsers')}
-          value={allStatsResolved ? aggregateStats.online_users : '...'}
+          value={
+            !showOnlineUsers
+              ? '—'
+              : allStatsResolved
+              ? aggregateStats.online_users
+              : '...'
+          }
           color="purple"
         />
         <StatCard
           icon={MessageSquare}
           label={t('dashboard.activeSessions')}
-          value={allStatsResolved ? aggregateStats.active_sessions : '...'}
+          value={
+            !showActiveSessions
+              ? '—'
+              : allStatsResolved
+              ? aggregateStats.active_sessions
+              : '...'
+          }
           color="orange"
         />
       </div>

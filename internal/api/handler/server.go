@@ -302,6 +302,31 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+// Capabilities returns what features the configured server's adapter
+// supports. Frontend uses this to hide tabs / stat tiles that would
+// otherwise return 502.
+func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		return
+	}
+
+	xmppAdapter, err := h.getAdapter(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "Server not found")
+		} else {
+			h.logger.Error("failed to get adapter", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "Internal server error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, xmppAdapter.Capabilities())
+}
+
 // Test tests the connection to an XMPP server
 func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")

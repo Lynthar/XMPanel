@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 	apperrors "github.com/xmpanel/xmpanel/pkg/errors"
 	"github.com/xmpanel/xmpanel/pkg/types"
@@ -468,6 +469,25 @@ func (a *Adapter) EnableModule(ctx context.Context, module string) error {
 // DisableModule disables a module
 func (a *Adapter) DisableModule(ctx context.Context, module string) error {
 	return apperrors.ErrNotImplemented
+}
+
+// Capabilities reports what this adapter can do against ejabberd.
+//
+// NOTE: this adapter has not been validated against a real ejabberd
+// server (CLAUDE.md flags this). The flags below describe what the code
+// **attempts** to do, not what we've confirmed works. If you hit 502s on
+// supposedly-supported endpoints, narrow these flags and patch the
+// concrete methods.
+func (a *Adapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{
+		OnlineUsersCount:     true,  // connected_users_number
+		RegisteredUsersCount: true,  // stats name=registeredusers
+		ActiveSessionsCount:  false, // not populated by current GetStats
+		S2SConnectionsCount:  true,  // incoming_s2s_number
+		Sessions:             true,  // connected_users_info, kick_session/kick_user
+		Rooms:                true,  // muc_online_rooms, get_room_options, etc
+		Modules:              false, // EnableModule/DisableModule return ErrNotImplemented
+	}
 }
 
 // doRequest performs an HTTP request to the ejabberd API

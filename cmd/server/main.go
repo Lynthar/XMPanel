@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,11 @@ import (
 )
 
 func main() {
+	resetAdmin := flag.Bool("reset-admin", false,
+		"Reset the admin account to a fresh random password and exit. "+
+			"Other accounts are kept; admin's MFA is cleared and sessions revoked.")
+	flag.Parse()
+
 	// Initialize logger
 	logger, err := zap.NewProduction()
 	if err != nil {
@@ -50,6 +56,15 @@ func main() {
 		cfg.Security.Password.Argon2Memory,
 		cfg.Security.Password.Argon2Threads,
 	)
+
+	if *resetAdmin {
+		if _, err := store.ResetAdmin(db, hasher.Hash); err != nil {
+			logger.Fatal("failed to reset admin", zap.Error(err))
+		}
+		// ResetAdmin already logged the new credentials. Exit so the operator
+		// can capture them and start the service via systemd.
+		os.Exit(0)
+	}
 
 	// Ensure initial admin exists
 	initResult, err := store.EnsureInitialAdmin(db, hasher.Hash)
