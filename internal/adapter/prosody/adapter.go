@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/store/models"
@@ -14,8 +15,21 @@ import (
 	"github.com/xmpanel/xmpanel/pkg/types"
 )
 
-// Adapter implements XMPPAdapter for Prosody servers
-// It uses mod_http_admin_api or mod_admin_rest for communication
+// Adapter implements XMPPAdapter for Prosody 13.x via mod_http_admin_api.
+//
+// Endpoint paths and behaviors verified against Prosody 13.0.5 +
+// prosody-modules mod_http_admin_api (commit 971a531654dc, May 2026).
+// See docs/DEPLOY_DEBIAN.md §F for the full path map.
+//
+// Sessions/MUC/Modules are NOT supported by mod_http_admin_api in Prosody 13;
+// those methods return ErrNotImplemented so the panel UI surfaces 501 instead
+// of confusing 404s.
+//
+// HTTP Host header: mod_http_admin_api routes by Host header. Adapter sends
+// `Host: <server.Host>` so the operator should configure the server with
+// Host = the XMPP virtual host name (e.g. "xmpp.example.com"). For same-box
+// deployments add `127.0.0.1 xmpp.example.com` to /etc/hosts so TCP stays on
+// loopback while the HTTP Host header still matches the VirtualHost.
 type Adapter struct {
 	server     *models.XMPPServer
 	apiKey     string
@@ -23,7 +37,7 @@ type Adapter struct {
 	baseURL    string
 }
 
-// NewAdapter creates a new Prosody adapter
+// NewAdapter creates a new Prosody adapter.
 func NewAdapter(server *models.XMPPServer, apiKey string) *Adapter {
 	scheme := "http"
 	if server.TLSEnabled {
@@ -40,35 +54,43 @@ func NewAdapter(server *models.XMPPServer, apiKey string) *Adapter {
 	}
 }
 
-// Connect tests the connection to the Prosody server
+// Connect tests the connection to the Prosody server.
 func (a *Adapter) Connect(ctx context.Context) error {
 	return a.Ping(ctx)
 }
 
-// Disconnect closes the connection (no-op for HTTP)
+// Disconnect is a no-op (HTTP is stateless).
 func (a *Adapter) Disconnect() error {
 	return nil
 }
 
-// Ping checks if the server is reachable
+// Ping verifies the server is reachable AND the bearer token is valid.
+// We hit /admin_api/server/info because /admin_api itself is not a routed
+// endpoint in mod_http_admin_api 13 — it returns 404 even when the module
+// is healthy.
 func (a *Adapter) Ping(ctx context.Context) error {
-	_, err := a.doRequest(ctx, http.MethodGet, "/admin_api", nil)
+	_, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
 	return err
 }
 
-// GetServerInfo retrieves server information
+// GetServerInfo retrieves server info (version, site name).
+//
+// Response shape from Prosody 13.0.5:
+//
+//	{"site_name":"xmpp.example.com","version":"13.0.5"}
+//
+// Note: hosts list is NOT exposed by /server/info — operators configure the
+// XMPP domain at the server-record level in XMPanel.
 func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server", nil)
+	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var info struct {
-		Version  string   `json:"version"`
-		Hostname string   `json:"hostname"`
-		Hosts    []string `json:"hosts"`
+		SiteName string `json:"site_name"`
+		Version  string `json:"version"`
 	}
-
 	if err := json.Unmarshal(resp, &info); err != nil {
 		return nil, fmt.Errorf("failed to parse server info: %w", err)
 	}
@@ -76,284 +98,190 @@ func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) 
 	return &types.ServerInfo{
 		Type:     types.ServerTypeProsody,
 		Version:  info.Version,
-		Hostname: info.Hostname,
-		Domains:  info.Hosts,
+		Hostname: info.SiteName,
+		Domains:  []string{info.SiteName},
 	}, nil
 }
 
-// GetStats retrieves server statistics
+// GetStats derives basic counters from /server/info + /users.
+//
+// Background: /admin_api/server/metrics in Prosody 13.0.5 returns
+// 500 Internal Server Error in default config (root cause not investigated;
+// the endpoint is documented as beta). We avoid it entirely.
 func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/statistics", nil)
+	infoResp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var rawStats map[string]interface{}
-	if err := json.Unmarshal(resp, &rawStats); err != nil {
-		return nil, fmt.Errorf("failed to parse stats: %w", err)
+	var info struct {
+		Version string `json:"version"`
 	}
+	_ = json.Unmarshal(infoResp, &info)
 
 	stats := &models.ServerStats{
-		Extra: rawStats,
+		Version: info.Version,
 	}
 
-	// Map common fields
-	if v, ok := rawStats["c2s_sessions"].(float64); ok {
-		stats.OnlineUsers = int(v)
-	}
-	if v, ok := rawStats["total_users"].(float64); ok {
-		stats.RegisteredUsers = int(v)
-	}
-	if v, ok := rawStats["total_c2s"].(float64); ok {
-		stats.ActiveSessions = int(v)
-	}
-	if v, ok := rawStats["total_s2s"].(float64); ok {
-		stats.S2SConnections = int(v)
-	}
-
-	return stats, nil
-}
-
-// ListUsers lists all users in a domain
-func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUser, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, fmt.Sprintf("/admin_api/users/%s", domain), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var usernames []string
-	if err := json.Unmarshal(resp, &usernames); err != nil {
-		return nil, fmt.Errorf("failed to parse users: %w", err)
-	}
-
-	users := make([]models.XMPPUser, len(usernames))
-	for i, username := range usernames {
-		users[i] = models.XMPPUser{
-			Username: username,
-			Domain:   domain,
-			JID:      fmt.Sprintf("%s@%s", username, domain),
+	// Count registered users via /users (mod_http_admin_api lists across all hosts
+	// the API user has admin on).
+	if usersResp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/users", nil); err == nil {
+		var users []struct {
+			Username string `json:"username"`
+			Enabled  bool   `json:"enabled"`
+		}
+		if json.Unmarshal(usersResp, &users) == nil {
+			stats.RegisteredUsers = len(users)
 		}
 	}
 
-	return users, nil
+	// OnlineUsers / ActiveSessions / S2SConnections — not available via
+	// mod_http_admin_api in Prosody 13. Leave as zero.
+	return stats, nil
 }
 
-// GetUser retrieves information about a specific user
-func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models.XMPPUser, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, fmt.Sprintf("/admin_api/users/%s/%s", domain, username), nil)
+// ListUsers returns all known XMPP users.
+//
+// Note: Prosody 13 mod_http_admin_api does NOT scope users by domain — the
+// /users endpoint returns every user on every host the API caller has admin
+// rights on. The `domain` parameter is preserved here for interface
+// compatibility but only used to populate JID/Domain fields client-side.
+func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUser, error) {
+	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/users", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var userInfo struct {
-		Username  string   `json:"username"`
-		Resources []string `json:"resources,omitempty"`
+	var raw []struct {
+		Username       string   `json:"username"`
+		Enabled        bool     `json:"enabled"`
+		Role           string   `json:"role"`
+		SecondaryRoles []string `json:"secondary_roles"`
+	}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse users: %w", err)
 	}
 
-	if err := json.Unmarshal(resp, &userInfo); err != nil {
+	users := make([]models.XMPPUser, len(raw))
+	for i, u := range raw {
+		users[i] = models.XMPPUser{
+			Username: u.Username,
+			Domain:   domain,
+			JID:      fmt.Sprintf("%s@%s", u.Username, domain),
+		}
+	}
+	return users, nil
+}
+
+// GetUser fetches a single user by username (domain is metadata only —
+// mod_http_admin_api keys users by username within the API caller's host).
+func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models.XMPPUser, error) {
+	resp, err := a.doRequest(ctx, http.MethodGet,
+		fmt.Sprintf("/admin_api/users/%s", username), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var u struct {
+		Username string `json:"username"`
+		Enabled  bool   `json:"enabled"`
+	}
+	if err := json.Unmarshal(resp, &u); err != nil {
 		return nil, fmt.Errorf("failed to parse user: %w", err)
 	}
 
 	return &models.XMPPUser{
-		Username:  username,
-		Domain:    domain,
-		JID:       fmt.Sprintf("%s@%s", username, domain),
-		Online:    len(userInfo.Resources) > 0,
-		Resources: userInfo.Resources,
+		Username: u.Username,
+		Domain:   domain,
+		JID:      fmt.Sprintf("%s@%s", u.Username, domain),
 	}, nil
 }
 
-// CreateUser creates a new user
+// CreateUser creates a new user.
+//
+// Prosody 13 mod_http_admin_api uses PUT /admin_api/users/<username> with
+// the password in the request body.
 func (a *Adapter) CreateUser(ctx context.Context, req models.CreateXMPPUserRequest) error {
 	body := map[string]string{
 		"password": req.Password,
 	}
-
 	_, err := a.doRequest(ctx, http.MethodPut,
-		fmt.Sprintf("/admin_api/users/%s/%s", req.Domain, req.Username), body)
+		fmt.Sprintf("/admin_api/users/%s", req.Username), body)
 	return err
 }
 
-// DeleteUser deletes a user
+// DeleteUser removes a user.
 func (a *Adapter) DeleteUser(ctx context.Context, username, domain string) error {
 	_, err := a.doRequest(ctx, http.MethodDelete,
-		fmt.Sprintf("/admin_api/users/%s/%s", domain, username), nil)
+		fmt.Sprintf("/admin_api/users/%s", username), nil)
 	return err
 }
 
-// ChangePassword changes a user's password
+// ChangePassword updates a user's password (PATCH /admin_api/users/<username>).
 func (a *Adapter) ChangePassword(ctx context.Context, username, domain, newPassword string) error {
 	body := map[string]string{
 		"password": newPassword,
 	}
-
 	_, err := a.doRequest(ctx, http.MethodPatch,
-		fmt.Sprintf("/admin_api/users/%s/%s", domain, username), body)
+		fmt.Sprintf("/admin_api/users/%s", username), body)
 	return err
 }
 
-// GetOnlineSessions retrieves all online sessions
+// --- Sessions: NOT supported by mod_http_admin_api in Prosody 13 ---
+
 func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/sessions", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var rawSessions []struct {
-		JID      string `json:"jid"`
-		Resource string `json:"resource"`
-		IP       string `json:"ip"`
-		Priority int    `json:"priority"`
-		Status   string `json:"status"`
-	}
-
-	if err := json.Unmarshal(resp, &rawSessions); err != nil {
-		return nil, fmt.Errorf("failed to parse sessions: %w", err)
-	}
-
-	sessions := make([]models.XMPPSession, len(rawSessions))
-	for i, s := range rawSessions {
-		sessions[i] = models.XMPPSession{
-			JID:       s.JID,
-			Resource:  s.Resource,
-			IPAddress: s.IP,
-			Priority:  s.Priority,
-			Status:    s.Status,
-		}
-	}
-
-	return sessions, nil
+	return nil, apperrors.ErrNotImplemented
 }
 
-// GetUserSessions retrieves sessions for a specific user
 func (a *Adapter) GetUserSessions(ctx context.Context, username, domain string) ([]models.XMPPSession, error) {
-	jid := fmt.Sprintf("%s@%s", username, domain)
-	resp, err := a.doRequest(ctx, http.MethodGet, fmt.Sprintf("/admin_api/sessions/%s", jid), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var sessions []models.XMPPSession
-	if err := json.Unmarshal(resp, &sessions); err != nil {
-		return nil, fmt.Errorf("failed to parse sessions: %w", err)
-	}
-
-	return sessions, nil
+	return nil, apperrors.ErrNotImplemented
 }
 
-// KickSession disconnects a specific session
 func (a *Adapter) KickSession(ctx context.Context, jid string) error {
-	_, err := a.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/admin_api/sessions/%s", jid), nil)
-	return err
+	return apperrors.ErrNotImplemented
 }
 
-// KickUser disconnects all sessions for a user
 func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
-	jid := fmt.Sprintf("%s@%s", username, domain)
-	return a.KickSession(ctx, jid)
+	return apperrors.ErrNotImplemented
 }
 
-// ListRooms lists all MUC rooms
+// --- MUC rooms: NOT supported by mod_http_admin_api in Prosody 13 ---
+
 func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMPPRoom, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, fmt.Sprintf("/admin_api/muc/%s/rooms", mucDomain), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var rawRooms []struct {
-		JID         string `json:"jid"`
-		Name        string `json:"name"`
-		Occupants   int    `json:"occupants"`
-		Public      bool   `json:"public"`
-		Persistent  bool   `json:"persistent"`
-		MembersOnly bool   `json:"members_only"`
-	}
-
-	if err := json.Unmarshal(resp, &rawRooms); err != nil {
-		return nil, fmt.Errorf("failed to parse rooms: %w", err)
-	}
-
-	rooms := make([]models.XMPPRoom, len(rawRooms))
-	for i, r := range rawRooms {
-		rooms[i] = models.XMPPRoom{
-			JID:         r.JID,
-			Name:        r.Name,
-			Occupants:   r.Occupants,
-			Public:      r.Public,
-			Persistent:  r.Persistent,
-			MembersOnly: r.MembersOnly,
-		}
-	}
-
-	return rooms, nil
+	return nil, apperrors.ErrNotImplemented
 }
 
-// GetRoom retrieves information about a specific room
 func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.XMPPRoom, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet,
-		fmt.Sprintf("/admin_api/muc/%s/rooms/%s", mucDomain, room), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var r models.XMPPRoom
-	if err := json.Unmarshal(resp, &r); err != nil {
-		return nil, fmt.Errorf("failed to parse room: %w", err)
-	}
-
-	return &r, nil
+	return nil, apperrors.ErrNotImplemented
 }
 
-// CreateRoom creates a new MUC room
 func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomRequest) error {
-	body := map[string]interface{}{
-		"name":         req.Name,
-		"description":  req.Description,
-		"public":       req.Public,
-		"persistent":   req.Persistent,
-		"members_only": req.MembersOnly,
-	}
-
-	_, err := a.doRequest(ctx, http.MethodPut,
-		fmt.Sprintf("/admin_api/muc/%s/rooms/%s", req.Domain, req.Name), body)
-	return err
+	return apperrors.ErrNotImplemented
 }
 
-// DeleteRoom deletes a MUC room
 func (a *Adapter) DeleteRoom(ctx context.Context, room, mucDomain string) error {
-	_, err := a.doRequest(ctx, http.MethodDelete,
-		fmt.Sprintf("/admin_api/muc/%s/rooms/%s", mucDomain, room), nil)
-	return err
+	return apperrors.ErrNotImplemented
 }
 
-// ListModules lists all loaded modules
+// --- Modules: NOT supported by mod_http_admin_api in Prosody 13 ---
+
 func (a *Adapter) ListModules(ctx context.Context) ([]types.ModuleInfo, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/modules", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var modules []types.ModuleInfo
-	if err := json.Unmarshal(resp, &modules); err != nil {
-		return nil, fmt.Errorf("failed to parse modules: %w", err)
-	}
-
-	return modules, nil
+	return nil, apperrors.ErrNotImplemented
 }
 
-// EnableModule enables a module
 func (a *Adapter) EnableModule(ctx context.Context, module string) error {
-	_, err := a.doRequest(ctx, http.MethodPut, fmt.Sprintf("/admin_api/modules/%s", module), nil)
-	return err
+	return apperrors.ErrNotImplemented
 }
 
-// DisableModule disables a module
 func (a *Adapter) DisableModule(ctx context.Context, module string) error {
-	_, err := a.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/admin_api/modules/%s", module), nil)
-	return err
+	return apperrors.ErrNotImplemented
 }
 
-// doRequest performs an HTTP request to the Prosody API
+// doRequest performs an HTTP request to the Prosody admin API.
+//
+// Sets req.Host explicitly to server.Host so the request reaches
+// mod_http_admin_api on the matching VirtualHost. For loopback deployments,
+// configure /etc/hosts to resolve the XMPP domain to 127.0.0.1.
 func (a *Adapter) doRequest(ctx context.Context, method, path string, body interface{}) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
@@ -390,10 +318,17 @@ func (a *Adapter) doRequest(ctx context.Context, method, path string, body inter
 	case http.StatusUnauthorized:
 		return nil, apperrors.ErrAuthFailed
 	case http.StatusNotFound:
-		return nil, apperrors.ErrUserNotFound
+		// Distinguish "user not found" from "endpoint not registered".
+		// 13.x admin_api returns text/html for unrouted paths and JSON for
+		// missing resources, but the body discrimination is fragile;
+		// callers that care should check via GET first.
+		if strings.HasPrefix(path, "/admin_api/users/") && method != http.MethodPut {
+			return nil, apperrors.ErrUserNotFound
+		}
+		return nil, fmt.Errorf("%w: endpoint not found at %s", apperrors.ErrOperationFailed, path)
 	case http.StatusConflict:
 		return nil, apperrors.ErrUserExists
 	default:
-		return nil, fmt.Errorf("%w: %s", apperrors.ErrOperationFailed, string(respBody))
+		return nil, fmt.Errorf("%w: %s: %s", apperrors.ErrOperationFailed, resp.Status, string(respBody))
 	}
 }
