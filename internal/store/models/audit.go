@@ -53,21 +53,84 @@ const (
 	ResourceTypeSetting ResourceType = "setting"
 )
 
-// AuditLog represents an audit log entry
+// AuditLog represents an audit log entry.
+//
+// JSON marshaling unwraps sql.Null* fields into bare strings/numbers (or
+// null) so frontend code can render them directly. Without this, the
+// default encoding would emit objects like {"String":"...","Valid":true}
+// which React refuses to render as a child node (error #31).
 type AuditLog struct {
 	ID           int64          `json:"id" db:"id"`
-	UserID       sql.NullInt64  `json:"user_id,omitempty" db:"user_id"`
+	UserID       sql.NullInt64  `json:"-" db:"user_id"`
 	Username     string         `json:"username" db:"username"`
 	Action       AuditAction    `json:"action" db:"action"`
 	ResourceType ResourceType   `json:"resource_type,omitempty" db:"resource_type"`
-	ResourceID   sql.NullString `json:"resource_id,omitempty" db:"resource_id"`
-	Details      sql.NullString `json:"details,omitempty" db:"details"`
-	IPAddress    sql.NullString `json:"ip_address,omitempty" db:"ip_address"`
-	UserAgent    sql.NullString `json:"user_agent,omitempty" db:"user_agent"`
-	RequestID    sql.NullString `json:"request_id,omitempty" db:"request_id"`
-	PrevHash     sql.NullString `json:"prev_hash,omitempty" db:"prev_hash"`
+	ResourceID   sql.NullString `json:"-" db:"resource_id"`
+	Details      sql.NullString `json:"-" db:"details"`
+	IPAddress    sql.NullString `json:"-" db:"ip_address"`
+	UserAgent    sql.NullString `json:"-" db:"user_agent"`
+	RequestID    sql.NullString `json:"-" db:"request_id"`
+	PrevHash     sql.NullString `json:"-" db:"prev_hash"`
 	Hash         string         `json:"hash" db:"hash"`
 	CreatedAt    time.Time      `json:"created_at" db:"created_at"`
+}
+
+// auditLogJSON is the wire format for AuditLog. Pointer-to-string/int64
+// fields encode as the bare value when set, or null when not.
+type auditLogJSON struct {
+	ID           int64           `json:"id"`
+	UserID       *int64          `json:"user_id,omitempty"`
+	Username     string          `json:"username"`
+	Action       AuditAction     `json:"action"`
+	ResourceType ResourceType    `json:"resource_type,omitempty"`
+	ResourceID   *string         `json:"resource_id,omitempty"`
+	Details      json.RawMessage `json:"details,omitempty"`
+	IPAddress    *string         `json:"ip_address,omitempty"`
+	UserAgent    *string         `json:"user_agent,omitempty"`
+	RequestID    *string         `json:"request_id,omitempty"`
+	PrevHash     *string         `json:"prev_hash,omitempty"`
+	Hash         string          `json:"hash"`
+	CreatedAt    time.Time       `json:"created_at"`
+}
+
+func nullStringPtr(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	v := s.String
+	return &v
+}
+
+func nullInt64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}
+
+// MarshalJSON unwraps the sql.Null* fields. Details, when present, is
+// emitted as a JSON value (not a JSON-encoded string) since the column
+// is JSONB.
+func (l AuditLog) MarshalJSON() ([]byte, error) {
+	out := auditLogJSON{
+		ID:           l.ID,
+		UserID:       nullInt64Ptr(l.UserID),
+		Username:     l.Username,
+		Action:       l.Action,
+		ResourceType: l.ResourceType,
+		ResourceID:   nullStringPtr(l.ResourceID),
+		IPAddress:    nullStringPtr(l.IPAddress),
+		UserAgent:    nullStringPtr(l.UserAgent),
+		RequestID:    nullStringPtr(l.RequestID),
+		PrevHash:     nullStringPtr(l.PrevHash),
+		Hash:         l.Hash,
+		CreatedAt:    l.CreatedAt,
+	}
+	if l.Details.Valid && l.Details.String != "" {
+		out.Details = json.RawMessage(l.Details.String)
+	}
+	return json.Marshal(out)
 }
 
 // AuditLogEntry is used for creating new audit log entries
