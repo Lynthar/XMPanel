@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/xmpanel/xmpanel/internal/api/handler"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
@@ -71,13 +72,23 @@ type RouteGroup struct {
 	middlewares []func(http.Handler) http.Handler
 }
 
-// Handle registers a handler for a pattern in the group
+// Handle registers a handler for a pattern in the group.
+//
+// Patterns may use Go 1.22+ method-prefixed form ("POST /foo") or be path-only
+// ("/foo"). The group prefix is inserted before the path, after the method if
+// present, so "POST /foo" with prefix "/api/v1" becomes "POST /api/v1/foo".
 func (g *RouteGroup) Handle(pattern string, handler http.Handler) {
-	// Apply group middlewares
 	for i := len(g.middlewares) - 1; i >= 0; i-- {
 		handler = g.middlewares[i](handler)
 	}
-	g.router.Handle(g.prefix+pattern, handler)
+
+	full := pattern
+	if idx := strings.Index(pattern, " "); idx >= 0 {
+		full = pattern[:idx+1] + g.prefix + pattern[idx+1:]
+	} else {
+		full = g.prefix + pattern
+	}
+	g.router.Handle(full, handler)
 }
 
 // HandleFunc registers a handler function for a pattern in the group
