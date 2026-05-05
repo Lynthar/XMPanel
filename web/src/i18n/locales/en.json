@@ -196,7 +196,10 @@
       "importCsvConfirm": "Import",
       "importCsvSuccess": "{{count}} users created",
       "importCsvPartial": "{{ok}} created, {{failed}} failed",
-      "importCsvNoRows": "No valid rows found in CSV"
+      "importCsvNoRows": "No valid rows found in CSV",
+      "domainLabel": "Domain",
+      "filterPlaceholder": "Filter by username...",
+      "filterNoMatch": "No users match the current filter"
     },
     "sessions": {
       "title": "Active Sessions",
