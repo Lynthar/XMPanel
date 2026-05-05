@@ -1,32 +1,45 @@
 # XMPanel Configuration Example
-# Copy this file to config.yaml and modify as needed
+# Copy this file to config.yaml and edit before first start.
+# Override path: XMPANEL_CONFIG=/path/to/config.yaml ./xmpanel
 
 server:
   address: ":8080"
   tls:
-    enabled: false
-    cert_file: ""
+    enabled: false       # Set true only if Go terminates TLS directly.
+    cert_file: ""        # Skip when nginx fronts the panel (recommended).
     key_file: ""
 
 database:
-  driver: "sqlite"  # sqlite or postgres
-  dsn: "xmpanel.db"
-  encryption_key: ""  # Base64 encoded 32-byte key for encrypting sensitive data
+  # XMPanel is PostgreSQL-only. The `driver` field is parsed for backwards
+  # compatibility but ignored at runtime — the driver is hardcoded to postgres.
+  driver: "postgres"
+  dsn: "host=localhost port=5432 user=xmpanel password=xmpanel dbname=xmpanel sslmode=disable"
+  # Base64 32-byte key used by KeyRing (AES-256-GCM) for encrypted columns
+  # like xmpp_servers.api_key_encrypted. Generate with `make generate-key`
+  # or `openssl rand -base64 32`. If left empty, a random key is generated
+  # at startup and printed as a warning — encrypted rows become unreadable
+  # across restarts. ALWAYS SET THIS IN PRODUCTION.
+  encryption_key: ""
   max_open_conns: 25
   max_idle_conns: 5
   conn_max_lifetime: "5m"
 
 security:
   jwt:
-    secret: "CHANGE_THIS_TO_A_SECURE_RANDOM_STRING"  # At least 32 characters
+    # ≥32 chars enforced by config.Validate. If empty, a random secret is
+    # generated at startup and existing sessions become invalid on every
+    # restart. ALWAYS SET THIS IN PRODUCTION.
+    secret: "CHANGE_THIS_TO_A_SECURE_RANDOM_STRING_AT_LEAST_32_CHARS"
     access_token_ttl: 15m
-    refresh_token_ttl: 168h  # 7 days
+    refresh_token_ttl: 168h     # 7 days
     issuer: "xmpanel"
 
   mfa:
     enabled: true
     issuer: "XMPanel"
-    required: false  # If true, all users must enable MFA
+    # Currently parsed but NOT enforced — admins must enroll manually via
+    # the Settings page. Tracked as a known gap.
+    required: false
 
   password:
     min_length: 12
@@ -35,7 +48,7 @@ security:
     require_number: true
     require_special: false
     argon2_time: 3
-    argon2_memory: 65536  # 64MB
+    argon2_memory: 65536        # 64 MB
     argon2_threads: 4
     max_login_attempts: 5
     lockout_duration: 15m
@@ -46,10 +59,19 @@ security:
     burst: 200
     login_attempts: 5
     login_window: 15m
+    # Only trust X-Forwarded-For when at least one trusted proxy is listed.
+    # Leave false (default) if XMPanel is exposed directly — otherwise
+    # clients can spoof their source IP and bypass rate limiting.
+    trust_x_forwarded_for: false
+    trusted_proxies: []
+      # - "127.0.0.1/32"
+      # - "::1/128"
 
   cors:
+    # No wildcard with allow_credentials=true (rejected by config.Validate).
     allowed_origins:
-      - "http://localhost:5173"  # Vite dev server
+      - "http://localhost:5173"   # Vite dev server
+      # - "https://panel.example.com"
     allowed_methods:
       - "GET"
       - "POST"
@@ -64,14 +86,25 @@ security:
     allow_credentials: true
     max_age: 86400
 
-# XMPP servers can be configured here or added via the web UI
+  cookies:
+    # Controls the Secure flag on xmpanel_refresh / csrf_token cookies.
+    #   "auto"   (default) mirror server.tls.enabled
+    #   "always" force Secure — correct when nginx terminates TLS and
+    #            XMPanel itself runs HTTP loopback (most common prod setup)
+    #   "never"  never set Secure — only for local HTTP development
+    secure_override: "auto"
+
+# XMPP servers can be added via the web UI; the entries below are commented
+# out by default. The same fields are accepted in YAML but the recommended
+# flow is to add servers from the Servers page so the API key gets encrypted
+# at rest via the KeyRing.
 xmpp:
   servers: []
   # - id: "prosody-main"
   #   name: "Main Prosody Server"
   #   type: "prosody"
-  #   host: "xmpp.example.com"
+  #   host: "xmpp.example.com"     # NOT 127.0.0.1 — Prosody routes by Host header.
   #   port: 5280
-  #   api_key: "your-api-key"
-  #   tls: true
+  #   api_key: "secret-token:..."  # mod_tokenauth Bearer token; see docs/DEPLOY_DEBIAN.md §2.7
+  #   tls: false                   # loopback HTTP between Go and Prosody
   #   enabled: true
