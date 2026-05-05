@@ -183,7 +183,20 @@
       "kickSuccess": "User kicked",
       "kickFailed": "Failed to kick user",
       "confirmDelete": "Are you sure you want to delete this XMPP user?",
-      "confirmKick": "Are you sure you want to kick this user from the server?"
+      "confirmKick": "Are you sure you want to kick this user from the server?",
+      "selectAll": "Select all users on this page",
+      "bulkDelete": "Delete {{count}} selected",
+      "bulkDeleteTitle": "Delete selected XMPP users?",
+      "bulkDeletePrompt": "This will permanently delete <strong>{{count}}</strong> XMPP users. This action cannot be undone.",
+      "bulkDeleteSuccess": "{{count}} users deleted",
+      "bulkDeletePartial": "{{ok}} deleted, {{failed}} failed",
+      "importCsv": "Import CSV",
+      "importCsvTitle": "Import users from CSV",
+      "importCsvHelp": "One row per user. Format: <code>username,domain,password</code>. Lines starting with # are skipped. A header row is auto-detected.",
+      "importCsvConfirm": "Import",
+      "importCsvSuccess": "{{count}} users created",
+      "importCsvPartial": "{{ok}} created, {{failed}} failed",
+      "importCsvNoRows": "No valid rows found in CSV"
     },
     "sessions": {
       "title": "Active Sessions",
