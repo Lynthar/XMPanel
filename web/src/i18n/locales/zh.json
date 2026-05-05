@@ -196,7 +196,10 @@
       "importCsvConfirm": "开始导入",
       "importCsvSuccess": "已创建 {{count}} 个用户",
       "importCsvPartial": "成功 {{ok}}，失败 {{failed}}",
-      "importCsvNoRows": "CSV 内未找到有效数据行"
+      "importCsvNoRows": "CSV 内未找到有效数据行",
+      "domainLabel": "域名",
+      "filterPlaceholder": "按用户名筛选...",
+      "filterNoMatch": "没有匹配当前筛选的用户"
     },
     "sessions": {
       "title": "活跃会话",

@@ -344,7 +344,6 @@ export default function ServerDetail() {
             users={users || []}
             loading={usersLoading}
             domain={domain}
-            onDomainChange={setDomain}
             onAddUser={() => setShowAddUserModal(true)}
             onImportCsv={() => setShowImportCsvModal(true)}
             onKickUser={(u) => kickUserMutation.mutate({ username: u.username, domain: u.domain })}
@@ -472,14 +471,13 @@ function TabButton({ active, onClick, icon: Icon, label }: {
 }
 
 function UsersTab({
-  users, loading, domain, onDomainChange,
+  users, loading, domain,
   onAddUser, onImportCsv, onKickUser, onDeleteUser,
   selectedJids, onSelectionChange, onBulkDelete,
 }: {
   users: XMPPUser[]
   loading: boolean
   domain: string
-  onDomainChange: (d: string) => void
   onAddUser: () => void
   onImportCsv: () => void
   onKickUser: (u: XMPPUser) => void
@@ -489,16 +487,31 @@ function UsersTab({
   onBulkDelete: (targets: XMPPUser[]) => void
 }) {
   const { t } = useTranslation()
+  const [filter, setFilter] = useState('')
   const selectedCount = selectedJids.size
-  const allSelected = users.length > 0 && users.every((u) => selectedJids.has(u.jid))
+
+  // Client-side filter on the loaded user list. mod_http_admin_api
+  // doesn't support server-side filtering and the list size is always
+  // small enough to filter in the browser.
+  const visibleUsers = filter
+    ? users.filter((u) =>
+        u.username.toLowerCase().includes(filter.toLowerCase()) ||
+        u.jid.toLowerCase().includes(filter.toLowerCase())
+      )
+    : users
+  // "Select all" semantics now operate on the *visible* (filtered) rows so
+  // a partial filter + select-all only acts on what the operator sees.
+  const allSelected = visibleUsers.length > 0 && visibleUsers.every((u) => selectedJids.has(u.jid))
   const partiallySelected = selectedCount > 0 && !allSelected
 
   const toggleAll = () => {
-    if (allSelected || partiallySelected) {
-      onSelectionChange(new Set())
+    const next = new Set(selectedJids)
+    if (allSelected) {
+      visibleUsers.forEach((u) => next.delete(u.jid))
     } else {
-      onSelectionChange(new Set(users.map((u) => u.jid)))
+      visibleUsers.forEach((u) => next.add(u.jid))
     }
+    onSelectionChange(next)
   }
 
   const toggleOne = (jid: string) => {
@@ -509,20 +522,27 @@ function UsersTab({
   }
 
   const triggerBulkDelete = () => {
-    const targets = users.filter((u) => selectedJids.has(u.jid))
+    // Only delete what's currently visible AND selected — protects against
+    // stale selections from an earlier filter.
+    const targets = visibleUsers.filter((u) => selectedJids.has(u.jid))
     if (targets.length > 0) onBulkDelete(targets)
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4 gap-4">
-        <input
-          type="text"
-          className="input w-64"
-          placeholder={t('xmpp.domainPlaceholder')}
-          value={domain}
-          onChange={(e) => onDomainChange(e.target.value)}
-        />
+      <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
+        <div className="flex items-center gap-3 text-sm text-gray-400">
+          <span>{t('xmpp.users.domainLabel')}:</span>
+          <code className="px-2 py-1 rounded bg-gray-700 text-gray-200">{domain || '—'}</code>
+          <input
+            type="text"
+            className="input w-56"
+            placeholder={t('xmpp.users.filterPlaceholder')}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            aria-label={t('xmpp.users.filterPlaceholder')}
+          />
+        </div>
         <div className="flex items-center gap-2">
           {selectedCount > 0 && (
             <button
@@ -544,14 +564,14 @@ function UsersTab({
         </div>
       </div>
 
-      {!domain ? (
-        <p className="text-center text-gray-400 py-8">{t('xmpp.domainHint')}</p>
-      ) : loading ? (
+      {loading ? (
         <div className="flex justify-center py-8">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500" />
         </div>
       ) : users.length === 0 ? (
         <p className="text-center text-gray-400 py-8">{t('xmpp.users.noUsers')}</p>
+      ) : visibleUsers.length === 0 ? (
+        <p className="text-center text-gray-400 py-8">{t('xmpp.users.filterNoMatch')}</p>
       ) : (
         <table className="w-full">
           <thead>
@@ -574,7 +594,7 @@ function UsersTab({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
-            {users.map((user) => (
+            {visibleUsers.map((user) => (
               <tr key={user.jid} className="hover:bg-gray-700/50">
                 <td className="table-cell">
                   <input
