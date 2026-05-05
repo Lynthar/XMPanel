@@ -183,7 +183,20 @@
       "kickSuccess": "用户已踢出",
       "kickFailed": "踢出用户失败",
       "confirmDelete": "确定要删除此 XMPP 用户吗？",
-      "confirmKick": "确定要将此用户踢出服务器吗？"
+      "confirmKick": "确定要将此用户踢出服务器吗？",
+      "selectAll": "全选当前页面用户",
+      "bulkDelete": "删除已选 {{count}} 项",
+      "bulkDeleteTitle": "删除选中的 XMPP 用户？",
+      "bulkDeletePrompt": "此操作将永久删除 <strong>{{count}}</strong> 个 XMPP 用户，无法撤销。",
+      "bulkDeleteSuccess": "已删除 {{count}} 个用户",
+      "bulkDeletePartial": "成功 {{ok}}，失败 {{failed}}",
+      "importCsv": "导入 CSV",
+      "importCsvTitle": "从 CSV 批量导入用户",
+      "importCsvHelp": "每行一个用户。格式：<code>username,domain,password</code>。# 开头的行会被跳过，标题行会被自动识别。",
+      "importCsvConfirm": "开始导入",
+      "importCsvSuccess": "已创建 {{count}} 个用户",
+      "importCsvPartial": "成功 {{ok}}，失败 {{failed}}",
+      "importCsvNoRows": "CSV 内未找到有效数据行"
     },
     "sessions": {
       "title": "活跃会话",

@@ -64,7 +64,10 @@ export default function ServerDetail() {
   const [domain, setDomain] = useState('')
   const [mucDomain, setMucDomain] = useState('')
   const [showAddUserModal, setShowAddUserModal] = useState(false)
+  const [showImportCsvModal, setShowImportCsvModal] = useState(false)
   const [pendingDeleteUser, setPendingDeleteUser] = useState<XMPPUser | null>(null)
+  const [pendingBulkDelete, setPendingBulkDelete] = useState<XMPPUser[] | null>(null)
+  const [selectedJids, setSelectedJids] = useState<Set<string>>(new Set())
 
   const { data: server, isLoading: serverLoading } = useQuery({
     queryKey: ['server', serverId],
@@ -115,6 +118,13 @@ export default function ServerDetail() {
     enabled: activeTab === 'users' && !!domain,
   })
 
+  // Clear selection whenever the user list identity changes (domain switch
+  // or query invalidation). Prevents stale checkboxes pointing at JIDs no
+  // longer in the table.
+  useEffect(() => {
+    setSelectedJids(new Set())
+  }, [serverId, domain])
+
   const { data: sessions, isLoading: sessionsLoading } = useQuery({
     queryKey: ['xmpp-sessions', serverId],
     queryFn: async () => {
@@ -155,6 +165,82 @@ export default function ServerDetail() {
     onError: () => toast.error(t('xmpp.users.deleteFailed')),
     onSettled: () => setPendingDeleteUser(null),
   })
+
+  // Bulk delete: serial requests with a small concurrency cap. Per-request
+  // errors are accumulated and surfaced in one toast; UI stays responsive.
+  const runBulkDelete = async (targets: XMPPUser[]) => {
+    setPendingBulkDelete(null)
+    let ok = 0
+    let failed = 0
+    const concurrency = 4
+    let i = 0
+    const worker = async () => {
+      while (i < targets.length) {
+        const idx = i++
+        const u = targets[idx]
+        try {
+          await xmppApi.deleteUser(serverId, u.username, u.domain)
+          ok++
+        } catch {
+          failed++
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, worker))
+    queryClient.invalidateQueries({ queryKey: ['xmpp-users', serverId, domain] })
+    setSelectedJids(new Set())
+    if (failed === 0) {
+      toast.success(t('xmpp.users.bulkDeleteSuccess', { count: ok }))
+    } else {
+      toast.error(t('xmpp.users.bulkDeletePartial', { ok, failed }))
+    }
+  }
+
+  // CSV import: parse a flat "username,domain,password" CSV in the browser
+  // and create users one at a time. Same concurrency / error-aggregation
+  // pattern as bulk delete. Lines starting with '#' or empty are skipped;
+  // a header row "username,domain,password" is auto-detected and skipped.
+  const runCsvImport = async (csvText: string) => {
+    const lines = csvText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    const rows: { username: string; domain: string; password: string }[] = []
+    for (const line of lines) {
+      if (line.startsWith('#')) continue
+      const parts = line.split(',').map((p) => p.trim())
+      if (parts.length < 3) continue
+      const [u, d, p] = parts
+      if (u.toLowerCase() === 'username' && d.toLowerCase() === 'domain') continue // header
+      if (!u || !d || !p) continue
+      rows.push({ username: u, domain: d, password: p })
+    }
+    if (rows.length === 0) {
+      toast.error(t('xmpp.users.importCsvNoRows'))
+      return
+    }
+
+    setShowImportCsvModal(false)
+    let ok = 0
+    let failed = 0
+    let i = 0
+    const concurrency = 4
+    const worker = async () => {
+      while (i < rows.length) {
+        const r = rows[i++]
+        try {
+          await xmppApi.createUser(serverId, r)
+          ok++
+        } catch {
+          failed++
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, worker))
+    queryClient.invalidateQueries({ queryKey: ['xmpp-users', serverId, domain] })
+    if (failed === 0) {
+      toast.success(t('xmpp.users.importCsvSuccess', { count: ok }))
+    } else {
+      toast.error(t('xmpp.users.importCsvPartial', { ok, failed }))
+    }
+  }
 
   if (serverLoading) {
     return (
@@ -253,8 +339,12 @@ export default function ServerDetail() {
             domain={domain}
             onDomainChange={setDomain}
             onAddUser={() => setShowAddUserModal(true)}
+            onImportCsv={() => setShowImportCsvModal(true)}
             onKickUser={(u) => kickUserMutation.mutate({ username: u.username, domain: u.domain })}
             onDeleteUser={(u) => setPendingDeleteUser(u)}
+            selectedJids={selectedJids}
+            onSelectionChange={setSelectedJids}
+            onBulkDelete={(targets) => setPendingBulkDelete(targets)}
           />
         )}
 
@@ -308,6 +398,34 @@ export default function ServerDetail() {
         }}
         onCancel={() => setPendingDeleteUser(null)}
       />
+
+      {/* Bulk delete confirmation */}
+      <ConfirmDialog
+        open={pendingBulkDelete !== null}
+        title={t('xmpp.users.bulkDeleteTitle')}
+        message={
+          <Trans
+            i18nKey="xmpp.users.bulkDeletePrompt"
+            values={{ count: pendingBulkDelete?.length ?? 0 }}
+            components={{ strong: <span className="font-semibold text-white" /> }}
+          />
+        }
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        variant="danger"
+        onConfirm={() => {
+          if (pendingBulkDelete) runBulkDelete(pendingBulkDelete)
+        }}
+        onCancel={() => setPendingBulkDelete(null)}
+      />
+
+      {/* Import CSV modal */}
+      {showImportCsvModal && (
+        <ImportCsvModal
+          onClose={() => setShowImportCsvModal(false)}
+          onImport={runCsvImport}
+        />
+      )}
     </div>
   )
 }
@@ -347,20 +465,50 @@ function TabButton({ active, onClick, icon: Icon, label }: {
 }
 
 function UsersTab({
-  users, loading, domain, onDomainChange, onAddUser, onKickUser, onDeleteUser
+  users, loading, domain, onDomainChange,
+  onAddUser, onImportCsv, onKickUser, onDeleteUser,
+  selectedJids, onSelectionChange, onBulkDelete,
 }: {
   users: XMPPUser[]
   loading: boolean
   domain: string
   onDomainChange: (d: string) => void
   onAddUser: () => void
+  onImportCsv: () => void
   onKickUser: (u: XMPPUser) => void
   onDeleteUser: (u: XMPPUser) => void
+  selectedJids: Set<string>
+  onSelectionChange: (s: Set<string>) => void
+  onBulkDelete: (targets: XMPPUser[]) => void
 }) {
   const { t } = useTranslation()
+  const selectedCount = selectedJids.size
+  const allSelected = users.length > 0 && users.every((u) => selectedJids.has(u.jid))
+  const partiallySelected = selectedCount > 0 && !allSelected
+
+  const toggleAll = () => {
+    if (allSelected || partiallySelected) {
+      onSelectionChange(new Set())
+    } else {
+      onSelectionChange(new Set(users.map((u) => u.jid)))
+    }
+  }
+
+  const toggleOne = (jid: string) => {
+    const next = new Set(selectedJids)
+    if (next.has(jid)) next.delete(jid)
+    else next.add(jid)
+    onSelectionChange(next)
+  }
+
+  const triggerBulkDelete = () => {
+    const targets = users.filter((u) => selectedJids.has(u.jid))
+    if (targets.length > 0) onBulkDelete(targets)
+  }
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-4">
         <input
           type="text"
           className="input w-64"
@@ -368,10 +516,25 @@ function UsersTab({
           value={domain}
           onChange={(e) => onDomainChange(e.target.value)}
         />
-        <button onClick={onAddUser} className="btn btn-primary flex items-center gap-2">
-          <UserPlus className="w-4 h-4" />
-          {t('xmpp.users.addUser')}
-        </button>
+        <div className="flex items-center gap-2">
+          {selectedCount > 0 && (
+            <button
+              onClick={triggerBulkDelete}
+              className="btn btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300"
+            >
+              <Trash2 className="w-4 h-4" />
+              {t('xmpp.users.bulkDelete', { count: selectedCount })}
+            </button>
+          )}
+          <button onClick={onImportCsv} className="btn btn-secondary flex items-center gap-2">
+            <UserPlus className="w-4 h-4" />
+            {t('xmpp.users.importCsv')}
+          </button>
+          <button onClick={onAddUser} className="btn btn-primary flex items-center gap-2">
+            <UserPlus className="w-4 h-4" />
+            {t('xmpp.users.addUser')}
+          </button>
+        </div>
       </div>
 
       {!domain ? (
@@ -386,6 +549,18 @@ function UsersTab({
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-700">
+              <th className="table-header w-10">
+                <input
+                  type="checkbox"
+                  className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-primary-600 focus:ring-primary-500"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = partiallySelected
+                  }}
+                  onChange={toggleAll}
+                  aria-label={t('xmpp.users.selectAll')}
+                />
+              </th>
               <th className="table-header">{t('xmpp.users.jid')}</th>
               <th className="table-header">{t('common.status')}</th>
               <th className="table-header">{t('common.actions')}</th>
@@ -394,6 +569,15 @@ function UsersTab({
           <tbody className="divide-y divide-gray-700">
             {users.map((user) => (
               <tr key={user.jid} className="hover:bg-gray-700/50">
+                <td className="table-cell">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-primary-600 focus:ring-primary-500"
+                    checked={selectedJids.has(user.jid)}
+                    onChange={() => toggleOne(user.jid)}
+                    aria-label={user.jid}
+                  />
+                </td>
                 <td className="table-cell">{user.jid}</td>
                 <td className="table-cell">
                   <span className={clsx('badge', user.online ? 'badge-green' : 'badge-gray')}>
@@ -534,6 +718,88 @@ interface AddUserForm {
   username: string
   domain: string
   password: string
+}
+
+/** Import-CSV modal: lets the operator paste / upload a flat CSV of
+ *  XMPP users to bulk-create. Validation is intentionally permissive —
+ *  the parent component re-validates each row before sending and surfaces
+ *  the per-row failure count. */
+function ImportCsvModal({
+  onClose,
+  onImport,
+}: {
+  onClose: () => void
+  onImport: (csv: string) => void | Promise<void>
+}) {
+  const { t } = useTranslation()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const content = await file.text()
+    setText(content)
+  }
+
+  const submit = async () => {
+    if (!text.trim()) return
+    setBusy(true)
+    try {
+      await onImport(text)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="w-full max-w-xl bg-gray-800 rounded-xl border border-gray-700">
+        <div className="flex items-center justify-between p-4 border-b border-gray-700">
+          <h2 className="text-lg font-semibold text-white">{t('xmpp.users.importCsvTitle')}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <p className="text-sm text-gray-400">
+            <Trans
+              i18nKey="xmpp.users.importCsvHelp"
+              components={{ code: <code className="bg-gray-700 px-1 rounded text-xs" /> }}
+            />
+          </p>
+
+          <input
+            type="file"
+            accept=".csv,text/csv,text/plain"
+            onChange={onFile}
+            className="text-sm text-gray-300 file:mr-3 file:px-3 file:py-1 file:rounded file:border-0 file:bg-gray-700 file:text-white"
+          />
+
+          <textarea
+            className="input font-mono text-sm h-48 resize-y"
+            placeholder={'username,domain,password\nalice,example.com,Strongpw123\nbob,example.com,AnotherPw456'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button onClick={onClose} className="btn btn-secondary" disabled={busy}>
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={submit}
+              disabled={busy || !text.trim()}
+              className="btn btn-primary"
+            >
+              {busy ? '...' : t('xmpp.users.importCsvConfirm')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function AddUserModal({ serverId, onClose, onSuccess }: {

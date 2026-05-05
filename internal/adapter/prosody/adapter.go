@@ -254,7 +254,10 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 
 // GetOnlineSessions lists all live c2s sessions on the configured VirtualHost.
 func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_sessions", nil)
+	// Trailing slash matters: Prosody mounts the route table under
+	// /admin_sessions/ and redirects /admin_sessions → /admin_sessions/.
+	// We hit the canonical form to skip the redirect round-trip.
+	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_sessions/", nil)
 	if err != nil {
 		return nil, err
 	}
