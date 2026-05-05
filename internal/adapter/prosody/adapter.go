@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -228,38 +229,99 @@ func (a *Adapter) ChangePassword(ctx context.Context, username, domain, newPassw
 	return err
 }
 
-// Capabilities reports what mod_http_admin_api in Prosody 13 actually
-// supports. /server/info gives version + site name (no live counts);
-// /users gives a flat user list (we count it for "registered users");
-// nothing else.
+// Capabilities reports what this adapter supports. /server/info and /users
+// come from upstream mod_http_admin_api. The Sessions cluster requires the
+// custom mod_admin_sessions module shipped under prosody/mod_admin_sessions.lua —
+// we mark Sessions as supported because the adapter speaks that wire format;
+// if the operator hasn't loaded the module the requests will return 404 and
+// the panel will surface that as a 502, which is acceptable.
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		OnlineUsersCount:     false,
 		RegisteredUsersCount: true,
 		ActiveSessionsCount:  false,
 		S2SConnectionsCount:  false,
-		Sessions:             false,
+		Sessions:             true,
 		Rooms:                false,
 		Modules:              false,
 	}
 }
 
-// --- Sessions: NOT supported by mod_http_admin_api in Prosody 13 ---
+// --- Sessions: served by the custom mod_admin_sessions module
+//     (see prosody/mod_admin_sessions.lua in this repo). Mounted at
+//     /admin_sessions/ rather than under /admin_api/ because mod_http_admin_api
+//     owns the latter path prefix. ---
 
+// GetOnlineSessions lists all live c2s sessions on the configured VirtualHost.
 func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, error) {
-	return nil, apperrors.ErrNotImplemented
+	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+	var raw []struct {
+		JID         string `json:"jid"`
+		Resource    string `json:"resource"`
+		IPAddress   string `json:"ip_address"`
+		Priority    int    `json:"priority"`
+		Status      string `json:"status"`
+		ConnectedAt string `json:"connected_at"`
+	}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse sessions: %w", err)
+	}
+	sessions := make([]models.XMPPSession, len(raw))
+	for i, r := range raw {
+		sessions[i] = models.XMPPSession{
+			JID:       r.JID,
+			Resource:  r.Resource,
+			IPAddress: r.IPAddress,
+			Priority:  r.Priority,
+			Status:    r.Status,
+		}
+		if r.ConnectedAt != "" {
+			if t, err := time.Parse(time.RFC3339, r.ConnectedAt); err == nil {
+				sessions[i].StartedAt = t
+			}
+		}
+	}
+	return sessions, nil
 }
 
+// GetUserSessions filters online sessions by bare JID. Implemented client-side
+// to avoid a per-user endpoint; for typical hosts this is fine.
 func (a *Adapter) GetUserSessions(ctx context.Context, username, domain string) ([]models.XMPPSession, error) {
-	return nil, apperrors.ErrNotImplemented
+	all, err := a.GetOnlineSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := username + "@" + domain
+	out := make([]models.XMPPSession, 0)
+	for _, s := range all {
+		// session.JID is full ("user@host/resource"); compare bare prefix.
+		if strings.HasPrefix(s.JID, prefix+"/") || s.JID == prefix {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
+// KickSession closes a single c2s session by full JID.
 func (a *Adapter) KickSession(ctx context.Context, jid string) error {
-	return apperrors.ErrNotImplemented
+	// Slashes and other special chars (legal in JID resources per RFC 6122)
+	// must be percent-encoded so they don't fragment the URL path. Prosody's
+	// HTTP router decodes the captured wildcard before passing to handlers.
+	_, err := a.doRequest(ctx, http.MethodDelete,
+		"/admin_sessions/"+url.PathEscape(jid), nil)
+	return err
 }
 
+// KickUser closes every active session for a given username on the host.
+// The domain parameter is informational (mod_admin_sessions scopes to the
+// host it's mounted on).
 func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
-	return apperrors.ErrNotImplemented
+	_, err := a.doRequest(ctx, http.MethodPost,
+		"/admin_sessions/disconnect/"+url.PathEscape(username), nil)
+	return err
 }
 
 // --- MUC rooms: NOT supported by mod_http_admin_api in Prosody 13 ---
@@ -335,12 +397,17 @@ func (a *Adapter) doRequest(ctx context.Context, method, path string, body inter
 	case http.StatusUnauthorized:
 		return nil, apperrors.ErrAuthFailed
 	case http.StatusNotFound:
-		// Distinguish "user not found" from "endpoint not registered".
-		// 13.x admin_api returns text/html for unrouted paths and JSON for
-		// missing resources, but the body discrimination is fragile;
-		// callers that care should check via GET first.
-		if strings.HasPrefix(path, "/admin_api/users/") && method != http.MethodPut {
-			return nil, apperrors.ErrUserNotFound
+		// Distinguish "resource not found" from "endpoint not registered".
+		// Heuristic: any GET/DELETE/PATCH on a leaf URL under a known prefix
+		// is treated as "the resource doesn't exist". Routes that are POST
+		// or unknown prefixes get the louder "endpoint not found" message
+		// so unmounted modules surface clearly during install.
+		switch method {
+		case http.MethodGet, http.MethodDelete, http.MethodPatch:
+			if strings.HasPrefix(path, "/admin_api/users/") ||
+				strings.HasPrefix(path, "/admin_sessions/") {
+				return nil, apperrors.ErrUserNotFound
+			}
 		}
 		return nil, fmt.Errorf("%w: endpoint not found at %s", apperrors.ErrOperationFailed, path)
 	case http.StatusConflict:
