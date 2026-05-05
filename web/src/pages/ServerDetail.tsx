@@ -108,6 +108,13 @@ export default function ServerDetail() {
     if (activeTab === 'rooms' && !caps.rooms) setActiveTab('users')
   }, [caps, activeTab])
 
+  // Auto-fill the user list domain with the server's configured XMPP host
+  // so the list loads as soon as the page mounts. The user can still edit
+  // the box; clearing it falls back to the server host on next mount.
+  useEffect(() => {
+    if (server?.host && !domain) setDomain(server.host)
+  }, [server, domain])
+
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['xmpp-users', serverId, domain],
     queryFn: async () => {

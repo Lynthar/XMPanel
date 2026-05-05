@@ -144,11 +144,13 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 
 // ListUsers returns all known XMPP users.
 //
-// Note: Prosody 13 mod_http_admin_api does NOT scope users by domain — the
-// /users endpoint returns every user on every host the API caller has admin
-// rights on. The `domain` parameter is preserved here for interface
-// compatibility but only used to populate JID/Domain fields client-side.
-func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUser, error) {
+// The `domain` parameter is IGNORED — Prosody 13 mod_http_admin_api scopes
+// users by the host the request hits (Host header → VirtualHost), not by a
+// path parameter. The adapter uses `server.Host` (the operator-configured
+// XMPP virtual host, e.g. "xmpp.example.com") as the domain when building
+// JIDs, so a frontend search box value that happens to be "bulk1" or "orbi"
+// no longer ends up cross-wired into the JID display.
+func (a *Adapter) ListUsers(ctx context.Context, _ string) ([]models.XMPPUser, error) {
 	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/users", nil)
 	if err != nil {
 		return nil, err
@@ -164,6 +166,7 @@ func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUs
 		return nil, fmt.Errorf("failed to parse users: %w", err)
 	}
 
+	domain := a.server.Host
 	users := make([]models.XMPPUser, len(raw))
 	for i, u := range raw {
 		users[i] = models.XMPPUser{
@@ -175,9 +178,9 @@ func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUs
 	return users, nil
 }
 
-// GetUser fetches a single user by username (domain is metadata only —
-// mod_http_admin_api keys users by username within the API caller's host).
-func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models.XMPPUser, error) {
+// GetUser fetches a single user by username. `domain` is ignored for the
+// same reason as ListUsers — see that comment.
+func (a *Adapter) GetUser(ctx context.Context, username, _ string) (*models.XMPPUser, error) {
 	resp, err := a.doRequest(ctx, http.MethodGet,
 		fmt.Sprintf("/admin_api/users/%s", username), nil)
 	if err != nil {
@@ -192,6 +195,7 @@ func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models
 		return nil, fmt.Errorf("failed to parse user: %w", err)
 	}
 
+	domain := a.server.Host
 	return &models.XMPPUser{
 		Username: u.Username,
 		Domain:   domain,
