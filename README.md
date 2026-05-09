@@ -117,7 +117,6 @@ See [`config.example.yaml`](config.example.yaml) for the full schema. Notable fi
 | `security.cookies.secure_override` | `auto` / `always` / `never` | `auto` |
 | `security.rate_limit.trust_x_forwarded_for` | Read client IP from `X-Forwarded-For` (only enable behind a trusted proxy listed in `trusted_proxies`) | `false` |
 | `security.cors.allowed_origins` | List of origins; cannot combine `*` with `allow_credentials: true` | none |
-| `security.mfa.required` | **Currently parsed but not enforced** — admins must enroll voluntarily | `false` |
 
 > **Set both `jwt.secret` and `database.encryption_key`** before going to production. If either is empty, `config.Validate` generates a random one with a warning — sessions and encrypted columns become unreadable across restarts.
 
@@ -197,7 +196,7 @@ Source of truth: `internal/store/models/user.go` `Permissions` map.
 1. Terminate TLS in front (nginx) **and** set `cookies.secure_override: always`
 2. Set `security.jwt.secret` to a ≥32-char random value (persisted)
 3. Set `database.encryption_key` to a base64 32-byte key (persisted; `make generate-key`)
-4. Enable MFA on every privileged account (admin / superadmin / auditor) — `mfa.required: true` is **not yet enforced**, you must enroll manually
+4. Enable MFA on every privileged account (admin / superadmin / auditor) — enrollment is manual via the Settings page
 5. If behind a proxy, set `rate_limit.trust_x_forwarded_for: true` and list the proxy in `rate_limit.trusted_proxies`
 6. Watch the audit log for `auth.login_failed` clusters; consider fail2ban (see `docs/DEPLOY_DEBIAN.md` §6.1 — note: the example filter currently does not match log lines as-is and is documented as a starting point)
 7. Rotate the `database.encryption_key` periodically by adding a second key to the KeyRing — re-encryption is supported but no admin UI exposes it yet

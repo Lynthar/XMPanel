@@ -182,12 +182,6 @@ systemctl start xmpanel
 - **修法**：参见 [`DEPLOY_DEBIAN.md`](DEPLOY_DEBIAN.md) §6.1 的 ⚠️ 段落 —— 要么改代码加一条 stderr 日志（推荐），要么用 cron 把 PG 失败行转储到文件给 fail2ban 读
 - **当前状态**：XMPanel 自身已有 IP+用户名维度的应用层登录限速（`security.password.max_login_attempts` + `lockout_duration`）。在它之上叠 fail2ban 只是网络层兜底，不是必需的
 
-#### `mfa.required: true` 不生效
-
-- **症状**：`config.yaml` 里写了 `security.mfa.required: true`，但创建的新用户登录时**没有强制 MFA 绑定**
-- **现状**：这条配置在 XMPanel 当前版本里**未实施**（代码里只读不用）。如果你需要强制 MFA，目前只能社交工程让管理员主动启用
-- **影响 `--reset-admin`**：reset 后 `mfa_enabled = false`，admin 用纯密码就能登进去，**`mfa.required` 不会拦住这一步**
-
 ---
 
 ## 深度专题：mod_tokenauth select_role bug

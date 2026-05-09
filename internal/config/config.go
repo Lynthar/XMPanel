@@ -38,9 +38,9 @@ type TLSConfig struct {
 	KeyFile  string `yaml:"key_file"`
 }
 
-// DatabaseConfig holds database configuration
+// DatabaseConfig holds database configuration. PostgreSQL is the only
+// supported driver; the connection is opened directly in store.NewDB.
 type DatabaseConfig struct {
-	Driver          string `yaml:"driver"` // sqlite or postgres
 	DSN             string `yaml:"dsn"`
 	EncryptionKey   string `yaml:"encryption_key"`    // Base64 encoded 32-byte key
 	MaxOpenConns    int    `yaml:"max_open_conns"`
@@ -81,9 +81,8 @@ type JWTConfig struct {
 
 // MFAConfig holds MFA configuration
 type MFAConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	Issuer     string `yaml:"issuer"`
-	Required   bool   `yaml:"required"` // If true, all users must enable MFA
+	Enabled bool   `yaml:"enabled"`
+	Issuer  string `yaml:"issuer"`
 }
 
 // PasswordConfig holds password policy configuration
@@ -254,9 +253,6 @@ func applyDefaults(cfg *Config) {
 	}
 
 	// Database defaults (PostgreSQL)
-	if cfg.Database.Driver == "" {
-		cfg.Database.Driver = "postgres"
-	}
 	if cfg.Database.DSN == "" {
 		cfg.Database.DSN = "host=localhost port=5432 user=xmpanel password=xmpanel dbname=xmpanel sslmode=disable"
 	}

@@ -10,9 +10,7 @@ server:
     key_file: ""
 
 database:
-  # XMPanel is PostgreSQL-only. The `driver` field is parsed for backwards
-  # compatibility but ignored at runtime — the driver is hardcoded to postgres.
-  driver: "postgres"
+  # XMPanel is PostgreSQL-only.
   dsn: "host=localhost port=5432 user=xmpanel password=xmpanel dbname=xmpanel sslmode=disable"
   # Base64 32-byte key used by KeyRing (AES-256-GCM) for encrypted columns
   # like xmpp_servers.api_key_encrypted. Generate with `make generate-key`
@@ -35,11 +33,9 @@ security:
     issuer: "xmpanel"
 
   mfa:
+    # MFA is opt-in. Admins enroll voluntarily from the Settings page.
     enabled: true
     issuer: "XMPanel"
-    # Currently parsed but NOT enforced — admins must enroll manually via
-    # the Settings page. Tracked as a known gap.
-    required: false
 
   password:
     min_length: 12
