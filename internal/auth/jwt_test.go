@@ -120,19 +120,3 @@ func TestJWTManager_RejectsWrongIssuer(t *testing.T) {
 	}
 }
 
-func TestJWTManager_RefreshAccessToken(t *testing.T) {
-	m := newTestManager(time.Hour, time.Hour)
-	pair, _ := m.GenerateTokenPair(7, "bob", "operator", "sid", "did")
-
-	newPair, err := m.RefreshAccessToken(pair.RefreshToken)
-	if err != nil {
-		t.Fatalf("RefreshAccessToken: %v", err)
-	}
-	claims, err := m.ValidateToken(newPair.AccessToken, TokenTypeAccess)
-	if err != nil {
-		t.Fatalf("validate refreshed access: %v", err)
-	}
-	if claims.UserID != 7 || claims.SessionID != "sid" {
-		t.Errorf("refreshed claims lost identity: %+v", claims)
-	}
-}

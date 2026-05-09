@@ -24,7 +24,7 @@ build: backend frontend
 
 # Build backend
 backend:
-	CGO_ENABLED=1 $(GOBUILD) -o $(BINARY_NAME) $(MAIN_PATH)
+	CGO_ENABLED=0 $(GOBUILD) -o $(BINARY_NAME) $(MAIN_PATH)
 
 # Build frontend
 frontend:
@@ -61,21 +61,9 @@ clean:
 	rm -rf $(WEB_DIR)/dist
 	rm -rf $(WEB_DIR)/node_modules
 
-# Generate encryption key
+# Generate encryption key (base64 32-byte for database.encryption_key)
 generate-key:
-	@$(GORUN) -e 'package main; import ("crypto/rand"; "encoding/base64"; "fmt"); func main() { k := make([]byte, 32); rand.Read(k); fmt.Println(base64.StdEncoding.EncodeToString(k)) }'
-
-# Initialize database with default admin user
-init-db:
-	$(GORUN) $(MAIN_PATH) --init
-
-# Docker build
-docker-build:
-	docker build -t xmpanel:latest .
-
-# Docker run
-docker-run:
-	docker run -p 8080:8080 -v ./config.yaml:/app/config.yaml xmpanel:latest
+	@head -c 32 /dev/urandom | base64
 
 # Lint
 lint:

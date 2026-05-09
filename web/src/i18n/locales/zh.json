@@ -46,8 +46,6 @@
     "username": "用户名",
     "password": "密码",
     "email": "邮箱",
-    "rememberMe": "记住我",
-    "forgotPassword": "忘记密码？",
     "loginTitle": "登录您的账户",
     "loginButton": "登录",
     "loggingIn": "登录中...",

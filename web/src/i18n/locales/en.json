@@ -46,8 +46,6 @@
     "username": "Username",
     "password": "Password",
     "email": "Email",
-    "rememberMe": "Remember me",
-    "forgotPassword": "Forgot password?",
     "loginTitle": "Sign in to your account",
     "loginButton": "Sign in",
     "loggingIn": "Signing in...",

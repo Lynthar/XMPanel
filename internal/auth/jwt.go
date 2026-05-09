@@ -153,13 +153,3 @@ func (m *JWTManager) ValidateToken(tokenString string, expectedType TokenType) (
 
 	return claims, nil
 }
-
-// RefreshAccessToken generates a new access token from a refresh token
-func (m *JWTManager) RefreshAccessToken(refreshTokenString string) (*TokenPair, error) {
-	claims, err := m.ValidateToken(refreshTokenString, TokenTypeRefresh)
-	if err != nil {
-		return nil, err
-	}
-
-	return m.GenerateTokenPair(claims.UserID, claims.Username, claims.Role, claims.SessionID, claims.DeviceID)
-}

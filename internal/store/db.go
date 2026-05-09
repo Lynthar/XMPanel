@@ -225,22 +225,6 @@ func Migrate(db *DB) error {
 			UNIQUE(host, port)
 		)`,
 
-		// Proxy Servers table
-		`CREATE TABLE IF NOT EXISTS proxy_servers (
-			id SERIAL PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
-			type VARCHAR(50) NOT NULL,
-			host VARCHAR(255) NOT NULL,
-			port INTEGER NOT NULL,
-			stats_endpoint TEXT,
-			auth_user VARCHAR(255),
-			auth_password_encrypted TEXT,
-			enabled BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(host, port)
-		)`,
-
 		// Audit Logs table (with chain hash for integrity)
 		// details is JSONB so callers can filter by structured fields via @>.
 		`CREATE TABLE IF NOT EXISTS audit_logs (
