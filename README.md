@@ -10,7 +10,7 @@ A secure web admin panel for XMPP servers (Prosody and ejabberd) with a unified 
 - XMPP user CRUD + live c2s session listing & disconnect (Prosody requires the bundled `prosody/mod_admin_panel.lua`)
 - MUC room management (ejabberd only — Prosody 13 `mod_http_admin_api` does not expose MUC, so the Rooms tab is hidden via the `/servers/{id}/capabilities` endpoint)
 - JWT auth with short-lived access tokens, refresh-token rotation in an HttpOnly cookie, and double-submit CSRF
-- TOTP-based MFA + recovery codes (one-time view at enrollment)
+- TOTP-based MFA + one-time recovery codes (shown once at enrollment, usable as a fallback login when the authenticator is lost)
 - Argon2id password hashing, configurable policy
 - IP+username login rate limiting, optional global per-IP rate limit
 - Tamper-evident audit log with SHA-256 chain (`/audit/verify` re-hashes and reports the first break)
@@ -88,7 +88,7 @@ Override config path with `XMPANEL_CONFIG=/path/to/config.yaml ./xmpanel`.
 
 ## Database
 
-**PostgreSQL only.** Older versions of this README mentioned SQLite; that path was removed in commit `f79c231`. The `database.driver` config field is parsed but ignored — `internal/store/db.go` always opens a PG connection. Migrations are idempotent SQL run on startup (no migration framework).
+**PostgreSQL only.** Older versions of this README mentioned SQLite; that path was removed in commit `f79c231`. `internal/store/db.go` always opens a PG connection via `lib/pq`. Migrations are idempotent SQL run on startup (no migration framework).
 
 DSN default if none configured:
 
@@ -142,7 +142,9 @@ Enable `mod_http_api` and configure `api_permissions` to allow your admin user. 
 Authenticated routes live under `/api/v1` and require `Authorization: Bearer <access>` plus `X-CSRF-Token` on non-safe methods.
 
 ```
-POST   /api/v1/auth/login                      Login (no CSRF; sets cookies)
+POST   /api/v1/auth/login                      Login (no CSRF; sets cookies). MFA users
+                                               supply one of totp_code or recovery_code
+                                               in the body — never both.
 POST   /api/v1/auth/refresh                    Rotate refresh token (cookie + CSRF)
 POST   /api/v1/auth/logout                     Revoke session
 GET    /api/v1/auth/me                         Current user
@@ -196,9 +198,9 @@ Source of truth: `internal/store/models/user.go` `Permissions` map.
 1. Terminate TLS in front (nginx) **and** set `cookies.secure_override: always`
 2. Set `security.jwt.secret` to a ≥32-char random value (persisted)
 3. Set `database.encryption_key` to a base64 32-byte key (persisted; `make generate-key`)
-4. Enable MFA on every privileged account (admin / superadmin / auditor) — enrollment is manual via the Settings page
+4. Enable MFA on every privileged account (admin / superadmin / auditor) — enrollment is manual via the Settings page; **save the recovery codes shown at enrollment**, they're the only way back in if the authenticator is lost (the `--reset-admin` CLI flag is also available, but only for the `admin` account)
 5. If behind a proxy, set `rate_limit.trust_x_forwarded_for: true` and list the proxy in `rate_limit.trusted_proxies`
-6. Watch the audit log for `auth.login_failed` clusters; consider fail2ban (see `docs/DEPLOY_DEBIAN.md` §6.1 — note: the example filter currently does not match log lines as-is and is documented as a starting point)
+6. Watch the audit log for `auth.login_failed` and `auth.recovery_login_failed` clusters (the latter signals someone burning through recovery codes — usually a stolen account); consider fail2ban (see `docs/DEPLOY_DEBIAN.md` §6.1 — note: the example filter currently does not match log lines as-is and is documented as a starting point)
 7. Rotate the `database.encryption_key` periodically by adding a second key to the KeyRing — re-encryption is supported but no admin UI exposes it yet
 
 ## License

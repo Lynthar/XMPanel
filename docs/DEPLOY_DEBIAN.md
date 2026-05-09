@@ -682,7 +682,6 @@ server:
     enabled: false              # TLS 由 nginx 终结
 
 database:
-  driver: "postgres"
   dsn: "host=localhost port=5432 user=xmpanel password=${XMPANEL_DB_PASS} dbname=xmpanel sslmode=disable"
   encryption_key: "${DB_ENC_KEY}"
   max_open_conns: 25
@@ -698,7 +697,6 @@ security:
   mfa:
     enabled: true
     issuer: "XMPanel"
-    required: false
   password:
     min_length: 12
     require_upper: true
@@ -808,7 +806,11 @@ IMPORTANT: Change this password immediately!
 
 ```bash
 curl -i http://127.0.0.1:8080/health
-# 期望：HTTP/1.1 200 OK + {"status":"ok"}
+# 期望：HTTP/1.1 200 OK + {"status":"ok","database":true}
+# 此时还没在 panel 里加 XMPP 服务器，所以响应不带 "xmpp" 字段。
+# 加完服务器后会带：{"status":"ok","database":true,"xmpp":{"ok":N,"failed":0}}
+# 任一 XMPP 服务器 ping 失败会变成 status=degraded（HTTP 仍是 200，因为
+# panel 自身正常）；DB 不通才会 503。
 ```
 
 ---
@@ -947,6 +949,7 @@ curl -s https://panel.example.com/ | head -20
 | Servers 列表 / 添加 / 删除 / 测试连接 | ✅ |
 | ServerDetail → Users tab：列用户 / 创建 / 删除 / CSV 批量导入 / 批量删除 / 用户名筛选 | ✅ |
 | ServerDetail → Sessions tab（在线 session 列表 / 强制下线） | ✅ 需要装了 §2.8.5 mod_admin_panel |
+| ServerDetail → Users tab：在用户行展开看该用户的活跃 session（点击行内"N active" 徽章 → 列出该用户全部 session → 单条踢下线） | ✅ 需要装了 §2.8.5 mod_admin_panel |
 | Dashboard 的"在线用户数" / "活跃 sessions" 统计 | ⚠️ 显示 — 表示不可用（mod_http_admin_api 不暴露聚合计数） |
 | ServerDetail → Rooms tab | ❌ 不显示（Prosody 13 mod_http_admin_api 不支持 MUC 管理；adapter capabilities 里 rooms=false） |
 

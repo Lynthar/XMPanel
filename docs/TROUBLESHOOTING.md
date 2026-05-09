@@ -163,7 +163,7 @@ sudo -u xmpanel /opt/xmpanel/app/xmpanel --reset-admin 2>&1 | grep -A 4 "ADMIN A
 systemctl start xmpanel
 ```
 
-输出会包含一行 `Password: ...` —— 立刻保存。**MFA 会被同步禁用，admin 现有 sessions 全部撤销**；其他账号（操作员、查看者等）不受影响。
+输出会包含一行 `Password: ...` —— 立刻保存。**MFA 会被同步禁用（含 recovery codes 一并清空，需要重新启用 MFA 时会重新生成），admin 现有 sessions 全部撤销**；其他账号（操作员、查看者等）不受影响。
 
 副作用：admin 的 access token 在剩余 ≤15 分钟 TTL 内仍可用（JWT 服务端无状态）。如果担心被滥用，重置后再 `systemctl restart xmpanel`，配合密码已变 + sessions 已删 → 旧 token 拿来调 `/auth/refresh` 时会因找不到 session 立即被拒。
 
