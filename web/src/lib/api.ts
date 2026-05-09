@@ -198,6 +198,7 @@ export const auditApi = {
     resource_type?: string
     start_time?: string
     end_time?: string
+    details_contains?: string
     limit?: number
     offset?: number
   }) => api.get('/audit', { params }),

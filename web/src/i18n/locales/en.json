@@ -291,7 +291,19 @@
       "user": "User",
       "startDate": "Start Date",
       "endDate": "End Date",
-      "resourceType": "Resource Type"
+      "resourceType": "Resource Type",
+      "allResources": "All resources",
+      "detailsContains": "Details contains (JSON)",
+      "detailsPlaceholder": "{\"reason\":\"invalid_password\"}",
+      "detailsInvalidJson": "Must be valid JSON",
+      "reset": "Reset"
+    },
+    "resourceTypes": {
+      "user": "User",
+      "server": "Server",
+      "xmpp": "XMPP",
+      "room": "Room",
+      "setting": "Setting"
     },
     "verify": {
       "title": "Verify Integrity",
@@ -307,7 +319,12 @@
     "actions": {
       "auth.login": "Login",
       "auth.login_failed": "Login Failed",
+      "auth.recovery_login": "Recovery-Code Login",
+      "auth.recovery_login_failed": "Recovery-Code Login Failed",
       "auth.logout": "Logout",
+      "auth.mfa_enabled": "MFA Enabled",
+      "auth.mfa_disabled": "MFA Disabled",
+      "auth.password_change": "Password Changed",
       "user.create": "User Created",
       "user.update": "User Updated",
       "user.delete": "User Deleted",
@@ -316,7 +333,10 @@
       "server.remove": "Server Removed",
       "xmpp.user_create": "XMPP User Created",
       "xmpp.user_delete": "XMPP User Deleted",
-      "xmpp.user_kick": "XMPP User Kicked"
+      "xmpp.user_kick": "XMPP User Kicked",
+      "xmpp.room_create": "Room Created",
+      "xmpp.room_delete": "Room Deleted",
+      "system.setting_change": "Setting Changed"
     }
   },
   "settings": {

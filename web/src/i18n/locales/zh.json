@@ -291,7 +291,19 @@
       "user": "用户",
       "startDate": "开始日期",
       "endDate": "结束日期",
-      "resourceType": "资源类型"
+      "resourceType": "资源类型",
+      "allResources": "全部资源",
+      "detailsContains": "详情包含 (JSON)",
+      "detailsPlaceholder": "{\"reason\":\"invalid_password\"}",
+      "detailsInvalidJson": "必须是有效的 JSON",
+      "reset": "重置"
+    },
+    "resourceTypes": {
+      "user": "用户",
+      "server": "服务器",
+      "xmpp": "XMPP",
+      "room": "聊天室",
+      "setting": "系统设置"
     },
     "verify": {
       "title": "验证完整性",
@@ -307,7 +319,12 @@
     "actions": {
       "auth.login": "登录",
       "auth.login_failed": "登录失败",
+      "auth.recovery_login": "恢复码登录",
+      "auth.recovery_login_failed": "恢复码登录失败",
       "auth.logout": "退出",
+      "auth.mfa_enabled": "启用 MFA",
+      "auth.mfa_disabled": "禁用 MFA",
+      "auth.password_change": "修改密码",
       "user.create": "创建用户",
       "user.update": "更新用户",
       "user.delete": "删除用户",
@@ -316,7 +333,10 @@
       "server.remove": "删除服务器",
       "xmpp.user_create": "创建 XMPP 用户",
       "xmpp.user_delete": "删除 XMPP 用户",
-      "xmpp.user_kick": "踢出 XMPP 用户"
+      "xmpp.user_kick": "踢出 XMPP 用户",
+      "xmpp.room_create": "创建聊天室",
+      "xmpp.room_delete": "删除聊天室",
+      "system.setting_change": "修改系统设置"
     }
   },
   "settings": {
