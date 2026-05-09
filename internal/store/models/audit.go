@@ -14,12 +14,14 @@ type AuditAction string
 
 const (
 	// Authentication actions
-	AuditActionLogin          AuditAction = "auth.login"
-	AuditActionLoginFailed    AuditAction = "auth.login_failed"
-	AuditActionLogout         AuditAction = "auth.logout"
-	AuditActionMFAEnabled     AuditAction = "auth.mfa_enabled"
-	AuditActionMFADisabled    AuditAction = "auth.mfa_disabled"
-	AuditActionPasswordChange AuditAction = "auth.password_change"
+	AuditActionLogin                AuditAction = "auth.login"
+	AuditActionLoginFailed          AuditAction = "auth.login_failed"
+	AuditActionLogout               AuditAction = "auth.logout"
+	AuditActionMFAEnabled           AuditAction = "auth.mfa_enabled"
+	AuditActionMFADisabled          AuditAction = "auth.mfa_disabled"
+	AuditActionPasswordChange       AuditAction = "auth.password_change"
+	AuditActionRecoveryLogin        AuditAction = "auth.recovery_login"
+	AuditActionRecoveryLoginFailed  AuditAction = "auth.recovery_login_failed"
 
 	// User management actions
 	AuditActionUserCreate AuditAction = "user.create"

@@ -39,6 +39,7 @@ const (
 	MsgMFADisabled         = "auth.mfa_disabled"
 	MsgMFAAlreadyEnabled   = "auth.mfa_already_enabled"
 	MsgMFANotEnabled       = "auth.mfa_not_enabled"
+	MsgRecoveryCodeInvalid = "auth.recovery_code_invalid"
 
 	// User messages
 	MsgUserCreated       = "user.created"
@@ -114,6 +115,7 @@ var messages = map[Locale]map[string]string{
 		MsgMFADisabled:         "Two-factor authentication disabled",
 		MsgMFAAlreadyEnabled:   "Two-factor authentication is already enabled",
 		MsgMFANotEnabled:       "Two-factor authentication is not enabled",
+		MsgRecoveryCodeInvalid: "Invalid recovery code",
 
 		// User
 		MsgUserCreated:       "User created successfully",
@@ -186,6 +188,7 @@ var messages = map[Locale]map[string]string{
 		MsgMFADisabled:         "双因素认证已禁用",
 		MsgMFAAlreadyEnabled:   "双因素认证已经启用",
 		MsgMFANotEnabled:       "双因素认证尚未启用",
+		MsgRecoveryCodeInvalid: "恢复码无效",
 
 		// User
 		MsgUserCreated:       "用户创建成功",

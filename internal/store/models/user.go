@@ -72,11 +72,14 @@ type UpdateUserRequest struct {
 	Role     *Role   `json:"role,omitempty" validate:"omitempty,oneof=admin operator viewer auditor"`
 }
 
-// LoginRequest represents a login request
+// LoginRequest represents a login request. Exactly one of TOTPCode or
+// RecoveryCode is expected when MFA is enabled and the client is responding
+// to an mfa_required prompt; sending both is rejected.
 type LoginRequest struct {
-	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required"`
-	TOTPCode string `json:"totp_code,omitempty"`
+	Username     string `json:"username" validate:"required"`
+	Password     string `json:"password" validate:"required"`
+	TOTPCode     string `json:"totp_code,omitempty"`
+	RecoveryCode string `json:"recovery_code,omitempty"`
 }
 
 // LoginResponse represents a login response. The refresh token is delivered

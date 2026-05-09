@@ -11,6 +11,7 @@ interface LoginForm {
   username: string
   password: string
   totp_code?: string
+  recovery_code?: string
 }
 
 export default function Login() {
@@ -19,11 +20,13 @@ export default function Login() {
   const { setAuth } = useAuthStore()
   const [showPassword, setShowPassword] = useState(false)
   const [mfaRequired, setMfaRequired] = useState(false)
+  const [useRecoveryCode, setUseRecoveryCode] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<LoginForm>()
 
@@ -32,10 +35,25 @@ export default function Login() {
     i18n.changeLanguage(newLang)
   }
 
+  const switchToRecoveryCode = () => {
+    setUseRecoveryCode(true)
+    setValue('totp_code', '')
+  }
+
+  const switchToTOTP = () => {
+    setUseRecoveryCode(false)
+    setValue('recovery_code', '')
+  }
+
   const onSubmit = async (data: LoginForm) => {
     setLoading(true)
     try {
-      const response = await authApi.login(data.username, data.password, data.totp_code)
+      const response = await authApi.login(
+        data.username,
+        data.password,
+        useRecoveryCode ? undefined : data.totp_code,
+        useRecoveryCode ? data.recovery_code : undefined,
+      )
 
       if (response.data.mfa_required) {
         setMfaRequired(true)
@@ -124,7 +142,7 @@ export default function Login() {
             </div>
 
             {/* MFA Code (shown if required) */}
-            {mfaRequired && (
+            {mfaRequired && !useRecoveryCode && (
               <div>
                 <label htmlFor="totp_code" className="block text-sm font-medium text-gray-300 mb-2">
                   <Lock className="w-4 h-4 inline mr-2" />
@@ -139,7 +157,7 @@ export default function Login() {
                   placeholder="000000"
                   maxLength={6}
                   {...register('totp_code', {
-                    required: mfaRequired ? t('validation.required') : false,
+                    required: mfaRequired && !useRecoveryCode ? t('validation.required') : false,
                     pattern: {
                       value: /^\d{6}$/,
                       message: t('validation.required'),
@@ -149,6 +167,48 @@ export default function Login() {
                 {errors.totp_code && (
                   <p className="mt-1 text-sm text-red-400">{errors.totp_code.message}</p>
                 )}
+                <button
+                  type="button"
+                  onClick={switchToRecoveryCode}
+                  className="mt-2 text-sm text-gray-400 hover:text-primary-400 underline"
+                >
+                  {t('auth.useRecoveryCode')}
+                </button>
+              </div>
+            )}
+
+            {/* Recovery code (shown if user clicked the toggle) */}
+            {mfaRequired && useRecoveryCode && (
+              <div>
+                <label htmlFor="recovery_code" className="block text-sm font-medium text-gray-300 mb-2">
+                  <Lock className="w-4 h-4 inline mr-2" />
+                  {t('auth.recoveryCode')}
+                </label>
+                <input
+                  id="recovery_code"
+                  type="text"
+                  autoComplete="one-time-code"
+                  className="input text-center text-lg tracking-widest font-mono uppercase"
+                  placeholder="XXXX-XXXX"
+                  maxLength={9}
+                  {...register('recovery_code', {
+                    required: useRecoveryCode ? t('validation.required') : false,
+                    pattern: {
+                      value: /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/,
+                      message: t('validation.required'),
+                    },
+                  })}
+                />
+                {errors.recovery_code && (
+                  <p className="mt-1 text-sm text-red-400">{errors.recovery_code.message}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={switchToTOTP}
+                  className="mt-2 text-sm text-gray-400 hover:text-primary-400 underline"
+                >
+                  {t('auth.useTOTP')}
+                </button>
               </div>
             )}
 

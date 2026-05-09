@@ -192,18 +192,39 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check MFA if enabled
+	// Check MFA if enabled. Caller may respond to the mfa_required prompt with
+	// either a TOTP code or a one-time recovery code (mutually exclusive).
 	if user.MFAEnabled {
-		if req.TOTPCode == "" {
-			// MFA required but not provided
-			writeJSON(w, http.StatusOK, models.LoginResponse{
-				MFARequired: true,
-			})
+		bothEmpty := req.TOTPCode == "" && req.RecoveryCode == ""
+		bothSet := req.TOTPCode != "" && req.RecoveryCode != ""
+
+		if bothEmpty {
+			writeJSON(w, http.StatusOK, models.LoginResponse{MFARequired: true})
+			return
+		}
+		if bothSet {
+			writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
 			return
 		}
 
-		// Verify TOTP code
-		if user.MFASecret.Valid {
+		if req.RecoveryCode != "" {
+			ok, err := h.verifyAndConsumeRecoveryCode(user.ID, req.RecoveryCode)
+			if err != nil {
+				h.logger.Error("failed to verify recovery code", zap.Error(err))
+				writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+				return
+			}
+			if !ok {
+				h.audit.LogEvent(r, models.AuditActionRecoveryLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
+					map[string]interface{}{"reason": "recovery_code_invalid"})
+				writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgRecoveryCodeInvalid)
+				return
+			}
+			// Successful recovery login — record separately from regular login
+			// so audit reviewers can spot accounts that have fallen back to
+			// recovery codes (often a signal the operator lost their authenticator).
+			h.audit.LogEvent(r, models.AuditActionRecoveryLogin, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username, nil)
+		} else if user.MFASecret.Valid {
 			valid, err := h.totpManager.ValidateCode(user.MFASecret.String, req.TOTPCode)
 			if err != nil || !valid {
 				h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
@@ -659,6 +680,55 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionPasswordChange, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgPasswordChanged)})
+}
+
+// verifyAndConsumeRecoveryCode validates a recovery code against the user's
+// stored set and atomically marks the matching slot consumed. Returns
+// (true, nil) on a valid one-time use; (false, nil) on a wrong code, no
+// stored codes, or all slots already consumed; (false, err) on storage
+// failure. Concurrent attempts are serialized via SELECT FOR UPDATE so two
+// requests cannot consume the same slot.
+func (h *AuthHandler) verifyAndConsumeRecoveryCode(userID int64, code string) (bool, error) {
+	tx, err := h.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck // best-effort rollback if commit didn't run
+
+	var stored sql.NullString
+	if err := tx.QueryRow(`SELECT recovery_codes FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&stored); err != nil {
+		return false, err
+	}
+	if !stored.Valid || stored.String == "" {
+		return false, nil
+	}
+
+	var hashed []string
+	if err := json.Unmarshal([]byte(stored.String), &hashed); err != nil {
+		return false, err
+	}
+
+	rm := auth.NewRecoveryCodeManager()
+	idx, ok, err := rm.VerifyCode(code, hashed, h.hasher)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+
+	hashed[idx] = "" // consume the slot — VerifyCode skips empty entries
+	updated, err := json.Marshal(hashed)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`UPDATE users SET recovery_codes = $1 WHERE id = $2`, string(updated), userID); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Helper functions

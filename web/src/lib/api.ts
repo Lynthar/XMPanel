@@ -76,8 +76,8 @@ api.interceptors.response.use(
 
 // Auth API
 export const authApi = {
-  login: (username: string, password: string, totp_code?: string) =>
-    api.post('/auth/login', { username, password, totp_code }),
+  login: (username: string, password: string, totp_code?: string, recovery_code?: string) =>
+    api.post('/auth/login', { username, password, totp_code, recovery_code }),
 
   logout: () => api.post('/auth/logout'),
 
