@@ -200,7 +200,10 @@
       "importCsvNoRows": "No valid rows found in CSV",
       "domainLabel": "Domain",
       "filterPlaceholder": "Filter by username...",
-      "filterNoMatch": "No users match the current filter"
+      "filterNoMatch": "No users match the current filter",
+      "sessionsColumn": "Sessions",
+      "sessionCount": "{{count}} active",
+      "noSessions": "No active sessions"
     },
     "sessions": {
       "title": "Active Sessions",
@@ -211,6 +214,8 @@
       "connectedAt": "Connected At",
       "priority": "Priority",
       "kick": "Terminate Session",
+      "kickSuccess": "Session terminated",
+      "kickFailed": "Failed to terminate session",
       "confirmKick": "Are you sure you want to terminate this session?"
     },
     "rooms": {

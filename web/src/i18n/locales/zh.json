@@ -200,7 +200,10 @@
       "importCsvNoRows": "CSV 内未找到有效数据行",
       "domainLabel": "域名",
       "filterPlaceholder": "按用户名筛选...",
-      "filterNoMatch": "没有匹配当前筛选的用户"
+      "filterNoMatch": "没有匹配当前筛选的用户",
+      "sessionsColumn": "会话",
+      "sessionCount": "{{count}} 个",
+      "noSessions": "暂无活跃会话"
     },
     "sessions": {
       "title": "活跃会话",
@@ -211,6 +214,8 @@
       "connectedAt": "连接时间",
       "priority": "优先级",
       "kick": "终止会话",
+      "kickSuccess": "会话已终止",
+      "kickFailed": "终止会话失败",
       "confirmKick": "确定要终止此会话吗？"
     },
     "rooms": {

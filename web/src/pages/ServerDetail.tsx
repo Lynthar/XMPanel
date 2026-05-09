@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
@@ -14,6 +14,8 @@ import {
   Trash2,
   X,
   LogOut,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useForm } from 'react-hook-form'
@@ -38,11 +40,24 @@ interface XMPPUser {
 }
 
 interface XMPPSession {
-  jid: string
+  jid: string             // full JID (user@host/resource)
+  bare_jid?: string       // user@host (Prosody mod_admin_panel emits this; missing on others)
+  username?: string
+  host?: string
   resource: string
   ip_address: string
+  secure?: boolean
   priority: number
   status: string
+  connected_at?: string   // ISO 8601, populated for sessions established after mod_admin_panel loaded
+}
+
+// Resolve a session's bare JID, falling back to stripping the resource off the
+// full JID for adapters that don't emit a separate bare_jid field.
+function sessionBareJid(s: XMPPSession): string {
+  if (s.bare_jid) return s.bare_jid
+  const slash = s.jid.indexOf('/')
+  return slash >= 0 ? s.jid.slice(0, slash) : s.jid
 }
 
 interface XMPPRoom {
@@ -132,13 +147,19 @@ export default function ServerDetail() {
     setSelectedJids(new Set())
   }, [serverId, domain])
 
+  // Sessions are needed on both tabs:
+  //   - Sessions tab: full session table.
+  //   - Users tab: count badge per user + inline expandable session list.
+  // We share one query so flipping tabs doesn't trigger a redundant fetch.
   const { data: sessions, isLoading: sessionsLoading } = useQuery({
     queryKey: ['xmpp-sessions', serverId],
     queryFn: async () => {
       const response = await xmppApi.listSessions(serverId)
       return response.data as XMPPSession[]
     },
-    enabled: activeTab === 'sessions' && caps?.sessions === true,
+    enabled:
+      caps?.sessions === true &&
+      (activeTab === 'sessions' || activeTab === 'users'),
     refetchInterval: 10000,
   })
 
@@ -160,6 +181,15 @@ export default function ServerDetail() {
       queryClient.invalidateQueries({ queryKey: ['xmpp-sessions', serverId] })
     },
     onError: () => toast.error(t('xmpp.users.kickFailed')),
+  })
+
+  const kickSessionMutation = useMutation({
+    mutationFn: (fullJid: string) => xmppApi.kickSession(serverId, fullJid),
+    onSuccess: () => {
+      toast.success(t('xmpp.sessions.kickSuccess'))
+      queryClient.invalidateQueries({ queryKey: ['xmpp-sessions', serverId] })
+    },
+    onError: () => toast.error(t('xmpp.sessions.kickFailed')),
   })
 
   const deleteUserMutation = useMutation({
@@ -344,9 +374,12 @@ export default function ServerDetail() {
             users={users || []}
             loading={usersLoading}
             domain={domain}
+            sessions={sessions || []}
+            sessionsAvailable={caps?.sessions === true}
             onAddUser={() => setShowAddUserModal(true)}
             onImportCsv={() => setShowImportCsvModal(true)}
             onKickUser={(u) => kickUserMutation.mutate({ username: u.username, domain: u.domain })}
+            onKickSession={(fullJid) => kickSessionMutation.mutate(fullJid)}
             onDeleteUser={(u) => setPendingDeleteUser(u)}
             selectedJids={selectedJids}
             onSelectionChange={setSelectedJids}
@@ -471,16 +504,19 @@ function TabButton({ active, onClick, icon: Icon, label }: {
 }
 
 function UsersTab({
-  users, loading, domain,
-  onAddUser, onImportCsv, onKickUser, onDeleteUser,
+  users, loading, domain, sessions, sessionsAvailable,
+  onAddUser, onImportCsv, onKickUser, onKickSession, onDeleteUser,
   selectedJids, onSelectionChange, onBulkDelete,
 }: {
   users: XMPPUser[]
   loading: boolean
   domain: string
+  sessions: XMPPSession[]
+  sessionsAvailable: boolean
   onAddUser: () => void
   onImportCsv: () => void
   onKickUser: (u: XMPPUser) => void
+  onKickSession: (fullJid: string) => void
   onDeleteUser: (u: XMPPUser) => void
   selectedJids: Set<string>
   onSelectionChange: (s: Set<string>) => void
@@ -488,7 +524,28 @@ function UsersTab({
 }) {
   const { t } = useTranslation()
   const [filter, setFilter] = useState('')
+  const [expandedJids, setExpandedJids] = useState<Set<string>>(new Set())
   const selectedCount = selectedJids.size
+
+  // Reset expansion state when domain changes — JIDs from a different domain
+  // would be stale and the rows wouldn't render anyway.
+  useEffect(() => {
+    setExpandedJids(new Set())
+  }, [domain])
+
+  // Group sessions by bare JID once per render. This keeps the per-row badge
+  // O(1) instead of scanning the whole sessions array per user. Falls back to
+  // computing bare_jid from the full JID when the adapter doesn't emit it.
+  const sessionsByBareJid = useMemo(() => {
+    const map = new Map<string, XMPPSession[]>()
+    for (const s of sessions) {
+      const bare = sessionBareJid(s)
+      const arr = map.get(bare)
+      if (arr) arr.push(s)
+      else map.set(bare, [s])
+    }
+    return map
+  }, [sessions])
 
   // Client-side filter on the loaded user list. mod_http_admin_api
   // doesn't support server-side filtering and the list size is always
@@ -521,12 +578,23 @@ function UsersTab({
     onSelectionChange(next)
   }
 
+  const toggleExpand = (jid: string) => {
+    const next = new Set(expandedJids)
+    if (next.has(jid)) next.delete(jid)
+    else next.add(jid)
+    setExpandedJids(next)
+  }
+
   const triggerBulkDelete = () => {
     // Only delete what's currently visible AND selected — protects against
     // stale selections from an earlier filter.
     const targets = visibleUsers.filter((u) => selectedJids.has(u.jid))
     if (targets.length > 0) onBulkDelete(targets)
   }
+
+  // Total column count is needed for the expansion row's colSpan. It changes
+  // depending on whether the Sessions column is rendered.
+  const colCount = sessionsAvailable ? 5 : 4
 
   return (
     <div>
@@ -590,52 +658,157 @@ function UsersTab({
               </th>
               <th className="table-header">{t('xmpp.users.jid')}</th>
               <th className="table-header">{t('common.status')}</th>
+              {sessionsAvailable && (
+                <th className="table-header">{t('xmpp.users.sessionsColumn')}</th>
+              )}
               <th className="table-header">{t('common.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
-            {visibleUsers.map((user) => (
-              <tr key={user.jid} className="hover:bg-gray-700/50">
-                <td className="table-cell">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-primary-600 focus:ring-primary-500"
-                    checked={selectedJids.has(user.jid)}
-                    onChange={() => toggleOne(user.jid)}
-                    aria-label={user.jid}
-                  />
-                </td>
-                <td className="table-cell">{user.jid}</td>
-                <td className="table-cell">
-                  <span className={clsx('badge', user.online ? 'badge-green' : 'badge-gray')}>
-                    {user.online ? t('xmpp.users.online') : t('xmpp.users.offline')}
-                  </span>
-                </td>
-                <td className="table-cell">
-                  <div className="flex gap-2">
-                    {user.online && (
-                      <button
-                        onClick={() => onKickUser(user)}
-                        className="p-1 text-yellow-400 hover:text-yellow-300"
-                        title={t('xmpp.users.kick')}
-                      >
-                        <LogOut className="w-4 h-4" />
-                      </button>
+            {visibleUsers.map((user) => {
+              const userSessions = sessionsByBareJid.get(user.jid) ?? []
+              const sessionCount = userSessions.length
+              const expanded = expandedJids.has(user.jid)
+              return (
+                <Fragment key={user.jid}>
+                  <tr className="hover:bg-gray-700/50">
+                    <td className="table-cell">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-primary-600 focus:ring-primary-500"
+                        checked={selectedJids.has(user.jid)}
+                        onChange={() => toggleOne(user.jid)}
+                        aria-label={user.jid}
+                      />
+                    </td>
+                    <td className="table-cell">{user.jid}</td>
+                    <td className="table-cell">
+                      <span className={clsx('badge', user.online ? 'badge-green' : 'badge-gray')}>
+                        {user.online ? t('xmpp.users.online') : t('xmpp.users.offline')}
+                      </span>
+                    </td>
+                    {sessionsAvailable && (
+                      <td className="table-cell">
+                        {sessionCount > 0 ? (
+                          <button
+                            onClick={() => toggleExpand(user.jid)}
+                            className="inline-flex items-center gap-1 text-sm text-primary-400 hover:text-primary-300"
+                            aria-expanded={expanded}
+                            aria-controls={`sessions-${user.jid}`}
+                          >
+                            {expanded ? (
+                              <ChevronDown className="w-4 h-4" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4" />
+                            )}
+                            {t('xmpp.users.sessionCount', { count: sessionCount })}
+                          </button>
+                        ) : (
+                          <span className="text-gray-600">—</span>
+                        )}
+                      </td>
                     )}
-                    <button
-                      onClick={() => onDeleteUser(user)}
-                      className="p-1 text-red-400 hover:text-red-300"
-                      title={t('common.delete')}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                    <td className="table-cell">
+                      <div className="flex gap-2">
+                        {user.online && (
+                          <button
+                            onClick={() => onKickUser(user)}
+                            className="p-1 text-yellow-400 hover:text-yellow-300"
+                            title={t('xmpp.users.kick')}
+                          >
+                            <LogOut className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onDeleteUser(user)}
+                          className="p-1 text-red-400 hover:text-red-300"
+                          title={t('common.delete')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {expanded && sessionsAvailable && (
+                    <tr id={`sessions-${user.jid}`} className="bg-gray-800/40">
+                      <td colSpan={colCount} className="px-4 py-3">
+                        <UserSessionsList
+                          sessions={userSessions}
+                          onKickSession={onKickSession}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
       )}
+    </div>
+  )
+}
+
+function UserSessionsList({
+  sessions,
+  onKickSession,
+}: {
+  sessions: XMPPSession[]
+  onKickSession: (fullJid: string) => void
+}) {
+  const { t } = useTranslation()
+  if (sessions.length === 0) {
+    return <p className="text-sm text-gray-400">{t('xmpp.users.noSessions')}</p>
+  }
+  return (
+    <div className="rounded border border-gray-700 overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-700/50">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium text-gray-300">
+              {t('xmpp.sessions.resource')}
+            </th>
+            <th className="px-3 py-2 text-left font-medium text-gray-300">
+              {t('xmpp.sessions.ip')}
+            </th>
+            <th className="px-3 py-2 text-left font-medium text-gray-300">
+              {t('xmpp.sessions.connectedAt')}
+            </th>
+            <th className="px-3 py-2 text-left font-medium text-gray-300">
+              {t('common.status')}
+            </th>
+            <th className="px-3 py-2 text-right font-medium text-gray-300 w-20">
+              {t('common.actions')}
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-700">
+          {sessions.map((s) => (
+            <tr key={s.jid} className="hover:bg-gray-700/30">
+              <td className="px-3 py-2 font-mono text-xs text-gray-200">
+                {s.resource || '—'}
+              </td>
+              <td className="px-3 py-2 font-mono text-xs text-gray-300">
+                {s.ip_address || '—'}
+              </td>
+              <td className="px-3 py-2 text-gray-400">
+                {s.connected_at ? new Date(s.connected_at).toLocaleString() : '—'}
+              </td>
+              <td className="px-3 py-2 text-gray-300">{s.status || 'available'}</td>
+              <td className="px-3 py-2 text-right">
+                <button
+                  onClick={() => onKickSession(s.jid)}
+                  className="p-1 text-yellow-400 hover:text-yellow-300"
+                  title={t('xmpp.sessions.kick')}
+                  aria-label={t('xmpp.sessions.kick')}
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
