@@ -1,7 +1,6 @@
 package router
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -151,11 +150,9 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	auditHandler := handler.NewAuditHandler(db, logger)
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.CookieSecure())
 
-	// Health check (public)
-	router.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
+	// Health check (public). Aggregate-only response shape — see health.go for
+	// the contract and disclosure rationale.
+	router.HandleFunc("GET /health", newHealthHandler(db, keyRing, logger))
 
 	// Auth routes (public). Login has no CSRF — the user has no session yet
 	// so there's no cookie to mirror; SameSite=Strict on the cookies set by a
