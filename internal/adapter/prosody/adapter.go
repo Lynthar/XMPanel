@@ -21,7 +21,6 @@ import (
 //
 // Endpoint paths and behaviors verified against Prosody 13.0.5 +
 // prosody-modules mod_http_admin_api (commit 971a531654dc, May 2026).
-// See docs/DEPLOY_DEBIAN.md §F for the full path map.
 //
 // Sessions/MUC/Modules are NOT supported by mod_http_admin_api in Prosody 13;
 // those methods return ErrNotImplemented so the panel UI surfaces 501 instead
@@ -236,8 +235,8 @@ func (a *Adapter) ChangePassword(ctx context.Context, username, _, newPassword s
 // custom mod_admin_panel module (prosody/mod_admin_panel.lua in this repo).
 // We mark Sessions as supported because the adapter speaks that wire
 // format; if the operator hasn't loaded the module, requests return 404
-// and the panel surfaces that as a 502 — acceptable, and the deploy doc
-// includes mod_admin_panel as a required step (§2.8.5).
+// and the panel surfaces that as a 502 — acceptable, because loading that
+// module is a required step when setting up a Prosody server for this panel.
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		OnlineUsersCount:     false,

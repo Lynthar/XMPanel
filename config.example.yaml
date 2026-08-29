@@ -101,6 +101,6 @@ xmpp:
   #   type: "prosody"
   #   host: "xmpp.example.com"     # NOT 127.0.0.1 — Prosody routes by Host header.
   #   port: 5280
-  #   api_key: "secret-token:..."  # mod_tokenauth Bearer token; see docs/DEPLOY_DEBIAN.md §2.7
+  #   api_key: "secret-token:..."  # mod_tokenauth Bearer token
   #   tls: false                   # loopback HTTP between Go and Prosody
   #   enabled: true

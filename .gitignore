@@ -48,4 +48,5 @@ web/.env.local
 .env.*.local
 
 # AI tooling
+.claude
 CLAUDE.md

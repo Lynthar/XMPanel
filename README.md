@@ -1,206 +1,138 @@
+<div align="center">
+
+<img src="web/public/favicon.svg" alt="XMPanel" width="72">
+
 # XMPanel
 
-A secure web admin panel for XMPP servers (Prosody and ejabberd) with a unified Go backend and React + TypeScript frontend.
+[![license](https://img.shields.io/github/license/Lynthar/XMPanel)](LICENSE)
+[![go](https://img.shields.io/github/go-mod/go-version/Lynthar/XMPanel)](go.mod)
 
-> **Looking for a real deployment guide?** See [`docs/DEPLOY_DEBIAN.md`](docs/DEPLOY_DEBIAN.md) for an end-to-end Debian 13 + Prosody 13 + PostgreSQL 17 walkthrough, and [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) for symptom-based fixes. This README is just an orientation.
+</div>
 
-## Features
+Self-hosted web admin panel for Prosody XMPP servers, with RBAC, MFA and a tamper-evident audit log. Go + React.
 
-- Manage multiple Prosody / ejabberd servers from one panel (adapter pattern in `internal/adapter/`)
-- XMPP user CRUD + live c2s session listing & disconnect (Prosody requires the bundled `prosody/mod_admin_panel.lua`)
-- MUC room management (ejabberd only — Prosody 13 `mod_http_admin_api` does not expose MUC, so the Rooms tab is hidden via the `/servers/{id}/capabilities` endpoint)
-- JWT auth with short-lived access tokens, refresh-token rotation in an HttpOnly cookie, and double-submit CSRF
-- TOTP-based MFA + recovery codes (one-time view at enrollment)
-- Argon2id password hashing, configurable policy
-- IP+username login rate limiting, optional global per-IP rate limit
-- Tamper-evident audit log with SHA-256 chain (`/audit/verify` re-hashes and reports the first break)
-- AES-256-GCM encryption at rest for stored XMPP API keys (KeyRing supports key rotation)
-- RBAC: `superadmin`, `admin`, `operator`, `viewer`, `auditor`
-- Server-side i18n for auth errors (`en`/`zh`); full client-side i18n via i18next
+English | [简体中文](README.zh-CN.md)
 
-## Architecture
+> **Under construction.** No release yet — you build it from source. The Prosody
+> side has been deployed and used against a real server; the ejabberd adapter is
+> written but hasn't been verified against one. Watch the repository if that's
+> interesting, but don't expect a packaged product.
 
-```
-Browser ─┬─ Vite dev (:5173, /api → :8080) ─┐
-         └─ nginx :443 (TLS) ───────────────┤
-                                            ▼
-                          Go server :8080 (cmd/server)
-                                │
-              middleware: Recovery → SecurityHeaders → RequestID
-                          → LocaleMiddleware → CORS → [RateLimit]
-                                │
-                          handler.* (auth/user/server/xmpp/audit)
-                                │
-                          adapter.XMPPAdapter
-                          ├─ prosody.Adapter (mod_http_admin_api + mod_admin_panel)
-                          └─ ejabberd.Adapter (mod_http_api)
-                                │
-                          PostgreSQL (audit_logs / users / sessions / xmpp_servers / settings)
-```
+It sits outside the XMPP servers, with each server registered separately and
+driven through an adapter, so it can manage several at once. It handles
+accounts, live sessions and MUC rooms.
 
-Backend is Go 1.24 with `net/http` + Go 1.22+ `ServeMux` patterns (no third-party router). Frontend is React 18 + Vite + Tailwind, served from `web/dist/` by the Go binary in production.
+It has its own user system instead of borrowing the server's: short-lived JWTs
+with refresh rotation, TOTP with recovery codes, Argon2id password hashing, five
+permission levels. The audit log is chained with SHA-256, so a modified or
+removed record breaks the chain; stored XMPP API keys are encrypted at rest with
+AES-256-GCM.
 
-## Quick start
+## Install
 
-### Prerequisites
-
-- Go **1.24+** (toolchain pinned to `1.24.7` in `go.mod`)
-- Node **20+**
-- PostgreSQL **14+** (the only supported database — see "Database" below)
-
-### Build & run
+No packages, no container images and no releases; you build it yourself. You'll
+need Go 1.24.7+, Node 20+, and PostgreSQL 14+ (the only supported database).
 
 ```bash
-# 1. Create a PostgreSQL user + database
-sudo -u postgres psql <<SQL
-CREATE USER xmpanel WITH PASSWORD 'change-me';
-CREATE DATABASE xmpanel OWNER xmpanel;
-SQL
+git clone https://github.com/Lynthar/XMPanel.git
+cd XMPanel
+```
 
-# 2. Copy + edit config
+```bash
+sudo -u postgres psql -c "CREATE USER xmpanel WITH PASSWORD 'change-me';"
+sudo -u postgres psql -c "CREATE DATABASE xmpanel OWNER xmpanel;"
+```
+
+```bash
 cp config.example.yaml config.yaml
-# Set database.dsn, security.jwt.secret (>=32 chars), database.encryption_key
-make generate-key   # prints a base64 32-byte key for database.encryption_key
-
-# 3. Build
+make generate-key          # prints the encryption key to paste into config.yaml
 make deps
-make build          # produces ./xmpanel + web/dist/
-
-# 4. Run — first start prints "INITIAL ADMIN ACCOUNT CREATED" with a random
-# 16-char password (only logged once; save it).
+make build
 ./xmpanel
 ```
 
-`./xmpanel` listens on the address from `server.address` (default `:8080`). For production behind nginx see `docs/DEPLOY_DEBIAN.md`.
+First start prints an initial `admin` password once; remember to save it.
 
-### Development
+> **Start it from the repository root.** The frontend is served from
+> `web/dist` by relative path, and the config file defaults to `./config.yaml`.
+> A systemd unit needs `WorkingDirectory=` set accordingly.
+
+Prosody needs preparation on its side: three community modules
+(`mod_http_admin_api`, `mod_tokenauth`, `mod_http_oauth2`), a small patch to
+`mod_tokenauth`, a Bearer token to authenticate with, and this repository's
+`prosody/mod_admin_panel.lua` installed. Upstream's own admin API returns 200 for
+account creation without creating anything, and doesn't expose sessions at all —
+the extra module exists to solve both of those.
+
+## Usage
+
+Open `http://localhost:8080` and sign in as `admin`. If you've lost the password:
 
 ```bash
-make run            # backend on :8080 (no frontend build)
-make dev-frontend   # vite on :5173, proxies /api → :8080
+./xmpanel --reset-admin
 ```
 
-Override config path with `XMPANEL_CONFIG=/path/to/config.yaml ./xmpanel`.
+That resets only the `admin` account — new password, MFA cleared, its sessions
+revoked — then exits.
 
-### Useful CLI flags
+Add a server from the Servers page. Set type to `prosody`, and put the **XMPP
+virtual host name** in the host field, not an IP: `mod_http_admin_api` routes by
+HTTP Host header, so an IP address gets a 404 every time. On a single machine,
+map the domain to loopback in `/etc/hosts`.
 
-- `--reset-admin` — recreate the `admin` account with a fresh random password, clear its MFA, revoke its sessions. Other accounts untouched. Use when the initial admin password is lost.
+The API is reachable directly if you'd rather script it:
 
-## Database
-
-**PostgreSQL only.** Older versions of this README mentioned SQLite; that path was removed in commit `f79c231`. The `database.driver` config field is parsed but ignored — `internal/store/db.go` always opens a PG connection. Migrations are idempotent SQL run on startup (no migration framework).
-
-DSN default if none configured:
-
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<pw>"}'
 ```
-host=localhost port=5432 user=xmpanel password=xmpanel dbname=xmpanel sslmode=disable
-```
 
-## Authentication / cookies
-
-- **Access token**: 15-minute JWT, returned in the JSON login response, attached to API calls via `Authorization: Bearer <token>`.
-- **Refresh token**: 7-day JWT delivered out-of-band in the `xmpanel_refresh` HttpOnly cookie (Path=`/api/v1/auth`, SameSite=Strict). Rotated on every `/auth/refresh`; reuse of an old refresh token kills the entire session.
-- **CSRF token**: random 32-char value in the `csrf_token` cookie (Path=`/`, JS-readable). The SPA mirrors it into `X-CSRF-Token` on every non-safe request; `middleware.CSRFMiddleware.Protect` enforces double-submit on `/auth/refresh` and all authenticated mutations.
-- `cookies.secure_override`: `auto` (default; mirrors `server.tls.enabled`), `always` (force `Secure`; correct when nginx terminates TLS and Go runs HTTP loopback), or `never` (local dev over plain HTTP).
+Non-safe methods also need `X-CSRF-Token`, read from the `csrf_token` cookie.
 
 ## Configuration
 
-See [`config.example.yaml`](config.example.yaml) for the full schema. Notable fields:
+`config.yaml` in the working directory, or wherever `XMPANEL_CONFIG` points.
+`config.example.yaml` is the annotated reference.
 
-| Path | Description | Default |
-|---|---|---|
-| `server.address` | HTTP listen address | `:8080` |
-| `server.tls.enabled` | Direct TLS termination by Go (skip if nginx fronts) | `false` |
-| `database.dsn` | Postgres DSN (libpq style) | local xmpanel/xmpanel |
-| `database.encryption_key` | Base64 32-byte key for AES-GCM at-rest encryption — **set this in production** | auto-generated, ephemeral |
-| `security.jwt.secret` | HS256 signing secret, **≥32 chars enforced** | auto-generated, ephemeral |
-| `security.cookies.secure_override` | `auto` / `always` / `never` | `auto` |
-| `security.rate_limit.trust_x_forwarded_for` | Read client IP from `X-Forwarded-For` (only enable behind a trusted proxy listed in `trusted_proxies`) | `false` |
-| `security.cors.allowed_origins` | List of origins; cannot combine `*` with `allow_credentials: true` | none |
-
-> **Set both `jwt.secret` and `database.encryption_key`** before going to production. If either is empty, `config.Validate` generates a random one with a warning — sessions and encrypted columns become unreadable across restarts.
-
-## XMPP server setup
-
-### Prosody 13
-
-Prosody 13's `mod_http_admin_api` does **not** support a static API key, MUC management, or live session listing. To make XMPanel work end-to-end you need:
-
-1. `mod_http_admin_api` + `mod_tokenauth` + `mod_http_oauth2` enabled on the VirtualHost (community modules)
-2. A patch to `mod_tokenauth.lua`'s `select_role` (silent 401 bug — see `docs/TROUBLESHOOTING.md` deep dive)
-3. A short-lived helper module to mint a Bearer admin token via `mod_tokenauth` (no static key exists)
-4. **`prosody/mod_admin_panel.lua` from this repo** copied into `/etc/prosody/modules/` and enabled on the VirtualHost — it provides real user CRUD (the upstream `PUT /admin_api/users/{u}` returns 200 but does not actually create an account in 13.0.5) and the `/admin_panel/sessions/*` endpoints used by the Sessions tab
-
-Full step-by-step in `docs/DEPLOY_DEBIAN.md` §2. Use the **token** as the API key field when adding the server in the panel.
-
-### ejabberd
-
-Enable `mod_http_api` and configure `api_permissions` to allow your admin user. ejabberd's admin API is more complete than Prosody's; the adapter has not been validated against a real ejabberd server, so expect to verify endpoint paths against your version. See `docs/DEPLOY_DEBIAN.md` Appendix B for a starter config.
-
-## Selected API endpoints
-
-Authenticated routes live under `/api/v1` and require `Authorization: Bearer <access>` plus `X-CSRF-Token` on non-safe methods.
-
-```
-POST   /api/v1/auth/login                      Login (no CSRF; sets cookies)
-POST   /api/v1/auth/refresh                    Rotate refresh token (cookie + CSRF)
-POST   /api/v1/auth/logout                     Revoke session
-GET    /api/v1/auth/me                         Current user
-POST   /api/v1/auth/mfa/{setup,verify,disable} TOTP enrollment / disable
-POST   /api/v1/auth/password                   Change own password
-
-GET    /api/v1/users                           Admin/SuperAdmin only
-POST   /api/v1/users
-GET    /api/v1/users/{id}
-PUT    /api/v1/users/{id}
-DELETE /api/v1/users/{id}
-
-GET    /api/v1/servers
-POST   /api/v1/servers                         servers:write
-GET    /api/v1/servers/{id}
-PUT    /api/v1/servers/{id}                    servers:write
-DELETE /api/v1/servers/{id}                    servers:write
-GET    /api/v1/servers/{id}/stats
-GET    /api/v1/servers/{id}/capabilities       Hint set the UI uses to hide tabs
-POST   /api/v1/servers/{id}/test               Test connection
-
-GET    /api/v1/servers/{serverId}/users        XMPP-side ops
-POST   /api/v1/servers/{serverId}/users                                xmpp:write
-DELETE /api/v1/servers/{serverId}/users/{username}                     xmpp:write
-POST   /api/v1/servers/{serverId}/users/{username}/kick                xmpp:write
-GET    /api/v1/servers/{serverId}/sessions
-DELETE /api/v1/servers/{serverId}/sessions/{jid}                       xmpp:write
-GET    /api/v1/servers/{serverId}/rooms        ejabberd only
-POST   /api/v1/servers/{serverId}/rooms                                xmpp:write
-DELETE /api/v1/servers/{serverId}/rooms/{room}                         xmpp:write
-
-GET    /api/v1/audit                           audit:read
-GET    /api/v1/audit/verify                    audit:read
-GET    /api/v1/audit/export                    audit:read (CSV)
-```
-
-## Roles and permissions
-
-| Role | Default permissions |
+| Key | Notes |
 |---|---|
-| `superadmin` | `*` (all) |
-| `admin` | `users:*`, `servers:*`, `xmpp:*`, `audit:read` |
-| `operator` | `servers:read`, `xmpp:read`, `xmpp:write` |
-| `viewer` | `servers:read`, `xmpp:read` |
-| `auditor` | `audit:read`, `servers:read` |
+| `database.dsn` | PostgreSQL connection string |
+| `database.encryption_key` | base64 32 bytes. **Leave it empty and one is generated per start**, making previously encrypted columns unreadable after a restart |
+| `security.jwt.secret` | At least 32 characters, enforced. Same restart caveat — every session is invalidated |
+| `security.cookies.secure_override` | `auto`, `always` or `never` — use `always` behind a TLS-terminating proxy |
+| `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP |
+| `server.address` | Default `:8080` |
 
-Source of truth: `internal/store/models/user.go` `Permissions` map.
+Set both of the secrets above before you put real data in.
 
-## Security checklist for production
+## Limitations
 
-1. Terminate TLS in front (nginx) **and** set `cookies.secure_override: always`
-2. Set `security.jwt.secret` to a ≥32-char random value (persisted)
-3. Set `database.encryption_key` to a base64 32-byte key (persisted; `make generate-key`)
-4. Enable MFA on every privileged account (admin / superadmin / auditor) — enrollment is manual via the Settings page
-5. If behind a proxy, set `rate_limit.trust_x_forwarded_for: true` and list the proxy in `rate_limit.trusted_proxies`
-6. Watch the audit log for `auth.login_failed` clusters; consider fail2ban (see `docs/DEPLOY_DEBIAN.md` §6.1 — note: the example filter currently does not match log lines as-is and is documented as a starting point)
-7. Rotate the `database.encryption_key` periodically by adding a second key to the KeyRing — re-encryption is supported but no admin UI exposes it yet
+- **The ejabberd adapter is unverified.** It's written against the documented
+  API but hasn't been run against a real ejabberd server, so its stated
+  capabilities are intent, not confirmed behaviour.
+- **MUC room management only exists on the ejabberd side** — which is the
+  unverified one. Prosody's upstream API doesn't expose rooms.
+- **XMPP accounts can be created, listed and deleted, but not edited.** Password
+  changes exist in the adapter layer with no route or UI reaching them.
+- **PostgreSQL only.** No SQLite, no MySQL.
+- **No Dockerfile and no compose file.** Source build and a systemd unit.
+- **Refreshing in several browser tabs at once trips the token reuse detector**
+  and signs that user out everywhere.
+
+## Security
+
+Sessions use short-lived access tokens with refresh rotation; a refresh token
+presented twice invalidates the whole session. CSRF uses double-submit on every
+authenticated mutation. Passwords are hashed with Argon2id. Stored XMPP API keys
+are encrypted with AES-256-GCM.
+
+Failed logins are recorded in the database audit log but not written to stderr,
+so fail2ban has nothing to match on yet.
+
+There's no private disclosure channel; please don't file sensitive findings as
+public issues.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE). Copyright (c) 2026 Lynthar.
