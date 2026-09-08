@@ -28,17 +28,17 @@ type XMPPServer struct {
 
 // CreateXMPPServerRequest represents a request to add an XMPP server
 type CreateXMPPServerRequest struct {
-	Name       string     `json:"name" validate:"required,min=1,max=100"`
-	Type       ServerType `json:"type" validate:"required,oneof=prosody ejabberd"`
-	Host       string     `json:"host" validate:"required,hostname|ip"`
-	Port       int        `json:"port" validate:"required,min=1,max=65535"`
-	APIKey     string     `json:"api_key" validate:"required"`
+	Name       string     `json:"name"`
+	Type       ServerType `json:"type"`
+	Host       string     `json:"host"`
+	Port       int        `json:"port"`
+	APIKey     string     `json:"api_key"`
 	TLSEnabled bool       `json:"tls_enabled"`
 }
 
 // UpdateXMPPServerRequest represents a request to update an XMPP server
 type UpdateXMPPServerRequest struct {
-	Name       *string `json:"name,omitempty" validate:"omitempty,min=1,max=100"`
+	Name       *string `json:"name,omitempty"`
 	APIKey     *string `json:"api_key,omitempty"`
 	TLSEnabled *bool   `json:"tls_enabled,omitempty"`
 	Enabled    *bool   `json:"enabled,omitempty"`
@@ -56,9 +56,9 @@ type XMPPUser struct {
 
 // CreateXMPPUserRequest represents a request to create an XMPP user
 type CreateXMPPUserRequest struct {
-	Username string `json:"username" validate:"required,min=1,max=64"`
-	Domain   string `json:"domain" validate:"required,hostname"`
-	Password string `json:"password" validate:"required,min=8"`
+	Username string `json:"username"`
+	Domain   string `json:"domain"`
+	Password string `json:"password"`
 }
 
 // XMPPSession represents an active XMPP session
@@ -73,21 +73,21 @@ type XMPPSession struct {
 
 // XMPPRoom represents a MUC room
 type XMPPRoom struct {
-	JID          string    `json:"jid"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	Occupants    int       `json:"occupants"`
-	Public       bool      `json:"public"`
-	Persistent   bool      `json:"persistent"`
-	MembersOnly  bool      `json:"members_only"`
-	Moderated    bool      `json:"moderated"`
-	CreatedAt    time.Time `json:"created_at,omitempty"`
+	JID         string    `json:"jid"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Occupants   int       `json:"occupants"`
+	Public      bool      `json:"public"`
+	Persistent  bool      `json:"persistent"`
+	MembersOnly bool      `json:"members_only"`
+	Moderated   bool      `json:"moderated"`
+	CreatedAt   time.Time `json:"created_at,omitempty"`
 }
 
 // CreateXMPPRoomRequest represents a request to create a MUC room
 type CreateXMPPRoomRequest struct {
-	Name        string `json:"name" validate:"required,min=1,max=64"`
-	Domain      string `json:"domain" validate:"required,hostname"`
+	Name        string `json:"name"`
+	Domain      string `json:"domain"`
 	Description string `json:"description,omitempty"`
 	Public      bool   `json:"public"`
 	Persistent  bool   `json:"persistent"`
@@ -96,12 +96,12 @@ type CreateXMPPRoomRequest struct {
 
 // ServerStats represents XMPP server statistics
 type ServerStats struct {
-	OnlineUsers    int                    `json:"online_users"`
-	RegisteredUsers int                   `json:"registered_users"`
-	ActiveSessions int                    `json:"active_sessions"`
-	S2SConnections int                    `json:"s2s_connections"`
-	Uptime         int64                  `json:"uptime_seconds"`
-	Version        string                 `json:"version"`
-	Modules        []string               `json:"modules,omitempty"`
-	Extra          map[string]interface{} `json:"extra,omitempty"`
+	OnlineUsers     int                    `json:"online_users"`
+	RegisteredUsers int                    `json:"registered_users"`
+	ActiveSessions  int                    `json:"active_sessions"`
+	S2SConnections  int                    `json:"s2s_connections"`
+	Uptime          int64                  `json:"uptime_seconds"`
+	Version         string                 `json:"version"`
+	Modules         []string               `json:"modules,omitempty"`
+	Extra           map[string]interface{} `json:"extra,omitempty"`
 }

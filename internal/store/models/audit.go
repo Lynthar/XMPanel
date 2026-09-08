@@ -14,14 +14,14 @@ type AuditAction string
 
 const (
 	// Authentication actions
-	AuditActionLogin                AuditAction = "auth.login"
-	AuditActionLoginFailed          AuditAction = "auth.login_failed"
-	AuditActionLogout               AuditAction = "auth.logout"
-	AuditActionMFAEnabled           AuditAction = "auth.mfa_enabled"
-	AuditActionMFADisabled          AuditAction = "auth.mfa_disabled"
-	AuditActionPasswordChange       AuditAction = "auth.password_change"
-	AuditActionRecoveryLogin        AuditAction = "auth.recovery_login"
-	AuditActionRecoveryLoginFailed  AuditAction = "auth.recovery_login_failed"
+	AuditActionLogin               AuditAction = "auth.login"
+	AuditActionLoginFailed         AuditAction = "auth.login_failed"
+	AuditActionLogout              AuditAction = "auth.logout"
+	AuditActionMFAEnabled          AuditAction = "auth.mfa_enabled"
+	AuditActionMFADisabled         AuditAction = "auth.mfa_disabled"
+	AuditActionPasswordChange      AuditAction = "auth.password_change"
+	AuditActionRecoveryLogin       AuditAction = "auth.recovery_login"
+	AuditActionRecoveryLoginFailed AuditAction = "auth.recovery_login_failed"
 
 	// User management actions
 	AuditActionUserCreate AuditAction = "user.create"
@@ -170,42 +170,42 @@ func (e *AuditLogEntry) ComputeHash(id int64, timestamp time.Time, prevHash stri
 	return hex.EncodeToString(hash[:])
 }
 
-// VerifyChain verifies the integrity of a chain of audit logs
-func VerifyChain(logs []AuditLog) (bool, int, error) {
-	if len(logs) == 0 {
-		return true, 0, nil
+// VerifyEntry checks one audit row: that its stored hash still matches its
+// contents, and that the prev_hash it carries is the hash of the row before
+// it. Pass prev == nil for the first row of the range under verification —
+// the link back to rows outside the range is not checked, so a range that
+// starts mid-chain cannot prove nothing before it was removed.
+//
+// Both halves are needed. Recomputing each hash on its own accepts a chain
+// with a row deleted, because every surviving row still hashes to itself.
+func VerifyEntry(prev, log *AuditLog) bool {
+	entry := &AuditLogEntry{
+		Username:     log.Username,
+		Action:       log.Action,
+		ResourceType: log.ResourceType,
+		IPAddress:    log.IPAddress.String,
+		UserAgent:    log.UserAgent.String,
+		RequestID:    log.RequestID.String,
 	}
 
-	for i, log := range logs {
-		entry := &AuditLogEntry{
-			Username:     log.Username,
-			Action:       log.Action,
-			ResourceType: log.ResourceType,
-			IPAddress:    log.IPAddress.String,
-			UserAgent:    log.UserAgent.String,
-			RequestID:    log.RequestID.String,
-		}
-
-		if log.ResourceID.Valid {
-			entry.ResourceID = log.ResourceID.String
-		}
-
-		if log.Details.Valid {
-			json.Unmarshal([]byte(log.Details.String), &entry.Details)
-		}
-
-		prevHash := ""
-		if log.PrevHash.Valid {
-			prevHash = log.PrevHash.String
-		}
-
-		expectedHash := entry.ComputeHash(log.ID, log.CreatedAt, prevHash)
-		if expectedHash != log.Hash {
-			return false, i, nil
-		}
+	if log.ResourceID.Valid {
+		entry.ResourceID = log.ResourceID.String
 	}
 
-	return true, -1, nil
+	if log.Details.Valid {
+		json.Unmarshal([]byte(log.Details.String), &entry.Details)
+	}
+
+	prevHash := ""
+	if log.PrevHash.Valid {
+		prevHash = log.PrevHash.String
+	}
+
+	if prev != nil && prevHash != prev.Hash {
+		return false
+	}
+
+	return entry.ComputeHash(log.ID, log.CreatedAt, prevHash) == log.Hash
 }
 
 // AuditLogFilter represents filters for querying audit logs

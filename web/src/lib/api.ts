@@ -210,4 +210,20 @@ export const auditApi = {
     api.get('/audit/export', { params, responseType: 'blob' }),
 }
 
+/**
+ * Message for a failed list query. The sidebar shows every page to every
+ * role, so a viewer opening Users gets a 403 — which has to read as "not
+ * allowed", never as an empty list.
+ *
+ * @param error - the error react-query surfaced
+ * @param t - i18next translator
+ * @returns a translated, user-facing sentence
+ */
+export function listErrorMessage(error: unknown, t: (key: string) => string): string {
+  const status = (error as { response?: { status?: number } } | null)?.response?.status
+  if (status === 403) return t('errors.forbidden')
+  if (status === 401) return t('errors.unauthorized')
+  return t('errors.generic')
+}
+
 export default api

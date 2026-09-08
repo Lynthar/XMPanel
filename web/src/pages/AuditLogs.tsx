@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { auditApi } from '@/lib/api'
+import { auditApi, listErrorMessage } from '@/lib/api'
 import {
   FileText,
   Download,
@@ -130,7 +130,7 @@ export default function AuditLogs() {
     }
   })()
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['audit-logs', filters, page, detailsValid],
     queryFn: async () => {
       const response = await auditApi.list({
@@ -189,9 +189,16 @@ export default function AuditLogs() {
     }
   }
 
+  // Use the value refetch() resolves with: verifyResult is what this closure
+  // captured at render time, one run stale. A failed request is reported
+  // separately from a broken chain.
   const handleVerify = async () => {
-    await verifyChain()
-    if (verifyResult?.valid) {
+    const { data: result, isError: requestFailed } = await verifyChain()
+    if (requestFailed || !result) {
+      toast.error(t('errors.generic'))
+      return
+    }
+    if (result.valid) {
       toast.success(t('audit.verifySuccess'))
     } else {
       toast.error(t('audit.verifyFailure'))
@@ -337,6 +344,17 @@ export default function AuditLogs() {
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+          </div>
+        ) : isError ? (
+          /* Without this branch a rejected request falls through to the empty
+             state, so "you may not read the audit log" reads as "there is
+             nothing in it". */
+          <div className="text-center py-12">
+            <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <p className="text-gray-300">{listErrorMessage(error, t)}</p>
+            <button onClick={() => refetch()} className="btn btn-secondary mt-4">
+              {t('common.refresh')}
+            </button>
           </div>
         ) : logs.length === 0 ? (
           <div className="text-center py-12">

@@ -1,6 +1,8 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import toast from 'react-hot-toast'
 import { useAuthStore } from '@/store/auth'
+import { authApi } from '@/lib/api'
 import {
   LayoutDashboard,
   Server,
@@ -29,9 +31,18 @@ export default function Layout() {
   const navigate = useNavigate()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const handleLogout = () => {
-    logout()
-    navigate('/login')
+  // Only the server call deletes the session row and expires the refresh
+  // cookie; clearing the store alone lets the next page load sign back in.
+  // Local state is cleared even when the call fails: the user asked to leave.
+  const handleLogout = async () => {
+    try {
+      await authApi.logout()
+    } catch {
+      toast.error(t('auth.logoutFailed'))
+    } finally {
+      logout()
+      navigate('/login')
+    }
   }
 
   const toggleLanguage = () => {

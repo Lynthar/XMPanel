@@ -43,6 +43,7 @@
   "auth": {
     "login": "登录",
     "logout": "退出登录",
+    "logoutFailed": "连不上服务器，已在本地退出，但服务端会话可能仍然有效。",
     "username": "用户名",
     "password": "密码",
     "email": "邮箱",

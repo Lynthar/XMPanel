@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -12,14 +13,12 @@ import (
 
 // RateLimiter implements a token bucket rate limiter
 type RateLimiter struct {
-	mu                 sync.Mutex
-	buckets            map[string]*bucket
-	rate               float64
-	burst              int
-	cleanup            time.Duration
-	lastClean          time.Time
-	trustedProxies     []*net.IPNet
-	trustXForwardedFor bool
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	rate      float64
+	burst     int
+	cleanup   time.Duration
+	lastClean time.Time
 }
 
 type bucket struct {
@@ -29,32 +28,13 @@ type bucket struct {
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(cfg config.RateLimitConfig) *RateLimiter {
-	rl := &RateLimiter{
-		buckets:            make(map[string]*bucket),
-		rate:               cfg.RequestsPerSecond,
-		burst:              cfg.Burst,
-		cleanup:            5 * time.Minute,
-		lastClean:          time.Now(),
-		trustXForwardedFor: cfg.TrustXForwardedFor,
+	return &RateLimiter{
+		buckets:   make(map[string]*bucket),
+		rate:      cfg.RequestsPerSecond,
+		burst:     cfg.Burst,
+		cleanup:   5 * time.Minute,
+		lastClean: time.Now(),
 	}
-
-	// Parse trusted proxies
-	for _, proxy := range cfg.TrustedProxies {
-		// Handle single IPs by adding /32 or /128
-		if !strings.Contains(proxy, "/") {
-			if strings.Contains(proxy, ":") {
-				proxy += "/128"
-			} else {
-				proxy += "/32"
-			}
-		}
-		_, network, err := net.ParseCIDR(proxy)
-		if err == nil {
-			rl.trustedProxies = append(rl.trustedProxies, network)
-		}
-	}
-
-	return rl
 }
 
 // Allow checks if a request from the given key should be allowed
@@ -104,11 +84,12 @@ func (rl *RateLimiter) cleanupBuckets() {
 	}
 }
 
-// RateLimit middleware limits requests based on client IP
+// RateLimit middleware limits requests based on client IP. Register it after
+// ClientIP, or every request behind a proxy shares one bucket.
 func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := limiter.getClientIP(r)
+			key := GetClientIP(r)
 
 			if !limiter.Allow(key) {
 				w.Header().Set("Retry-After", "1")
@@ -123,15 +104,15 @@ func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 // LoginRateLimiter specifically limits login attempts
 type LoginRateLimiter struct {
-	mu        sync.Mutex
-	attempts  map[string]*loginAttempts
-	maxTries  int
-	window    time.Duration
+	mu       sync.Mutex
+	attempts map[string]*loginAttempts
+	maxTries int
+	window   time.Duration
 }
 
 type loginAttempts struct {
-	count     int
-	firstTry  time.Time
+	count       int
+	firstTry    time.Time
 	lockedUntil time.Time
 }
 
@@ -197,61 +178,92 @@ func (lr *LoginRateLimiter) RecordSuccess(key string) {
 	delete(lr.attempts, key)
 }
 
-// getClientIP extracts the client IP from the request, validating proxy headers
-func (rl *RateLimiter) getClientIP(r *http.Request) string {
-	remoteIP := extractIP(r.RemoteAddr)
+// ClientIPResolver decides which address counts as the caller's. It is the
+// only place proxy headers are believed: rate limiting, login lockout, the
+// sessions and users IP columns and every audit row all read its answer, so
+// two implementations would mean the audit log and the limiter disagree about
+// who did something.
+type ClientIPResolver struct {
+	trustedProxies     []*net.IPNet
+	trustXForwardedFor bool
+}
 
-	// If X-Forwarded-For trust is disabled, always use RemoteAddr
-	if !rl.trustXForwardedFor {
-		return remoteIP
-	}
+// NewClientIPResolver builds a resolver from the trusted-proxy settings.
+// Unparseable entries are dropped; an empty list means no proxy is trusted,
+// so the headers are ignored however trustXForwardedFor is set.
+func NewClientIPResolver(trustXForwardedFor bool, trustedProxies []string) *ClientIPResolver {
+	res := &ClientIPResolver{trustXForwardedFor: trustXForwardedFor}
 
-	// Only trust X-Forwarded-For if request comes from a trusted proxy
-	if !rl.isTrustedProxy(remoteIP) {
-		return remoteIP
-	}
-
-	// Check X-Forwarded-For header
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		// X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
-		// Take the first IP (original client)
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			clientIP := strings.TrimSpace(ips[0])
-			if clientIP != "" {
-				return clientIP
+	for _, proxy := range trustedProxies {
+		// Handle single IPs by adding /32 or /128
+		if !strings.Contains(proxy, "/") {
+			if strings.Contains(proxy, ":") {
+				proxy += "/128"
+			} else {
+				proxy += "/32"
 			}
+		}
+		_, network, err := net.ParseCIDR(proxy)
+		if err == nil {
+			res.trustedProxies = append(res.trustedProxies, network)
 		}
 	}
 
-	// Check X-Real-IP header
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return strings.TrimSpace(xri)
+	return res
+}
+
+// Resolve returns the caller's IP, consulting X-Forwarded-For / X-Real-IP
+// only when the connection itself comes from a trusted proxy. Anyone can set
+// those headers, so trusting them unconditionally lets a client pick its own
+// rate-limit bucket and its own audit trail.
+func (res *ClientIPResolver) Resolve(r *http.Request) string {
+	remoteIP := extractIP(r.RemoteAddr)
+
+	if !res.trustXForwardedFor || !res.isTrustedProxy(remoteIP) {
+		return remoteIP
+	}
+
+	// X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
+	// Take the first IP (original client)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if clientIP := strings.TrimSpace(strings.Split(xff, ",")[0]); clientIP != "" {
+			return clientIP
+		}
+	}
+
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
 	}
 
 	return remoteIP
 }
 
 // isTrustedProxy checks if the given IP is in the trusted proxies list
-func (rl *RateLimiter) isTrustedProxy(ip string) bool {
-	if len(rl.trustedProxies) == 0 {
-		return false
-	}
-
+func (res *ClientIPResolver) isTrustedProxy(ip string) bool {
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return false
 	}
 
-	for _, network := range rl.trustedProxies {
+	for _, network := range res.trustedProxies {
 		if network.Contains(parsedIP) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// ClientIP resolves the caller's address once per request and stores it for
+// GetClientIP. Register it ahead of RateLimit and of every handler that
+// records an IP.
+func ClientIP(res *ClientIPResolver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), contextKeyClientIP, res.Resolve(r))
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // extractIP extracts the IP address from an address string (removes port)
@@ -272,8 +284,12 @@ func extractIP(addr string) string {
 	return addr
 }
 
-// GetClientIP is a standalone function for use outside rate limiter
-// This function does NOT trust proxy headers by default for security
+// GetClientIP returns the address the ClientIP middleware resolved for this
+// request. Without that middleware it falls back to the peer address, which
+// trusts no header — the safe answer, never a spoofable one.
 func GetClientIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(contextKeyClientIP).(string); ok {
+		return ip
+	}
 	return extractIP(r.RemoteAddr)
 }

@@ -59,25 +59,25 @@ type Session struct {
 
 // CreateUserRequest represents a request to create a user
 type CreateUserRequest struct {
-	Username string `json:"username" validate:"required,min=3,max=32,alphanum"`
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required,min=12,max=128"`
-	Role     Role   `json:"role" validate:"required,oneof=admin operator viewer auditor"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Role     Role   `json:"role"`
 }
 
 // UpdateUserRequest represents a request to update a user
 type UpdateUserRequest struct {
-	Email    *string `json:"email,omitempty" validate:"omitempty,email"`
-	Password *string `json:"password,omitempty" validate:"omitempty,min=12,max=128"`
-	Role     *Role   `json:"role,omitempty" validate:"omitempty,oneof=admin operator viewer auditor"`
+	Email    *string `json:"email,omitempty"`
+	Password *string `json:"password,omitempty"`
+	Role     *Role   `json:"role,omitempty"`
 }
 
 // LoginRequest represents a login request. Exactly one of TOTPCode or
 // RecoveryCode is expected when MFA is enabled and the client is responding
 // to an mfa_required prompt; sending both is rejected.
 type LoginRequest struct {
-	Username     string `json:"username" validate:"required"`
-	Password     string `json:"password" validate:"required"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
 	TOTPCode     string `json:"totp_code,omitempty"`
 	RecoveryCode string `json:"recovery_code,omitempty"`
 }
@@ -99,6 +99,14 @@ var Permissions = map[Role][]string{
 	RoleOperator:   {"servers:read", "xmpp:read", "xmpp:write"},
 	RoleViewer:     {"servers:read", "xmpp:read"},
 	RoleAuditor:    {"audit:read", "servers:read"},
+}
+
+// IsValid reports whether r appears in the permission table. Roles outside it
+// carry no permissions at all, so storing one locks the account out of every
+// endpoint instead of failing loudly at write time.
+func (r Role) IsValid() bool {
+	_, ok := Permissions[r]
+	return ok
 }
 
 // HasPermission checks if a role has a specific permission

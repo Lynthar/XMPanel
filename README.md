@@ -101,7 +101,7 @@ Non-safe methods also need `X-CSRF-Token`, read from the `csrf_token` cookie.
 | `database.encryption_key` | base64 32 bytes. **Leave it empty and one is generated per start**, making previously encrypted columns unreadable after a restart |
 | `security.jwt.secret` | At least 32 characters, enforced. Same restart caveat — every session is invalidated |
 | `security.cookies.secure_override` | `auto`, `always` or `never` — use `always` behind a TLS-terminating proxy |
-| `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP |
+| `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP. Governs every client address the panel records — rate limiting, login lockout, sessions and the audit log |
 | `server.address` | Default `:8080` |
 
 Set both of the secrets above before you put real data in.

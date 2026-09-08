@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/base32"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,29 @@ func TestTOTPManager_RejectsWrongLength(t *testing.T) {
 	}
 	if ok, _ := m.ValidateCode(s.Secret, "1234567"); ok {
 		t.Error("7-digit code accepted")
+	}
+}
+
+// loginRecoveryCodePattern mirrors the pattern the login form validates a
+// typed recovery code against (web/src/pages/Login.tsx). Anything this
+// rejects, a user cannot submit — however valid the code is.
+var loginRecoveryCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{4}-?[A-Za-z0-9_-]{4}$`)
+
+// Generated codes must be typeable: base64url puts "-" and "_" in them, and a
+// letters-and-digits class silently bounced about a fifth at the login form.
+// 200 codes make any narrower class overwhelmingly likely to show up.
+func TestRecoveryCodeManager_CodesMatchLoginPattern(t *testing.T) {
+	m := NewRecoveryCodeManager()
+	for i := 0; i < 20; i++ {
+		codes, err := m.GenerateCodes()
+		if err != nil {
+			t.Fatalf("GenerateCodes: %v", err)
+		}
+		for _, c := range codes {
+			if !loginRecoveryCodePattern.MatchString(c) {
+				t.Errorf("generated code %q is rejected by the login form", c)
+			}
+		}
 	}
 }
 

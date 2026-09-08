@@ -181,7 +181,7 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		paramNum++
 	}
 
-	query += " ORDER BY id ASC LIMIT 10000"
+	query += " ORDER BY id ASC"
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -191,7 +191,15 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	logs := make([]models.AuditLog, 0)
+	// Verified row by row rather than into a slice: the whole point of the
+	// endpoint is to cover every record, and the table has no upper bound.
+	var (
+		prev     *models.AuditLog
+		checked  int
+		brokenAt = -1
+		firstID  int64
+		lastID   int64
+	)
 	for rows.Next() {
 		var log models.AuditLog
 		err := rows.Scan(
@@ -200,30 +208,44 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 			&log.RequestID, &log.PrevHash, &log.Hash, &log.CreatedAt,
 		)
 		if err != nil {
+			// A row that cannot be read cannot be vouched for; skipping it
+			// would report a gap in the chain as intact.
 			h.logger.Error("failed to scan audit log", zap.Error(err))
-			continue
+			writeError(w, http.StatusInternalServerError, "Internal server error")
+			return
 		}
-		logs = append(logs, log)
-	}
 
-	// Verify chain
-	valid, brokenAt, err := models.VerifyChain(logs)
-	if err != nil {
-		h.logger.Error("failed to verify audit chain", zap.Error(err))
+		if checked == 0 {
+			firstID = log.ID
+		}
+		lastID = log.ID
+
+		if !models.VerifyEntry(prev, &log) {
+			brokenAt = checked
+			checked++
+			break
+		}
+		checked++
+		prev = &log
+	}
+	if err := rows.Err(); err != nil {
+		h.logger.Error("failed to read audit logs", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
 	result := map[string]interface{}{
-		"valid":        valid,
-		"records_checked": len(logs),
+		"valid":           brokenAt < 0,
+		"records_checked": checked,
+	}
+	if checked > 0 {
+		result["first_id"] = firstID
+		result["last_id"] = lastID
 	}
 
-	if !valid {
+	if brokenAt >= 0 {
 		result["broken_at_index"] = brokenAt
-		if brokenAt >= 0 && brokenAt < len(logs) {
-			result["broken_at_id"] = logs[brokenAt].ID
-		}
+		result["broken_at_id"] = lastID
 	}
 
 	writeJSON(w, http.StatusOK, result)
@@ -268,6 +290,35 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	// Collect before writing anything: once the CSV body has started the
+	// status line is spent, and an export that stops halfway looks to the
+	// caller like a complete one.
+	type exportRow struct {
+		id                             int64
+		username, action, resourceType string
+		resourceID, details, ipAddress sql.NullString
+		createdAt                      time.Time
+	}
+	collected := make([]exportRow, 0)
+	for rows.Next() {
+		var row exportRow
+		// resource_id, details and ip_address are all nullable. Scanning a
+		// NULL into a plain string errors, and the old code skipped those
+		// rows — silently dropping every event logged without details.
+		if err := rows.Scan(&row.id, &row.username, &row.action, &row.resourceType,
+			&row.resourceID, &row.details, &row.ipAddress, &row.createdAt); err != nil {
+			h.logger.Error("failed to scan audit log for export", zap.Error(err))
+			writeError(w, http.StatusInternalServerError, "Internal server error")
+			return
+		}
+		collected = append(collected, row)
+	}
+	if err := rows.Err(); err != nil {
+		h.logger.Error("failed to read audit logs for export", zap.Error(err))
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
 	// Set headers for CSV download
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=audit_logs_"+time.Now().Format("20060102_150405")+".csv")
@@ -279,35 +330,24 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	writer.Write([]string{"ID", "Username", "Action", "Resource Type", "Resource ID", "Details", "IP Address", "Timestamp"})
 
 	// Write data
-	for rows.Next() {
-		var (
-			id           int64
-			username     string
-			action       string
-			resourceType string
-			resourceID   string
-			details      string
-			ipAddress    string
-			createdAt    time.Time
-		)
-
-		err := rows.Scan(&id, &username, &action, &resourceType, &resourceID, &details, &ipAddress, &createdAt)
-		if err != nil {
-			continue
-		}
-
+	for _, row := range collected {
 		writer.Write([]string{
-			strconv.FormatInt(id, 10),
-			username,
-			action,
-			resourceType,
-			resourceID,
-			details,
-			ipAddress,
-			createdAt.Format(time.RFC3339),
+			strconv.FormatInt(row.id, 10),
+			row.username,
+			row.action,
+			row.resourceType,
+			row.resourceID.String,
+			row.details.String,
+			row.ipAddress.String,
+			row.createdAt.Format(time.RFC3339),
 		})
 	}
 }
+
+// auditChainLockID is the advisory-lock key every chain append takes. Any
+// arbitrary constant works as long as all writers agree on it; nothing else
+// in this database uses advisory locks.
+const auditChainLockID = 6813401
 
 // AuditService provides methods to write audit logs
 type AuditService struct {
@@ -390,7 +430,15 @@ func (s *AuditService) Log(entry *models.AuditLogEntry) error {
 		}
 	}()
 
-	// Get the previous hash within the transaction (with lock)
+	// Serialize every chain append. Without it two writers read the same
+	// prev_hash and the chain forks; the lock is released when the
+	// transaction ends, so a failed write never holds it.
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, auditChainLockID); err != nil {
+		s.logger.Error("failed to take audit chain lock", zap.Error(err))
+		return err
+	}
+
+	// Get the previous hash within the transaction
 	var prevHash string
 	if err := tx.QueryRow(`SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1`).Scan(&prevHash); err != nil {
 		if err != sql.ErrNoRows {
@@ -400,22 +448,27 @@ func (s *AuditService) Log(entry *models.AuditLogEntry) error {
 		prevHash = ""
 	}
 
-	// Get next ID within the transaction
+	// Claim the id the row will actually carry. MAX(id)+1 guessed it, and a
+	// sequence value burnt by any earlier failed insert made the guess low,
+	// which permanently mismatches the hash of every row written afterwards.
 	var nextID int64
-	if err := tx.QueryRow(`SELECT COALESCE(MAX(id), 0) + 1 FROM audit_logs`).Scan(&nextID); err != nil {
+	if err := tx.QueryRow(`SELECT nextval(pg_get_serial_sequence('audit_logs', 'id'))`).Scan(&nextID); err != nil {
 		s.logger.Error("failed to get next ID", zap.Error(err))
 		return err
 	}
 
-	timestamp := time.Now()
+	// Hash the value the row will hold: created_at is a TIMESTAMP without time
+	// zone, so PostgreSQL truncates to microseconds and stores the wall clock
+	// verbatim; a local nanosecond value fails its own hash when read back.
+	timestamp := time.Now().UTC().Truncate(time.Microsecond)
 	hash := entry.ComputeHash(nextID, timestamp, prevHash)
 
 	// Insert audit log within the transaction
 	_, err = tx.Exec(`
-		INSERT INTO audit_logs (user_id, username, action, resource_type, resource_id,
+		INSERT INTO audit_logs (id, user_id, username, action, resource_type, resource_id,
 		                        details, ip_address, user_agent, request_id, prev_hash, hash, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, entry.UserID, entry.Username, entry.Action, entry.ResourceType, entry.ResourceID,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, nextID, entry.UserID, entry.Username, entry.Action, entry.ResourceType, entry.ResourceID,
 		detailsJSON, entry.IPAddress, entry.UserAgent, entry.RequestID, prevHash, hash, timestamp)
 
 	if err != nil {

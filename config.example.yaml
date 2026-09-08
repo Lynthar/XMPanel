@@ -55,9 +55,12 @@ security:
     burst: 200
     login_attempts: 5
     login_window: 15m
-    # Only trust X-Forwarded-For when at least one trusted proxy is listed.
-    # Leave false (default) if XMPanel is exposed directly — otherwise
-    # clients can spoof their source IP and bypass rate limiting.
+    # These two decide the client address for everything that records one:
+    # rate limiting, login lockout, sessions.ip_address, users.last_login_ip
+    # and every audit row. Only trust X-Forwarded-For when at least one
+    # trusted proxy is listed. Leave false (default) if XMPanel is exposed
+    # directly — otherwise clients can spoof their source IP, bypass rate
+    # limiting and choose what the audit log says about them.
     trust_x_forwarded_for: false
     trusted_proxies: []
       # - "127.0.0.1/32"

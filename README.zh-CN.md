@@ -92,7 +92,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 | `database.encryption_key` | base64 32 字节。**留空的话每次启动都会现生成一个**，重启后此前加密的列就读不回来了 |
 | `security.jwt.secret` | 至少 32 字符，强制。留空同样有上面那个问题——所有会话作废 |
 | `security.cookies.secure_override` | `auto` / `always` / `never`——在卸载 TLS 的反代后面用 `always` |
-| `security.rate_limit.trust_x_forwarded_for` | 只有在受信代理后面、且代理列进 `trusted_proxies` 才开，否则客户端能伪造源 IP |
+| `security.rate_limit.trust_x_forwarded_for` | 只有在受信代理后面、且代理列进 `trusted_proxies` 才开，否则客户端能伪造源 IP。面板记录的客户端地址全看它——限流、登录锁定、会话与审计日志 |
 | `server.address` | 默认 `:8080` |
 
 放真实数据进去之前，先把上面那两个密钥设好。

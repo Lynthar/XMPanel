@@ -43,6 +43,7 @@
   "auth": {
     "login": "Login",
     "logout": "Logout",
+    "logoutFailed": "Could not reach the server; you have been signed out locally, but the session may still be active.",
     "username": "Username",
     "password": "Password",
     "email": "Email",

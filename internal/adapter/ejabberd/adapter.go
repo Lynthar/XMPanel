@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
@@ -92,28 +93,28 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 		Extra: make(map[string]interface{}),
 	}
 
-	// Get online users count
+	// All three commands return one named integer, which mod_http_api sends as
+	// a bare JSON number on API v1+ (what an unversioned /api URL selects);
+	// parsing `stats` as {"stat": N} left registered users at 0 everywhere.
 	if resp, err := a.doRequest(ctx, "connected_users_number", nil); err == nil {
 		var count int
-		json.Unmarshal(resp, &count)
-		stats.OnlineUsers = count
+		if json.Unmarshal(resp, &count) == nil {
+			stats.OnlineUsers = count
+		}
 	}
 
-	// Get registered users count
 	if resp, err := a.doRequest(ctx, "stats", map[string]string{"name": "registeredusers"}); err == nil {
-		var result struct {
-			Stat int `json:"stat"`
-		}
-		if json.Unmarshal(resp, &result) == nil {
-			stats.RegisteredUsers = result.Stat
+		var count int
+		if json.Unmarshal(resp, &count) == nil {
+			stats.RegisteredUsers = count
 		}
 	}
 
-	// Get S2S connections
 	if resp, err := a.doRequest(ctx, "incoming_s2s_number", nil); err == nil {
 		var count int
-		json.Unmarshal(resp, &count)
-		stats.S2SConnections = count
+		if json.Unmarshal(resp, &count) == nil {
+			stats.S2SConnections = count
+		}
 	}
 
 	return stats, nil
@@ -226,13 +227,13 @@ func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, 
 		return nil, fmt.Errorf("failed to parse sessions: %w", err)
 	}
 
+	// connected_users_info carries the full JID in one "jid" field and has no
+	// "user" or "server" key, so assembling the JID from those yielded
+	// "@/<resource>" for every session.
 	sessions := make([]models.XMPPSession, len(rawSessions))
 	for i, s := range rawSessions {
 		sessions[i] = models.XMPPSession{
-			JID: fmt.Sprintf("%s@%s/%s",
-				getString(s, "user"),
-				getString(s, "server"),
-				getString(s, "resource")),
+			JID:       getString(s, "jid"),
 			Resource:  getString(s, "resource"),
 			IPAddress: getString(s, "ip"),
 			Priority:  getInt(s, "priority"),
@@ -304,41 +305,31 @@ func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMP
 		return nil, err
 	}
 
-	var roomNames []string
-	if err := json.Unmarshal(resp, &roomNames); err != nil {
+	// muc_online_rooms returns full "room@service" JIDs, not bare names, so
+	// appending the domain again produced "room@svc@svc" and every options
+	// lookup under that name failed.
+	var roomJIDs []string
+	if err := json.Unmarshal(resp, &roomJIDs); err != nil {
 		return nil, fmt.Errorf("failed to parse rooms: %w", err)
 	}
 
-	rooms := make([]models.XMPPRoom, len(roomNames))
-	for i, name := range roomNames {
-		rooms[i] = models.XMPPRoom{
-			JID:  fmt.Sprintf("%s@%s", name, mucDomain),
-			Name: name,
+	rooms := make([]models.XMPPRoom, len(roomJIDs))
+	for i, jid := range roomJIDs {
+		name, service, isJID := strings.Cut(jid, "@")
+		if !isJID {
+			rooms[i] = models.XMPPRoom{JID: jid, Name: jid}
+			continue
 		}
 
-		// Get room details
-		if infoResp, err := a.doRequest(ctx, "get_room_options", map[string]string{
-			"name":    name,
-			"service": mucDomain,
-		}); err == nil {
-			var options []map[string]interface{}
-			if json.Unmarshal(infoResp, &options) == nil {
-				for _, opt := range options {
-					if n, ok := opt["name"].(string); ok {
-						if v, ok := opt["value"]; ok {
-							switch n {
-							case "public":
-								rooms[i].Public = v == "true"
-							case "persistent":
-								rooms[i].Persistent = v == "true"
-							case "members_only":
-								rooms[i].MembersOnly = v == "true"
-							}
-						}
-					}
-				}
-			}
+		// Options and occupant count come from GetRoom, which asks per room.
+		// One unreadable room degrades to name-only rather than failing the
+		// whole listing.
+		room, err := a.GetRoom(ctx, name, service)
+		if err != nil {
+			rooms[i] = models.XMPPRoom{JID: jid, Name: name}
+			continue
 		}
+		rooms[i] = *room
 	}
 
 	return rooms, nil

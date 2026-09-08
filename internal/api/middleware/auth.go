@@ -15,6 +15,7 @@ const (
 	contextKeyUser      contextKey = "user"
 	contextKeyClaims    contextKey = "claims"
 	contextKeyRequestID contextKey = "request_id"
+	contextKeyClientIP  contextKey = "client_ip"
 )
 
 // AuthMiddleware validates JWT tokens and adds user info to context

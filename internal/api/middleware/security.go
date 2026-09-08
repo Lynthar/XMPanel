@@ -60,10 +60,19 @@ func (w *headerFilterWriter) WriteHeader(statusCode int) {
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
-// RequestID generates and adds a unique request ID to each request
+// maxClientRequestIDLen bounds a caller-supplied X-Request-ID. audit_logs
+// stores it in a VARCHAR(255); a longer value makes the audit INSERT fail,
+// and a failed audit write leaves a hole in the hash chain.
+const maxClientRequestIDLen = 64
+
+// RequestID generates and adds a unique request ID to each request.
+//
+// A client-supplied X-Request-ID is echoed only when it is short and made of
+// [A-Za-z0-9._-]; anything else is replaced by a generated id. The header
+// reaches storage, so it is untrusted input, not a trace hint to pass through.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := r.Header.Get("X-Request-ID")
+		requestID := sanitizeRequestID(r.Header.Get("X-Request-ID"))
 		if requestID == "" {
 			requestID = generateRequestID()
 		}
@@ -75,6 +84,23 @@ func RequestID(next http.Handler) http.Handler {
 		ctx := WithRequestID(r.Context(), requestID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// sanitizeRequestID returns id when it is safe to store and echo, else "".
+func sanitizeRequestID(id string) string {
+	if id == "" || len(id) > maxClientRequestIDLen {
+		return ""
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.':
+		default:
+			return ""
+		}
+	}
+	return id
 }
 
 // generateRequestID generates a cryptographically random request ID

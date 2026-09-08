@@ -193,8 +193,11 @@ export default function Login() {
                   maxLength={9}
                   {...register('recovery_code', {
                     required: useRecoveryCode ? t('validation.required') : false,
+                    // Recovery codes are base64url, so "-" and "_" occur inside
+                    // the code itself, not only as the XXXX-XXXX separator.
+                    // Excluding them rejected about a fifth of every set issued.
                     pattern: {
-                      value: /^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/,
+                      value: /^[A-Za-z0-9_-]{4}-?[A-Za-z0-9_-]{4}$/,
                       message: t('validation.required'),
                     },
                   })}

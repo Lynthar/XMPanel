@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { usersApi } from '@/lib/api'
+import { usersApi, listErrorMessage } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -12,6 +12,7 @@ import {
   Trash2,
   X,
   Shield,
+  ShieldAlert,
   ShieldCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -48,7 +49,7 @@ export default function Users() {
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [pendingDelete, setPendingDelete] = useState<User | null>(null)
 
-  const { data: users, isLoading } = useQuery({
+  const { data: users, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['users'],
     queryFn: async () => {
       const response = await usersApi.list()
@@ -104,6 +105,16 @@ export default function Users() {
         {isLoading ? (
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+          </div>
+        ) : isError ? (
+          /* Without this branch a rejected request falls through to the empty
+             state, so "you may not manage users" reads as "there are none". */
+          <div className="text-center py-12">
+            <ShieldAlert className="w-12 h-12 text-red-500 mx-auto mb-4" />
+            <p className="text-gray-300">{listErrorMessage(error, t)}</p>
+            <button onClick={() => refetch()} className="btn btn-secondary mt-4">
+              {t('common.refresh')}
+            </button>
           </div>
         ) : users?.length === 0 ? (
           <div className="text-center py-12">

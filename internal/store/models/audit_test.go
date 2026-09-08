@@ -88,49 +88,97 @@ func buildChain(t *testing.T, n int) []AuditLog {
 	return logs
 }
 
-func TestVerifyChain_Empty(t *testing.T) {
-	ok, broken, err := VerifyChain(nil)
-	if err != nil || !ok || broken != 0 {
-		t.Errorf("empty chain: ok=%v broken=%d err=%v", ok, broken, err)
+// verifyAll walks a slice with VerifyEntry the way the Verify handler walks
+// rows, returning (ok, index of the first bad row or -1).
+func verifyAll(logs []AuditLog) (bool, int) {
+	for i := range logs {
+		var prev *AuditLog
+		if i > 0 {
+			prev = &logs[i-1]
+		}
+		if !VerifyEntry(prev, &logs[i]) {
+			return false, i
+		}
+	}
+	return true, -1
+}
+
+func TestVerifyEntry_Empty(t *testing.T) {
+	ok, broken := verifyAll(nil)
+	if !ok || broken != -1 {
+		t.Errorf("empty chain: ok=%v broken=%d", ok, broken)
 	}
 }
 
-func TestVerifyChain_ValidChain(t *testing.T) {
+func TestVerifyEntry_ValidChain(t *testing.T) {
 	logs := buildChain(t, 5)
-	ok, broken, err := VerifyChain(logs)
-	if err != nil {
-		t.Fatalf("VerifyChain: %v", err)
-	}
+	ok, broken := verifyAll(logs)
 	if !ok || broken != -1 {
 		t.Errorf("valid chain reported broken: ok=%v broken=%d", ok, broken)
 	}
 }
 
-func TestVerifyChain_DetectsTamperedField(t *testing.T) {
+func TestVerifyEntry_DetectsTamperedField(t *testing.T) {
 	logs := buildChain(t, 5)
 	// Tamper with the username on entry 2 without recomputing the hash.
 	logs[2].Username = "mallory"
 
-	ok, broken, err := VerifyChain(logs)
-	if err != nil {
-		t.Fatalf("VerifyChain: %v", err)
-	}
+	ok, broken := verifyAll(logs)
 	if ok {
-		t.Error("VerifyChain accepted a tampered chain")
+		t.Error("verifyAll accepted a tampered chain")
 	}
 	if broken != 2 {
 		t.Errorf("broken index = %d, want 2", broken)
 	}
 }
 
-func TestVerifyChain_DetectsTamperedHash(t *testing.T) {
+func TestVerifyEntry_DetectsTamperedHash(t *testing.T) {
 	logs := buildChain(t, 3)
 	logs[1].Hash = "0000000000000000000000000000000000000000000000000000000000000000"
-	ok, broken, _ := VerifyChain(logs)
+	ok, broken := verifyAll(logs)
 	if ok {
-		t.Error("VerifyChain accepted bogus hash")
+		t.Error("verifyAll accepted bogus hash")
 	}
 	if broken != 1 {
 		t.Errorf("broken index = %d, want 1", broken)
+	}
+}
+
+// A deleted row leaves every survivor hashing to itself; only the prev_hash
+// link exposes the gap. This is the case the old per-row check let through.
+func TestVerifyEntry_DetectsDeletedRow(t *testing.T) {
+	logs := buildChain(t, 5)
+	logs = append(logs[:2], logs[3:]...)
+
+	ok, broken := verifyAll(logs)
+	if ok {
+		t.Error("verifyAll accepted a chain with a row removed")
+	}
+	if broken != 2 {
+		t.Errorf("broken index = %d, want 2", broken)
+	}
+}
+
+// A row spliced in from elsewhere hashes correctly on its own but does not
+// carry the hash of the row it now follows.
+func TestVerifyEntry_DetectsReorderedRows(t *testing.T) {
+	logs := buildChain(t, 4)
+	logs[1], logs[2] = logs[2], logs[1]
+
+	ok, broken := verifyAll(logs)
+	if ok {
+		t.Error("verifyAll accepted a reordered chain")
+	}
+	if broken != 1 {
+		t.Errorf("broken index = %d, want 1", broken)
+	}
+}
+
+// A range that starts mid-chain has no predecessor to link to, so the first
+// row is checked for self-consistency only.
+func TestVerifyEntry_FirstRowNeedsNoPredecessor(t *testing.T) {
+	logs := buildChain(t, 5)
+	if ok, broken := verifyAll(logs[2:]); !ok {
+		t.Errorf("mid-chain range rejected at %d", broken)
 	}
 }

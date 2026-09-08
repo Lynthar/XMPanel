@@ -265,7 +265,35 @@ function MFASection() {
         </div>
       </div>
 
-      {user?.mfa_enabled ? (
+      {/* Freshly minted recovery codes come first: verifying MFA flips
+          mfa_enabled, so any later branch would take over and the codes
+          would never be shown. They are displayed once and nowhere else. */}
+      {recoveryCodes.length > 0 ? (
+        <div className="space-y-4">
+          <div className="p-4 bg-red-900/20 border border-red-800 rounded-lg">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+              <div>
+                <p className="text-red-400 font-medium">{t('settings.security.mfaSaveCodesTitle')}</p>
+                <p className="text-sm text-gray-400 mt-1">{t('settings.security.mfaSaveCodesDesc')}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 p-4 bg-gray-700 rounded-lg">
+            {recoveryCodes.map((code, i) => (
+              <code key={i} className="text-sm font-mono text-white">{code}</code>
+            ))}
+          </div>
+
+          <button
+            onClick={() => setRecoveryCodes([])}
+            className="btn btn-primary"
+          >
+            {t('settings.security.mfaSavedCodes')}
+          </button>
+        </div>
+      ) : user?.mfa_enabled ? (
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3 p-4 bg-green-900/20 border border-green-800 rounded-lg">
             <div className="flex items-center gap-3">
@@ -388,31 +416,6 @@ function MFASection() {
               </button>
             </div>
           </div>
-        </div>
-      ) : recoveryCodes.length > 0 ? (
-        <div className="space-y-4">
-          <div className="p-4 bg-red-900/20 border border-red-800 rounded-lg">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
-              <div>
-                <p className="text-red-400 font-medium">{t('settings.security.mfaSaveCodesTitle')}</p>
-                <p className="text-sm text-gray-400 mt-1">{t('settings.security.mfaSaveCodesDesc')}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 p-4 bg-gray-700 rounded-lg">
-            {recoveryCodes.map((code, i) => (
-              <code key={i} className="text-sm font-mono text-white">{code}</code>
-            ))}
-          </div>
-
-          <button
-            onClick={() => setRecoveryCodes([])}
-            className="btn btn-primary"
-          >
-            {t('settings.security.mfaSavedCodes')}
-          </button>
         </div>
       ) : (
         <button onClick={handleSetupMFA} disabled={loading} className="btn btn-primary">

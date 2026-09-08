@@ -119,15 +119,21 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	// Initialize middlewares
 	authMiddleware := middleware.NewAuthMiddleware(jwtManager)
 	corsMiddleware := middleware.NewCORSMiddleware(cfg.Security.CORS)
+	clientIPResolver := middleware.NewClientIPResolver(
+		cfg.Security.RateLimit.TrustXForwardedFor,
+		cfg.Security.RateLimit.TrustedProxies,
+	)
 	rateLimiter := middleware.NewRateLimiter(cfg.Security.RateLimit)
 	loginLimiter := middleware.NewLoginRateLimiter(
 		cfg.Security.RateLimit.LoginAttempts,
 		cfg.Security.RateLimit.LoginWindow,
 	)
 
-	// Apply global middlewares (order matters: recovery should be outermost)
+	// Apply global middlewares (order matters: recovery should be outermost,
+	// and ClientIP has to precede RateLimit and every handler recording an IP)
 	router.Use(middleware.Recovery(logger))
 	router.Use(middleware.SecurityHeaders)
+	router.Use(middleware.ClientIP(clientIPResolver))
 	router.Use(middleware.RequestID)
 	router.Use(middleware.LocaleMiddleware)
 	router.Use(corsMiddleware.Handle)
