@@ -25,8 +25,10 @@ accounts, live sessions and MUC rooms.
 It has its own user system instead of borrowing the server's: short-lived JWTs
 with refresh rotation, TOTP with recovery codes, Argon2id password hashing, five
 permission levels. The audit log is chained with SHA-256, so a modified or
-removed record breaks the chain; stored XMPP API keys are encrypted at rest with
-AES-256-GCM.
+removed record breaks the chain (records written by builds before September 2026
+were hashed with a timestamp precision the database does not keep and fail
+verification — the chain is verifiable from the first record written after
+upgrading); stored XMPP API keys are encrypted at rest with AES-256-GCM.
 
 ## Install
 
