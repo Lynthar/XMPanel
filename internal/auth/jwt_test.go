@@ -87,19 +87,20 @@ func TestJWTManager_ExpiredToken(t *testing.T) {
 func TestJWTManager_RejectsTamperedSignature(t *testing.T) {
 	m := newTestManager(time.Hour, time.Hour)
 	pair, _ := m.GenerateTokenPair(1, "u", "viewer", "s", "")
-	// Flip last char of the signature segment.
+	// Flip the first char of the signature segment: the last one only carries
+	// base64 padding bits, so changing it can leave the decoded signature intact.
 	parts := strings.Split(pair.AccessToken, ".")
 	if len(parts) != 3 {
 		t.Fatalf("unexpected JWT format")
 	}
 	sig := parts[2]
-	last := sig[len(sig)-1]
-	if last == 'A' {
-		last = 'B'
+	first := sig[0]
+	if first == 'A' {
+		first = 'B'
 	} else {
-		last = 'A'
+		first = 'A'
 	}
-	parts[2] = sig[:len(sig)-1] + string(last)
+	parts[2] = string(first) + sig[1:]
 	tampered := strings.Join(parts, ".")
 	if _, err := m.ValidateToken(tampered, TokenTypeAccess); err == nil {
 		t.Error("tampered token validated successfully")
