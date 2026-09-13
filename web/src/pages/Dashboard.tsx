@@ -1,7 +1,7 @@
 import { useQuery, useQueries } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { serversApi, ServerCapabilities } from '@/lib/api'
+import { serversApi, type ServerCapabilities, type XMPPServer } from '@/lib/api'
 import { Server, Users, MessageSquare, Activity, AlertCircle } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -12,14 +12,6 @@ interface ServerStats {
   s2s_connections: number
 }
 
-interface ServerData {
-  id: number
-  name: string
-  type: string
-  host: string
-  enabled: boolean
-}
-
 export default function Dashboard() {
   const { t } = useTranslation()
 
@@ -27,7 +19,7 @@ export default function Dashboard() {
     queryKey: ['servers'],
     queryFn: async () => {
       const response = await serversApi.list()
-      return response.data as ServerData[]
+      return response.data as XMPPServer[]
     },
   })
 
@@ -216,7 +208,7 @@ function StatCard({ icon: Icon, label, value, color }: StatCardProps) {
   )
 }
 
-function ServerRow({ server }: { server: ServerData }) {
+function ServerRow({ server }: { server: XMPPServer }) {
   const { t } = useTranslation()
   const { data: stats, isError } = useQuery({
     queryKey: ['server-stats', server.id],

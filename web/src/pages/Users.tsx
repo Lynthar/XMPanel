@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { usersApi, listErrorMessage } from '@/lib/api'
+import { usersApi, listErrorMessage, type User } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -17,16 +17,6 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import ConfirmDialog from '@/components/ConfirmDialog'
-
-interface User {
-  id: number
-  username: string
-  email: string
-  role: string
-  mfa_enabled: boolean
-  last_login_at?: string
-  created_at: string
-}
 
 interface CreateUserForm {
   username: string

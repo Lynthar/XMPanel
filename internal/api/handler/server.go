@@ -8,7 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/api/middleware"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
@@ -41,8 +42,7 @@ func (h *ServerHandler) List(w http.ResponseWriter, r *http.Request) {
 		FROM xmpp_servers ORDER BY name
 	`)
 	if err != nil {
-		h.logger.Error("failed to query servers", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query servers", err)
 		return
 	}
 	defer rows.Close()
@@ -69,7 +69,7 @@ func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
@@ -83,12 +83,11 @@ func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "Server not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
 	}
 	if err != nil {
-		h.logger.Error("failed to query server", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query server", err)
 		return
 	}
 
@@ -99,25 +98,25 @@ func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateXMPPServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Validate
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "Name is required")
+		writeError(w, r, http.StatusBadRequest, "Name is required")
 		return
 	}
 	if req.Host == "" {
-		writeError(w, http.StatusBadRequest, "Host is required")
+		writeError(w, r, http.StatusBadRequest, "Host is required")
 		return
 	}
 	if req.Port <= 0 || req.Port > 65535 {
-		writeError(w, http.StatusBadRequest, "Invalid port")
+		writeError(w, r, http.StatusBadRequest, "Invalid port")
 		return
 	}
 	if req.Type != models.ServerTypeProsody && req.Type != models.ServerTypeEjabberd {
-		writeError(w, http.StatusBadRequest, "Invalid server type")
+		writeError(w, r, http.StatusBadRequest, "Invalid server type")
 		return
 	}
 
@@ -126,8 +125,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if h.keyRing != nil && req.APIKey != "" {
 		encrypted, err := h.keyRing.EncryptString(req.APIKey)
 		if err != nil {
-			h.logger.Error("failed to encrypt API key", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to encrypt API key", err)
 			return
 		}
 		encryptedAPIKey = encrypted
@@ -142,8 +140,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	`, req.Name, req.Type, req.Host, req.Port, encryptedAPIKey, req.TLSEnabled, time.Now(), time.Now()).Scan(&id)
 
 	if err != nil {
-		h.logger.Error("failed to create server", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to create server", err)
 		return
 	}
 
@@ -161,13 +158,13 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
 	var req models.UpdateXMPPServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -185,15 +182,14 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.APIKey != nil && h.keyRing != nil {
 		encrypted, err := h.keyRing.EncryptString(*req.APIKey)
 		if err != nil {
-			h.logger.Error("failed to encrypt API key", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to encrypt API key", err)
 			return
 		}
 		updates["api_key_encrypted"] = encrypted
 	}
 
 	if len(updates) == 0 {
-		writeError(w, http.StatusBadRequest, "No fields to update")
+		writeError(w, r, http.StatusBadRequest, "No fields to update")
 		return
 	}
 
@@ -218,14 +214,13 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.db.Exec(query, args...)
 	if err != nil {
-		h.logger.Error("failed to update server", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to update server", err)
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "Server not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
 	}
 
@@ -238,7 +233,7 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionServerUpdate, models.ResourceTypeServer, idStr, "",
 		map[string]interface{}{"fields": updatedFields})
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Server updated successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgServerUpdated)})
 }
 
 // Delete deletes an XMPP server
@@ -246,26 +241,25 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
 	result, err := h.db.Exec(`DELETE FROM xmpp_servers WHERE id = $1`, id)
 	if err != nil {
-		h.logger.Error("failed to delete server", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to delete server", err)
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "Server not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
 	}
 
 	h.audit.LogEvent(r, models.AuditActionServerRemove, models.ResourceTypeServer, idStr, "", nil)
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Server deleted successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgServerDeleted)})
 }
 
 // Stats returns server statistics
@@ -273,19 +267,14 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
 	// Get server and create adapter
-	xmppAdapter, err := h.getAdapter(id)
+	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			writeError(w, http.StatusNotFound, "Server not found")
-		} else {
-			h.logger.Error("failed to get adapter", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
-		}
+		writeServerLookupError(w, r, h.logger, err)
 		return
 	}
 
@@ -294,8 +283,7 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := xmppAdapter.GetStats(ctx)
 	if err != nil {
-		h.logger.Error("failed to get server stats", zap.Error(err))
-		writeError(w, http.StatusBadGateway, "Failed to get server statistics")
+		writeUpstreamError(w, r, h.logger, "Failed to get server statistics", err)
 		return
 	}
 
@@ -309,18 +297,13 @@ func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
-	xmppAdapter, err := h.getAdapter(id)
+	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			writeError(w, http.StatusNotFound, "Server not found")
-		} else {
-			h.logger.Error("failed to get adapter", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
-		}
+		writeServerLookupError(w, r, h.logger, err)
 		return
 	}
 
@@ -332,18 +315,13 @@ func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
 
-	xmppAdapter, err := h.getAdapter(id)
+	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			writeError(w, http.StatusNotFound, "Server not found")
-		} else {
-			h.logger.Error("failed to get adapter", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
-		}
+		writeServerLookupError(w, r, h.logger, err)
 		return
 	}
 
@@ -374,9 +352,4 @@ func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
 		"message": "Connection successful",
 		"info":    info,
 	})
-}
-
-// getAdapter creates an adapter for the given server ID
-func (h *ServerHandler) getAdapter(serverID int64) (adapter.XMPPAdapter, error) {
-	return GetXMPPAdapter(h.db, h.keyRing, serverID)
 }

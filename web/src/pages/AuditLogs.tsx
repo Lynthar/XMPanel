@@ -31,10 +31,9 @@ interface AuditResponse {
   offset: number
 }
 
-// Color buckets, matched to severity / category. Recovery-code logins are
-// orange even on success so reviewers notice accounts falling back to recovery
-// (usually a "lost authenticator" signal) — and red on failure since burning
-// recovery slots with bad guesses is more concerning than a wrong TOTP.
+// One entry per audit action (a Go test holds this in step with the backend);
+// colors follow severity. Recovery-code logins are orange even on success so a
+// lost authenticator stands out, and red on failure.
 const actionColors: Record<string, string> = {
   'auth.login': 'text-green-400',
   'auth.login_failed': 'text-red-400',
@@ -58,28 +57,7 @@ const actionColors: Record<string, string> = {
   'system.setting_change': 'text-yellow-400',
 }
 
-const ACTION_OPTIONS = [
-  'auth.login',
-  'auth.login_failed',
-  'auth.recovery_login',
-  'auth.recovery_login_failed',
-  'auth.logout',
-  'auth.mfa_enabled',
-  'auth.mfa_disabled',
-  'auth.password_change',
-  'user.create',
-  'user.update',
-  'user.delete',
-  'server.add',
-  'server.update',
-  'server.remove',
-  'xmpp.user_create',
-  'xmpp.user_delete',
-  'xmpp.user_kick',
-  'xmpp.room_create',
-  'xmpp.room_delete',
-  'system.setting_change',
-]
+const ACTION_OPTIONS = Object.keys(actionColors)
 
 const RESOURCE_TYPE_OPTIONS = ['user', 'server', 'xmpp', 'room', 'setting']
 

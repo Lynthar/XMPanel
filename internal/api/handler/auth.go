@@ -127,11 +127,10 @@ func (h *AuthHandler) clearAuthCookies(w http.ResponseWriter) {
 
 // Login handles user login
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
@@ -140,7 +139,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	allowed, lockDuration := h.loginLimiter.Check(clientIP + ":" + req.Username)
 	if !allowed {
 		w.Header().Set("Retry-After", lockDuration.String())
-		writeErrorI18n(w, http.StatusTooManyRequests, locale, i18n.MsgRateLimitExceeded)
+		writeError(w, r, http.StatusTooManyRequests, i18n.MsgRateLimitExceeded)
 		return
 	}
 
@@ -160,12 +159,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err == sql.ErrNoRows {
 		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, "", req.Username,
 			map[string]interface{}{"reason": "user_not_found"})
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgInvalidCredentials)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgInvalidCredentials)
 		return
 	}
 	if err != nil {
-		h.logger.Error("failed to query user", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to query user", err)
 		return
 	}
 
@@ -173,7 +171,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if user.IsLocked() {
 		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 			map[string]interface{}{"reason": "account_locked"})
-		writeErrorI18n(w, http.StatusForbidden, locale, i18n.MsgAccountLocked)
+		writeError(w, r, http.StatusForbidden, i18n.MsgAccountLocked)
 		return
 	}
 
@@ -188,7 +186,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		`, user.ID)
 		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 			map[string]interface{}{"reason": "invalid_password"})
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgInvalidCredentials)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgInvalidCredentials)
 		return
 	}
 
@@ -203,21 +201,20 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if bothSet {
-			writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+			writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 			return
 		}
 
 		if req.RecoveryCode != "" {
 			ok, err := h.verifyAndConsumeRecoveryCode(user.ID, req.RecoveryCode)
 			if err != nil {
-				h.logger.Error("failed to verify recovery code", zap.Error(err))
-				writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+				writeInternalError(w, r, h.logger, "failed to verify recovery code", err)
 				return
 			}
 			if !ok {
 				h.audit.LogEvent(r, models.AuditActionRecoveryLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 					map[string]interface{}{"reason": "recovery_code_invalid"})
-				writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgRecoveryCodeInvalid)
+				writeError(w, r, http.StatusUnauthorized, i18n.MsgRecoveryCodeInvalid)
 				return
 			}
 			// Successful recovery login — record separately from regular login
@@ -229,7 +226,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			if err != nil || !valid {
 				h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 					map[string]interface{}{"reason": "mfa_invalid"})
-				writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgMFAInvalid)
+				writeError(w, r, http.StatusUnauthorized, i18n.MsgMFAInvalid)
 				return
 			}
 		}
@@ -238,8 +235,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Generate session ID
 	sessionID, err := crypto.GenerateRandomString(32)
 	if err != nil {
-		h.logger.Error("failed to generate session ID", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to generate session ID", err)
 		return
 	}
 
@@ -252,8 +248,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		"", // Device ID (optional)
 	)
 	if err != nil {
-		h.logger.Error("failed to generate tokens", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to generate tokens", err)
 		return
 	}
 
@@ -305,11 +300,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 // xmpanel_refresh HttpOnly cookie (the request body is ignored) and is
 // rotated on every call.
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 
 	cookie, err := r.Cookie(refreshCookieName)
 	if err != nil || cookie.Value == "" {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgTokenInvalid)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenInvalid)
 		return
 	}
 	refreshToken := cookie.Value
@@ -319,9 +313,9 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch err {
 		case auth.ErrExpiredToken:
-			writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgTokenExpired)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenExpired)
 		default:
-			writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgTokenInvalid)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenInvalid)
 		}
 		return
 	}
@@ -336,11 +330,10 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		claims.SessionID, claims.UserID).Scan(&storedHash)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgSessionRevoked)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
 			return
 		}
-		h.logger.Error("failed to check session", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to check session", err)
 		return
 	}
 
@@ -353,7 +346,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 			zap.Int64("user_id", claims.UserID),
 			zap.String("session_id", claims.SessionID))
 		h.clearAuthCookies(w)
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgSessionRevoked)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
 		return
 	}
 
@@ -364,17 +357,16 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		Scan(&userRole, &lockedUntil)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUserNotFound)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgUserNotFound)
 			return
 		}
-		h.logger.Error("failed to check user", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to check user", err)
 		return
 	}
 
 	// Check if account is locked
 	if lockedUntil.Valid && lockedUntil.Time.After(time.Now()) {
-		writeErrorI18n(w, http.StatusForbidden, locale, i18n.MsgAccountLocked)
+		writeError(w, r, http.StatusForbidden, i18n.MsgAccountLocked)
 		return
 	}
 
@@ -387,8 +379,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		claims.DeviceID,
 	)
 	if err != nil {
-		h.logger.Error("failed to generate tokens", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to generate tokens", err)
 		return
 	}
 
@@ -397,8 +388,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	newHash := crypto.HashToken(tokenPair.RefreshToken)
 	if _, err := h.db.Exec(`UPDATE sessions SET refresh_token_hash = $1, expires_at = $2, last_used_at = NOW() WHERE session_id = $3`,
 		newHash, tokenPair.ExpiresAt.Add(7*24*time.Hour), claims.SessionID); err != nil {
-		h.logger.Error("failed to rotate refresh token", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to rotate refresh token", err)
 		return
 	}
 
@@ -418,10 +408,9 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles user logout
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -435,15 +424,14 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		map[string]interface{}{"session_id": claims.SessionID})
 
 	h.clearAuthCookies(w)
-	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgLogoutSuccess)})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgLogoutSuccess)})
 }
 
 // Me returns the current user info
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -457,7 +445,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		writeErrorI18n(w, http.StatusNotFound, locale, i18n.MsgUserNotFound)
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 
@@ -466,26 +454,23 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 // SetupMFA initiates MFA setup
 func (h *AuthHandler) SetupMFA(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
 	// Generate TOTP secret
 	secret, err := h.totpManager.GenerateSecret(claims.Username)
 	if err != nil {
-		h.logger.Error("failed to generate TOTP secret", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to generate TOTP secret", err)
 		return
 	}
 
 	// Store secret temporarily (not enabled yet)
 	_, err = h.db.Exec(`UPDATE users SET mfa_secret = $1 WHERE id = $2`, secret.Secret, claims.UserID)
 	if err != nil {
-		h.logger.Error("failed to store MFA secret", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to store MFA secret", err)
 		return
 	}
 
@@ -494,10 +479,9 @@ func (h *AuthHandler) SetupMFA(w http.ResponseWriter, r *http.Request) {
 
 // VerifyMFA verifies and enables MFA
 func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -505,7 +489,7 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
@@ -513,22 +497,21 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	var secret sql.NullString
 	err := h.db.QueryRow(`SELECT mfa_secret FROM users WHERE id = $1`, claims.UserID).Scan(&secret)
 	if err != nil || !secret.Valid {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgMFANotEnabled)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgMFANotEnabled)
 		return
 	}
 
 	// Verify code
 	valid, err := h.totpManager.ValidateCode(secret.String, req.Code)
 	if err != nil || !valid {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgMFAInvalid)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgMFAInvalid)
 		return
 	}
 
 	// Enable MFA
 	_, err = h.db.Exec(`UPDATE users SET mfa_enabled = TRUE WHERE id = $1`, claims.UserID)
 	if err != nil {
-		h.logger.Error("failed to enable MFA", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to enable MFA", err)
 		return
 	}
 
@@ -536,8 +519,7 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	recoveryManager := auth.NewRecoveryCodeManager()
 	codes, err := recoveryManager.GenerateCodes()
 	if err != nil {
-		h.logger.Error("failed to generate recovery codes", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to generate recovery codes", err)
 		return
 	}
 
@@ -553,17 +535,16 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionMFAEnabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message":        i18n.T(locale, i18n.MsgMFASetupSuccess),
+		"message":        middleware.T(r.Context(), i18n.MsgMFASetupSuccess),
 		"recovery_codes": codes,
 	})
 }
 
 // DisableMFA disables MFA for the current user
 func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -572,7 +553,7 @@ func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
@@ -582,13 +563,13 @@ func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	err := h.db.QueryRow(`SELECT password_hash, mfa_secret FROM users WHERE id = $1`, claims.UserID).
 		Scan(&passwordHash, &mfaSecret)
 	if err != nil {
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to query user", err)
 		return
 	}
 
 	valid, err := h.hasher.Verify(req.Password, passwordHash)
 	if err != nil || !valid {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgPasswordMismatch)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgPasswordMismatch)
 		return
 	}
 
@@ -596,7 +577,7 @@ func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	if mfaSecret.Valid {
 		valid, err := h.totpManager.ValidateCode(mfaSecret.String, req.Code)
 		if err != nil || !valid {
-			writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgMFAInvalid)
+			writeError(w, r, http.StatusBadRequest, i18n.MsgMFAInvalid)
 			return
 		}
 	}
@@ -604,22 +585,20 @@ func (h *AuthHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	// Disable MFA
 	_, err = h.db.Exec(`UPDATE users SET mfa_enabled = FALSE, mfa_secret = NULL, recovery_codes = NULL WHERE id = $1`, claims.UserID)
 	if err != nil {
-		h.logger.Error("failed to disable MFA", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to disable MFA", err)
 		return
 	}
 
 	h.audit.LogEvent(r, models.AuditActionMFADisabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgMFADisabled)})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgMFADisabled)})
 }
 
 // ChangePassword handles password change
 func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
-	locale := middleware.GetLocale(r.Context())
 	claims := middleware.GetClaims(r.Context())
 	if claims == nil {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgUnauthorized)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -628,13 +607,13 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		NewPassword     string `json:"new_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgBadRequest)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
 	// Validate new password against policy
 	if err := h.passwordValidator.Validate(req.NewPassword); err != nil {
-		writeErrorI18n(w, http.StatusBadRequest, locale, i18n.MsgPasswordWeak)
+		writeError(w, r, http.StatusBadRequest, i18n.MsgPasswordWeak)
 		return
 	}
 
@@ -642,22 +621,21 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	var currentHash string
 	err := h.db.QueryRow(`SELECT password_hash FROM users WHERE id = $1`, claims.UserID).Scan(&currentHash)
 	if err != nil {
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to query user", err)
 		return
 	}
 
 	// Verify current password
 	valid, err := h.hasher.Verify(req.CurrentPassword, currentHash)
 	if err != nil || !valid {
-		writeErrorI18n(w, http.StatusUnauthorized, locale, i18n.MsgPasswordMismatch)
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgPasswordMismatch)
 		return
 	}
 
 	// Hash new password
 	newHash, err := h.hasher.Hash(req.NewPassword)
 	if err != nil {
-		h.logger.Error("failed to hash password", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to hash password", err)
 		return
 	}
 
@@ -665,8 +643,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	_, err = h.db.Exec(`UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3`,
 		newHash, time.Now(), claims.UserID)
 	if err != nil {
-		h.logger.Error("failed to update password", zap.Error(err))
-		writeErrorI18n(w, http.StatusInternalServerError, locale, i18n.MsgInternalError)
+		writeInternalError(w, r, h.logger, "failed to update password", err)
 		return
 	}
 
@@ -679,7 +656,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	h.audit.LogEvent(r, models.AuditActionPasswordChange, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": i18n.T(locale, i18n.MsgPasswordChanged)})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgPasswordChanged)})
 }
 
 // verifyAndConsumeRecoveryCode validates a recovery code against the user's
@@ -729,20 +706,4 @@ func (h *AuthHandler) verifyAndConsumeRecoveryCode(userID int64, code string) (b
 		return false, err
 	}
 	return true, nil
-}
-
-// Helper functions
-
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
-}
-
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
-func writeErrorI18n(w http.ResponseWriter, status int, locale i18n.Locale, msgKey string) {
-	writeJSON(w, status, map[string]string{"error": i18n.T(locale, msgKey)})
 }

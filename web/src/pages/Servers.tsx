@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { serversApi } from '@/lib/api'
+import { serversApi, type XMPPServer } from '@/lib/api'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -15,17 +15,6 @@ import {
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
-
-interface ServerData {
-  id: number
-  name: string
-  type: string
-  host: string
-  port: number
-  tls_enabled: boolean
-  enabled: boolean
-  created_at: string
-}
 
 interface CreateServerForm {
   name: string
@@ -46,7 +35,7 @@ export default function Servers() {
     queryKey: ['servers'],
     queryFn: async () => {
       const response = await serversApi.list()
-      return response.data as ServerData[]
+      return response.data as XMPPServer[]
     },
   })
 
@@ -134,7 +123,7 @@ export default function Servers() {
 }
 
 interface ServerCardProps {
-  server: ServerData
+  server: XMPPServer
   onTest: () => void
   onDelete: () => void
   isSelected: boolean

@@ -78,7 +78,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	if dc := r.URL.Query().Get("details_contains"); dc != "" {
 		var probe interface{}
 		if err := json.Unmarshal([]byte(dc), &probe); err != nil {
-			writeError(w, http.StatusBadRequest, "details_contains must be valid JSON")
+			writeError(w, r, http.StatusBadRequest, "details_contains must be valid JSON")
 			return
 		}
 		whereClause += " AND details @> $" + strconv.Itoa(paramNum) + "::jsonb"
@@ -90,8 +90,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	var total int
 	countQuery := "SELECT COUNT(*) FROM audit_logs" + whereClause
 	if err := h.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
-		h.logger.Error("failed to count audit logs", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to count audit logs", err)
 		return
 	}
 
@@ -120,8 +119,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Execute query
 	rows, err := h.db.Query(dataQuery, dataArgs...)
 	if err != nil {
-		h.logger.Error("failed to query audit logs", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
 	defer rows.Close()
@@ -185,8 +183,7 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
-		h.logger.Error("failed to query audit logs", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
 	defer rows.Close()
@@ -210,8 +207,7 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// A row that cannot be read cannot be vouched for; skipping it
 			// would report a gap in the chain as intact.
-			h.logger.Error("failed to scan audit log", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to scan audit log", err)
 			return
 		}
 
@@ -229,8 +225,7 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		prev = &log
 	}
 	if err := rows.Err(); err != nil {
-		h.logger.Error("failed to read audit logs", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to read audit logs", err)
 		return
 	}
 
@@ -284,8 +279,7 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
-		h.logger.Error("failed to query audit logs", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
 	defer rows.Close()
@@ -307,15 +301,13 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 		// rows — silently dropping every event logged without details.
 		if err := rows.Scan(&row.id, &row.username, &row.action, &row.resourceType,
 			&row.resourceID, &row.details, &row.ipAddress, &row.createdAt); err != nil {
-			h.logger.Error("failed to scan audit log for export", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to scan audit log for export", err)
 			return
 		}
 		collected = append(collected, row)
 	}
 	if err := rows.Err(); err != nil {
-		h.logger.Error("failed to read audit logs for export", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to read audit logs for export", err)
 		return
 	}
 

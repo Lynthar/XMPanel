@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/security/password"
 	"github.com/xmpanel/xmpanel/internal/store"
@@ -58,12 +59,12 @@ func callerRole(r *http.Request) (models.Role, bool) {
 }
 
 // writeRoleError maps a checkRoleGrant / checkTargetWritable result to a status.
-func writeRoleError(w http.ResponseWriter, err error) {
+func writeRoleError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errUnknownRole) {
-		writeError(w, http.StatusBadRequest, "Unknown role")
+		writeError(w, r, http.StatusBadRequest, "Unknown role")
 		return
 	}
-	writeError(w, http.StatusForbidden, "Only a superadmin can do that")
+	writeError(w, r, http.StatusForbidden, "Only a superadmin can do that")
 }
 
 // UserHandler handles user management endpoints
@@ -104,8 +105,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		FROM users ORDER BY created_at DESC
 	`)
 	if err != nil {
-		h.logger.Error("failed to query users", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query users", err)
 		return
 	}
 	defer rows.Close()
@@ -132,7 +132,7 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
@@ -146,12 +146,11 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 	if err != nil {
-		h.logger.Error("failed to query user", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to query user", err)
 		return
 	}
 
@@ -162,27 +161,27 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	// Validate
 	if len(req.Username) < 3 || len(req.Username) > 32 {
-		writeError(w, http.StatusBadRequest, "Username must be 3-32 characters")
+		writeError(w, r, http.StatusBadRequest, "Username must be 3-32 characters")
 		return
 	}
 	if err := checkRoleGrant(caller, req.Role); err != nil {
-		writeRoleError(w, err)
+		writeRoleError(w, r, err)
 		return
 	}
 	if err := h.passwordValidator.Validate(req.Password); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -190,15 +189,14 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var exists int
 	h.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2`, req.Username, req.Email).Scan(&exists)
 	if exists > 0 {
-		writeError(w, http.StatusConflict, "Username or email already exists")
+		writeError(w, r, http.StatusConflict, i18n.MsgUserAlreadyExists)
 		return
 	}
 
 	// Hash password
 	passwordHash, err := h.hasher.Hash(req.Password)
 	if err != nil {
-		h.logger.Error("failed to hash password", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to hash password", err)
 		return
 	}
 
@@ -211,8 +209,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	`, req.Username, req.Email, passwordHash, req.Role, time.Now(), time.Now()).Scan(&id)
 
 	if err != nil {
-		h.logger.Error("failed to create user", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to create user", err)
 		return
 	}
 
@@ -221,7 +218,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":      id,
-		"message": "User created successfully",
+		"message": middleware.T(r.Context(), i18n.MsgUserCreated),
 	})
 }
 
@@ -230,34 +227,33 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	var req models.UpdateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	targetRole, err := h.roleOf(id)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 	if err != nil {
-		h.logger.Error("failed to read target user role", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to read target user role", err)
 		return
 	}
 	if err := checkTargetWritable(caller, targetRole); err != nil {
-		writeRoleError(w, err)
+		writeRoleError(w, r, err)
 		return
 	}
 
@@ -268,27 +264,26 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Role != nil {
 		if err := checkRoleGrant(caller, *req.Role); err != nil {
-			writeRoleError(w, err)
+			writeRoleError(w, r, err)
 			return
 		}
 		updates["role"] = *req.Role
 	}
 	if req.Password != nil {
 		if err := h.passwordValidator.Validate(*req.Password); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeError(w, r, http.StatusBadRequest, err.Error())
 			return
 		}
 		hash, err := h.hasher.Hash(*req.Password)
 		if err != nil {
-			h.logger.Error("failed to hash password", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to hash password", err)
 			return
 		}
 		updates["password_hash"] = hash
 	}
 
 	if len(updates) == 0 {
-		writeError(w, http.StatusBadRequest, "No fields to update")
+		writeError(w, r, http.StatusBadRequest, "No fields to update")
 		return
 	}
 
@@ -316,36 +311,32 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// was aimed at logged in for the full refresh lifetime.
 	tx, err := h.db.Begin()
 	if err != nil {
-		h.logger.Error("failed to begin user update", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to begin user update", err)
 		return
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once Commit has run
 
 	result, err := tx.Exec(query, args...)
 	if err != nil {
-		h.logger.Error("failed to update user", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to update user", err)
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 
 	if _, ok := updates["password_hash"]; ok {
 		if _, err := tx.Exec(`DELETE FROM sessions WHERE user_id = $1`, id); err != nil {
-			h.logger.Error("failed to revoke sessions after password reset", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to revoke sessions after password reset", err)
 			return
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		h.logger.Error("failed to commit user update", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to commit user update", err)
 		return
 	}
 
@@ -358,7 +349,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	h.audit.LogEvent(r, models.AuditActionUserUpdate, models.ResourceTypeUser, idStr, "",
 		map[string]interface{}{"fields": updatedFields})
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "User updated successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgUserUpdated)})
 }
 
 // Delete deletes a user
@@ -366,28 +357,27 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	userRole, err := h.roleOf(id)
 	if err == sql.ErrNoRows {
-		writeError(w, http.StatusNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 	if err != nil {
-		h.logger.Error("failed to read target user role", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to read target user role", err)
 		return
 	}
 	if err := checkTargetWritable(caller, userRole); err != nil {
-		writeRoleError(w, err)
+		writeRoleError(w, r, err)
 		return
 	}
 
@@ -395,31 +385,29 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if userRole == models.RoleSuperAdmin {
 		var superadminCount int
 		if err := h.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = 'superadmin'`).Scan(&superadminCount); err != nil {
-			h.logger.Error("failed to count superadmins", zap.Error(err))
-			writeError(w, http.StatusInternalServerError, "Internal server error")
+			writeInternalError(w, r, h.logger, "failed to count superadmins", err)
 			return
 		}
 		if superadminCount <= 1 {
-			writeError(w, http.StatusForbidden, "Cannot delete the last superadmin")
+			writeError(w, r, http.StatusForbidden, "Cannot delete the last superadmin")
 			return
 		}
 	}
 
 	result, err := h.db.Exec(`DELETE FROM users WHERE id = $1`, id)
 	if err != nil {
-		h.logger.Error("failed to delete user", zap.Error(err))
-		writeError(w, http.StatusInternalServerError, "Internal server error")
+		writeInternalError(w, r, h.logger, "failed to delete user", err)
 		return
 	}
 
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		writeError(w, http.StatusNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
 
 	h.audit.LogEvent(r, models.AuditActionUserDelete, models.ResourceTypeUser, idStr, "",
 		map[string]interface{}{"role": userRole})
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "User deleted successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgUserDeleted)})
 }

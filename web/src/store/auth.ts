@@ -1,12 +1,5 @@
 import { create } from 'zustand'
-
-interface User {
-  id: number
-  username: string
-  email: string
-  role: string
-  mfa_enabled: boolean
-}
+import type { User } from '@/lib/api'
 
 // Auth store is in-memory only. The refresh token lives in an HttpOnly cookie
 // (managed by the browser) and is invisible to JS, so we never persist tokens

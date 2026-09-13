@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { serversApi, xmppApi, ServerCapabilities } from '@/lib/api'
+import { serversApi, xmppApi, type ServerCapabilities, type XMPPServer } from '@/lib/api'
 import toast from 'react-hot-toast'
 import {
   ArrowLeft,
@@ -20,16 +20,6 @@ import {
 import clsx from 'clsx'
 import { useForm } from 'react-hook-form'
 import ConfirmDialog from '@/components/ConfirmDialog'
-
-interface ServerData {
-  id: number
-  name: string
-  type: string
-  host: string
-  port: number
-  tls_enabled: boolean
-  enabled: boolean
-}
 
 interface XMPPUser {
   jid: string
@@ -88,7 +78,7 @@ export default function ServerDetail() {
     queryKey: ['server', serverId],
     queryFn: async () => {
       const response = await serversApi.get(serverId)
-      return response.data as ServerData
+      return response.data as XMPPServer
     },
   })
 

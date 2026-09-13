@@ -139,6 +139,33 @@ export const serversApi = {
   test: (id: number) => api.post(`/servers/${id}/test`),
 }
 
+// Wire shapes of models.User and models.XMPPServer; a Go test keeps the
+// field lists in step with the json tags.
+export interface User {
+  id: number
+  username: string
+  email: string
+  role: string
+  mfa_enabled: boolean
+  locked_until?: string
+  last_login_at?: string
+  last_login_ip?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface XMPPServer {
+  id: number
+  name: string
+  type: string
+  host: string
+  port: number
+  tls_enabled: boolean
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface ServerCapabilities {
   online_users_count: boolean
   registered_users_count: boolean
