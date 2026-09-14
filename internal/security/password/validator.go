@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	ErrPasswordTooShort   = errors.New("password is too short")
-	ErrPasswordNoUpper    = errors.New("password must contain at least one uppercase letter")
-	ErrPasswordNoLower    = errors.New("password must contain at least one lowercase letter")
-	ErrPasswordNoNumber   = errors.New("password must contain at least one number")
-	ErrPasswordNoSpecial  = errors.New("password must contain at least one special character")
+	ErrPasswordTooShort  = errors.New("password is too short")
+	ErrPasswordNoUpper   = errors.New("password must contain at least one uppercase letter")
+	ErrPasswordNoLower   = errors.New("password must contain at least one lowercase letter")
+	ErrPasswordNoNumber  = errors.New("password must contain at least one number")
+	ErrPasswordNoSpecial = errors.New("password must contain at least one special character")
 )
 
 // Validator validates passwords against configured policy

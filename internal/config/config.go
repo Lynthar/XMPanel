@@ -42,7 +42,7 @@ type TLSConfig struct {
 // supported driver; the connection is opened directly in store.NewDB.
 type DatabaseConfig struct {
 	DSN             string `yaml:"dsn"`
-	EncryptionKey   string `yaml:"encryption_key"`    // Base64 encoded 32-byte key
+	EncryptionKey   string `yaml:"encryption_key"` // Base64 encoded 32-byte key
 	MaxOpenConns    int    `yaml:"max_open_conns"`
 	MaxIdleConns    int    `yaml:"max_idle_conns"`
 	ConnMaxLifetime string `yaml:"conn_max_lifetime"`
@@ -73,10 +73,10 @@ type CookieConfig struct {
 
 // JWTConfig holds JWT configuration
 type JWTConfig struct {
-	Secret           string        `yaml:"secret"`
-	AccessTokenTTL   time.Duration `yaml:"access_token_ttl"`
-	RefreshTokenTTL  time.Duration `yaml:"refresh_token_ttl"`
-	Issuer           string        `yaml:"issuer"`
+	Secret          string        `yaml:"secret"`
+	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`
+	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"`
+	Issuer          string        `yaml:"issuer"`
 }
 
 // MFAConfig holds MFA configuration
@@ -87,27 +87,27 @@ type MFAConfig struct {
 
 // PasswordConfig holds password policy configuration
 type PasswordConfig struct {
-	MinLength       int           `yaml:"min_length"`
-	RequireUpper    bool          `yaml:"require_upper"`
-	RequireLower    bool          `yaml:"require_lower"`
-	RequireNumber   bool          `yaml:"require_number"`
-	RequireSpecial  bool          `yaml:"require_special"`
-	Argon2Time      uint32        `yaml:"argon2_time"`
-	Argon2Memory    uint32        `yaml:"argon2_memory"`
-	Argon2Threads   uint8         `yaml:"argon2_threads"`
-	MaxLoginAttempts int          `yaml:"max_login_attempts"`
-	LockoutDuration time.Duration `yaml:"lockout_duration"`
+	MinLength        int           `yaml:"min_length"`
+	RequireUpper     bool          `yaml:"require_upper"`
+	RequireLower     bool          `yaml:"require_lower"`
+	RequireNumber    bool          `yaml:"require_number"`
+	RequireSpecial   bool          `yaml:"require_special"`
+	Argon2Time       uint32        `yaml:"argon2_time"`
+	Argon2Memory     uint32        `yaml:"argon2_memory"`
+	Argon2Threads    uint8         `yaml:"argon2_threads"`
+	MaxLoginAttempts int           `yaml:"max_login_attempts"`
+	LockoutDuration  time.Duration `yaml:"lockout_duration"`
 }
 
 // RateLimitConfig holds rate limiting configuration
 type RateLimitConfig struct {
-	Enabled           bool          `yaml:"enabled"`
-	RequestsPerSecond float64       `yaml:"requests_per_second"`
-	Burst             int           `yaml:"burst"`
-	LoginAttempts     int           `yaml:"login_attempts"`
-	LoginWindow       time.Duration `yaml:"login_window"`
-	TrustedProxies    []string      `yaml:"trusted_proxies"`    // List of trusted proxy IPs/CIDRs
-	TrustXForwardedFor bool         `yaml:"trust_x_forwarded_for"` // If false, always use RemoteAddr
+	Enabled            bool          `yaml:"enabled"`
+	RequestsPerSecond  float64       `yaml:"requests_per_second"`
+	Burst              int           `yaml:"burst"`
+	LoginAttempts      int           `yaml:"login_attempts"`
+	LoginWindow        time.Duration `yaml:"login_window"`
+	TrustedProxies     []string      `yaml:"trusted_proxies"`       // List of trusted proxy IPs/CIDRs
+	TrustXForwardedFor bool          `yaml:"trust_x_forwarded_for"` // If false, always use RemoteAddr
 }
 
 // CORSConfig holds CORS configuration
@@ -126,14 +126,14 @@ type XMPPConfig struct {
 
 // XMPPServerConfig holds individual XMPP server configuration
 type XMPPServerConfig struct {
-	ID       string `yaml:"id"`
-	Name     string `yaml:"name"`
-	Type     string `yaml:"type"` // prosody or ejabberd
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	APIKey   string `yaml:"api_key"` // Will be encrypted at rest
-	TLS      bool   `yaml:"tls"`
-	Enabled  bool   `yaml:"enabled"`
+	ID      string `yaml:"id"`
+	Name    string `yaml:"name"`
+	Type    string `yaml:"type"` // prosody or ejabberd
+	Host    string `yaml:"host"`
+	Port    int    `yaml:"port"`
+	APIKey  string `yaml:"api_key"` // Will be encrypted at rest
+	TLS     bool   `yaml:"tls"`
+	Enabled bool   `yaml:"enabled"`
 }
 
 // Load loads configuration from file

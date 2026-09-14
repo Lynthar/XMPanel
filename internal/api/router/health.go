@@ -43,8 +43,8 @@ type healthResponse struct {
 // HTTP status:
 //   - 200 + status=ok        database reachable, all XMPP servers responded.
 //   - 200 + status=degraded  database reachable but some XMPP servers failed.
-//                            The panel itself is healthy, so systemd liveness
-//                            should not restart on this.
+//     The panel itself is healthy, so systemd liveness
+//     should not restart on this.
 //   - 503 + status=error     database unreachable; panel is broken.
 //
 // Each probe has a 2s timeout. XMPP probes run concurrently so worst-case

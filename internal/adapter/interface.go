@@ -33,10 +33,10 @@ type (
 type Capabilities struct {
 	// Stats counters available via GetStats. Booleans rather than per-field
 	// flags so callers don't need to introspect the struct.
-	OnlineUsersCount    bool `json:"online_users_count"`
+	OnlineUsersCount     bool `json:"online_users_count"`
 	RegisteredUsersCount bool `json:"registered_users_count"`
-	ActiveSessionsCount bool `json:"active_sessions_count"`
-	S2SConnectionsCount bool `json:"s2s_connections_count"`
+	ActiveSessionsCount  bool `json:"active_sessions_count"`
+	S2SConnectionsCount  bool `json:"s2s_connections_count"`
 
 	// Live session listing & disconnection (GetOnlineSessions / KickSession / KickUser).
 	Sessions bool `json:"sessions"`
@@ -89,4 +89,3 @@ type XMPPAdapter interface {
 	// caches it per-server-record on the frontend.
 	Capabilities() Capabilities
 }
-

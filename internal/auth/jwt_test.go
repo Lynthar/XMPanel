@@ -120,4 +120,3 @@ func TestJWTManager_RejectsWrongIssuer(t *testing.T) {
 		t.Error("token from different issuer validated successfully")
 	}
 }
-

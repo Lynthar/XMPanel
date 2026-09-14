@@ -80,11 +80,11 @@ const (
 	MsgInvalidInput      = "error.invalid_input"
 
 	// Validation messages
-	MsgFieldRequired    = "validation.field_required"
-	MsgFieldTooShort    = "validation.field_too_short"
-	MsgFieldTooLong     = "validation.field_too_long"
-	MsgInvalidEmail     = "validation.invalid_email"
-	MsgInvalidFormat    = "validation.invalid_format"
+	MsgFieldRequired = "validation.field_required"
+	MsgFieldTooShort = "validation.field_too_short"
+	MsgFieldTooLong  = "validation.field_too_long"
+	MsgInvalidEmail  = "validation.invalid_email"
+	MsgInvalidFormat = "validation.invalid_format"
 
 	// Password validation
 	MsgPasswordTooShort  = "password.too_short"
@@ -156,11 +156,11 @@ var messages = map[Locale]map[string]string{
 		MsgInvalidInput:      "Invalid input data",
 
 		// Validation
-		MsgFieldRequired:  "This field is required",
-		MsgFieldTooShort:  "Input is too short",
-		MsgFieldTooLong:   "Input is too long",
-		MsgInvalidEmail:   "Invalid email address",
-		MsgInvalidFormat:  "Invalid format",
+		MsgFieldRequired: "This field is required",
+		MsgFieldTooShort: "Input is too short",
+		MsgFieldTooLong:  "Input is too long",
+		MsgInvalidEmail:  "Invalid email address",
+		MsgInvalidFormat: "Invalid format",
 
 		// Password
 		MsgPasswordTooShort:  "Password must be at least %d characters",
@@ -229,11 +229,11 @@ var messages = map[Locale]map[string]string{
 		MsgInvalidInput:      "输入数据无效",
 
 		// Validation
-		MsgFieldRequired:  "此字段为必填项",
-		MsgFieldTooShort:  "输入内容过短",
-		MsgFieldTooLong:   "输入内容过长",
-		MsgInvalidEmail:   "邮箱地址格式无效",
-		MsgInvalidFormat:  "格式无效",
+		MsgFieldRequired: "此字段为必填项",
+		MsgFieldTooShort: "输入内容过短",
+		MsgFieldTooLong:  "输入内容过长",
+		MsgInvalidEmail:  "邮箱地址格式无效",
+		MsgInvalidFormat: "格式无效",
 
 		// Password
 		MsgPasswordTooShort:  "密码长度至少为 %d 个字符",

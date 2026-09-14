@@ -39,9 +39,9 @@ func NewTOTPManager(issuer string) *TOTPManager {
 
 // TOTPSecret represents a TOTP secret for a user
 type TOTPSecret struct {
-	Secret   string `json:"secret"`
-	URI      string `json:"uri"`
-	QRCode   string `json:"qr_code,omitempty"` // Base64 encoded QR code image
+	Secret string `json:"secret"`
+	URI    string `json:"uri"`
+	QRCode string `json:"qr_code,omitempty"` // Base64 encoded QR code image
 }
 
 // GenerateSecret generates a new TOTP secret for a user
