@@ -81,11 +81,9 @@ func (g *RouteGroup) Handle(pattern string, handler http.Handler) {
 		handler = g.middlewares[i](handler)
 	}
 
-	full := pattern
+	full := g.prefix + pattern
 	if idx := strings.Index(pattern, " "); idx >= 0 {
 		full = pattern[:idx+1] + g.prefix + pattern[idx+1:]
-	} else {
-		full = g.prefix + pattern
 	}
 	g.router.Handle(full, handler)
 }

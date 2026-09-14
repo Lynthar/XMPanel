@@ -108,7 +108,7 @@ func (h *UserHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query users", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	users := make([]models.User, 0)
 	for rows.Next() {
@@ -187,7 +187,10 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Check if username or email exists
 	var exists int
-	h.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2`, req.Username, req.Email).Scan(&exists)
+	if err := h.db.QueryRow(`SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2`, req.Username, req.Email).Scan(&exists); err != nil {
+		writeInternalError(w, r, h.logger, "failed to check for existing user", err)
+		return
+	}
 	if exists > 0 {
 		writeError(w, r, http.StatusConflict, i18n.MsgUserAlreadyExists)
 		return

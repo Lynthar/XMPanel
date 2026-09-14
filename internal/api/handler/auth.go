@@ -179,11 +179,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	valid, err := h.hasher.Verify(req.Password, user.PasswordHash)
 	if err != nil || !valid {
 		// Record failed attempt
-		h.db.Exec(`
+		if _, err := h.db.Exec(`
 			UPDATE users SET failed_login_attempts = failed_login_attempts + 1,
 			       locked_until = CASE WHEN failed_login_attempts >= 4 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END
 			WHERE id = $1
-		`, user.ID)
+		`, user.ID); err != nil {
+			h.logger.Error("failed to record failed login attempt", zap.Error(err))
+		}
 		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, strconv.FormatInt(user.ID, 10), user.Username,
 			map[string]interface{}{"reason": "invalid_password"})
 		writeError(w, r, http.StatusUnauthorized, i18n.MsgInvalidCredentials)
@@ -264,10 +266,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update login info and reset failed attempts
-	h.db.Exec(`
+	if _, err := h.db.Exec(`
 		UPDATE users SET last_login_at = $1, last_login_ip = $2, failed_login_attempts = 0, locked_until = NULL
 		WHERE id = $3
-	`, time.Now(), clientIP, user.ID)
+	`, time.Now(), clientIP, user.ID); err != nil {
+		h.logger.Error("failed to update login info", zap.Error(err))
+	}
 
 	// Clear rate limiter on success
 	h.loginLimiter.RecordSuccess(clientIP + ":" + req.Username)
@@ -341,7 +345,9 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	if !storedHash.Valid || storedHash.String != incomingHash {
 		// Possible token theft: revoke the session and clear cookies so the
 		// client falls back to /login instead of looping on /auth/refresh.
-		h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID)
+		if _, err := h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID); err != nil {
+			h.logger.Error("failed to revoke session", zap.Error(err))
+		}
 		h.logger.Warn("refresh token reuse detected, revoking session",
 			zap.Int64("user_id", claims.UserID),
 			zap.String("session_id", claims.SessionID))
@@ -529,7 +535,9 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to hash recovery codes", zap.Error(err))
 	} else {
 		codesJSON, _ := json.Marshal(hashedCodes)
-		h.db.Exec(`UPDATE users SET recovery_codes = $1 WHERE id = $2`, string(codesJSON), claims.UserID)
+		if _, err := h.db.Exec(`UPDATE users SET recovery_codes = $1 WHERE id = $2`, string(codesJSON), claims.UserID); err != nil {
+			h.logger.Error("failed to store recovery codes", zap.Error(err))
+		}
 	}
 
 	h.audit.LogEvent(r, models.AuditActionMFAEnabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)

@@ -13,11 +13,12 @@ import (
 )
 
 // writeJSON is the only place a handler writes a status line; every response
-// shares its Content-Type and trailing newline.
+// shares its Content-Type and trailing newline. An encode failure after the
+// status line is out has nowhere to go, so it is dropped.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // writeError answers {"error": text} in the request's locale. msg is an i18n

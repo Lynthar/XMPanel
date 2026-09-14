@@ -39,7 +39,7 @@ func newTestDB(t *testing.T) *store.DB {
 	if _, err := db.Exec(`TRUNCATE audit_logs RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

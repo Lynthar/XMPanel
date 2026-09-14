@@ -192,8 +192,11 @@ func VerifyEntry(prev, log *AuditLog) bool {
 		entry.ResourceID = log.ResourceID.String
 	}
 
+	// Details that no longer parse cannot be the JSON the hash was taken over.
 	if log.Details.Valid {
-		json.Unmarshal([]byte(log.Details.String), &entry.Details)
+		if err := json.Unmarshal([]byte(log.Details.String), &entry.Details); err != nil {
+			return false
+		}
 	}
 
 	prevHash := ""

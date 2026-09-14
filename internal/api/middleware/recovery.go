@@ -25,7 +25,7 @@ func Recovery(logger *zap.Logger) func(http.Handler) http.Handler {
 					// Return 500 error to client
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					w.Write([]byte(`{"error":"Internal server error"}`))
+					_, _ = w.Write([]byte(`{"error":"Internal server error"}`))
 				}
 			}()
 

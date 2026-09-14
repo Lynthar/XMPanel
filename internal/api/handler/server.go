@@ -45,7 +45,7 @@ func (h *ServerHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query servers", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	servers := make([]models.XMPPServer, 0)
 	for rows.Next() {

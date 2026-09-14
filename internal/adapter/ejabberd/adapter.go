@@ -67,7 +67,9 @@ func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) 
 	}
 
 	var version string
-	json.Unmarshal(versionResp, &version)
+	if err := json.Unmarshal(versionResp, &version); err != nil {
+		return nil, fmt.Errorf("failed to parse version: %w", err)
+	}
 
 	// Get hosts
 	hostsResp, err := a.doRequest(ctx, "registered_vhosts", nil)
@@ -156,7 +158,9 @@ func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models
 	}
 
 	var exists int
-	json.Unmarshal(resp, &exists)
+	if err := json.Unmarshal(resp, &exists); err != nil {
+		return nil, fmt.Errorf("failed to parse check_account result: %w", err)
+	}
 	if exists != 0 {
 		return nil, apperrors.ErrUserNotFound
 	}
@@ -378,8 +382,9 @@ func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.
 		"service": mucDomain,
 	}); err == nil {
 		var count int
-		json.Unmarshal(occResp, &count)
-		r.Occupants = count
+		if json.Unmarshal(occResp, &count) == nil {
+			r.Occupants = count
+		}
 	}
 
 	return r, nil
@@ -407,12 +412,14 @@ func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomReque
 	}
 
 	for _, opt := range options {
-		a.doRequest(ctx, "change_room_option", map[string]string{
+		if _, err := a.doRequest(ctx, "change_room_option", map[string]string{
 			"name":    req.Name,
 			"service": req.Domain,
 			"option":  opt["name"],
 			"value":   opt["value"],
-		})
+		}); err != nil {
+			return fmt.Errorf("failed to set room option %s: %w", opt["name"], err)
+		}
 	}
 
 	return nil
@@ -507,7 +514,7 @@ func (a *Adapter) doRequest(ctx context.Context, command string, args map[string
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", apperrors.ErrConnectionFailed, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

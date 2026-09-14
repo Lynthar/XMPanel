@@ -122,7 +122,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	logs := make([]models.AuditLog, 0)
 	for rows.Next() {
@@ -176,7 +176,6 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	if endID > 0 {
 		query += " AND id <= $" + strconv.Itoa(paramNum)
 		args = append(args, endID)
-		paramNum++
 	}
 
 	query += " ORDER BY id ASC"
@@ -186,7 +185,7 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Verified row by row rather than into a slice: the whole point of the
 	// endpoint is to cover every record, and the table has no upper bound.
@@ -272,7 +271,6 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	if endTime := r.URL.Query().Get("end_time"); endTime != "" {
 		query += " AND created_at <= $" + strconv.Itoa(paramNum)
 		args = append(args, endTime)
-		paramNum++
 	}
 
 	query += " ORDER BY created_at DESC LIMIT 10000"
@@ -282,7 +280,7 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query audit logs", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Collect before writing anything: once the CSV body has started the
 	// status line is spent, and an export that stops halfway looks to the
@@ -315,15 +313,10 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=audit_logs_"+time.Now().Format("20060102_150405")+".csv")
 
-	writer := csv.NewWriter(w)
-	defer writer.Flush()
-
-	// Write header
-	writer.Write([]string{"ID", "Username", "Action", "Resource Type", "Resource ID", "Details", "IP Address", "Timestamp"})
-
-	// Write data
+	records := make([][]string, 0, len(collected)+1)
+	records = append(records, []string{"ID", "Username", "Action", "Resource Type", "Resource ID", "Details", "IP Address", "Timestamp"})
 	for _, row := range collected {
-		writer.Write([]string{
+		records = append(records, []string{
 			strconv.FormatInt(row.id, 10),
 			row.username,
 			row.action,
@@ -333,6 +326,11 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 			row.ipAddress.String,
 			row.createdAt.Format(time.RFC3339),
 		})
+	}
+	// A write failure here means the client went away mid-body; the status
+	// line is already spent, so logging is all that is left to do.
+	if err := csv.NewWriter(w).WriteAll(records); err != nil {
+		h.logger.Warn("audit export interrupted", zap.Error(err))
 	}
 }
 
@@ -418,7 +416,7 @@ func (s *AuditService) Log(entry *models.AuditLogEntry) error {
 	committed := false
 	defer func() {
 		if !committed {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 

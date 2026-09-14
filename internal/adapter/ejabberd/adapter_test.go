@@ -35,8 +35,10 @@ func newFixtureAdapter(t *testing.T) (*Adapter, map[string]map[string]string) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		command := strings.TrimPrefix(r.URL.Path, "/api/")
 
+		// Commands without arguments send no body; a bad body shows up as a
+		// nil entry in calls when the test reads it back.
 		var args map[string]string
-		json.NewDecoder(r.Body).Decode(&args)
+		_ = json.NewDecoder(r.Body).Decode(&args)
 		calls[command] = args
 
 		body, ok := upstreamReplies[command]
@@ -46,7 +48,9 @@ func newFixtureAdapter(t *testing.T) (*Adapter, map[string]map[string]string) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(body))
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write %s reply: %v", command, err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 
