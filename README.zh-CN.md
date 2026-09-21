@@ -9,7 +9,7 @@
 
 </div>
 
-XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 这一侧还在扩展。
+XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse、Tuwunel）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 这一侧还在扩展。
 
 [English](README.md) | 简体中文
 
@@ -68,6 +68,10 @@ Synapse 那边只要一枚管理员账号的 access token（`register_new_matrix
 账号生命周期走 MAS 的 admin API；没有它，面板仍能列账号、设备和房间、注销设备、清除房间，
 但不建号、不锁定、不停用、不改密。
 
+Tuwunel 自己提供 Synapse 的 admin API，所以要的是同一种令牌：一枚服务器管理员的 access token，
+管理员即它 admin room 的成员（第一个注册的账号，或在 admin room 里用 `!admin users` 命令提拔的）。
+这里没有 MAS 的事：Tuwunel 不接受 MAS 令牌，它自带的新一代认证也不改变面板能做什么。
+
 ## 用法
 
 打开 `http://localhost:8080`，用 `admin` 登录。忘记口令时：
@@ -114,10 +118,11 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 - **房间管理只有 ejabberd 和 Synapse 有。** Prosody 的上游 API 不暴露房间。
 - **XMPP 的分页是面板做的，不是服务器做的。** 两个 XMPP 适配器都是取全表再在内存里分页，
   账号特别多的服务器列表会慢。Synapse 由服务端分页。
-- **Matrix 只支持 Synapse，而且不完整。** 口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署，账号生命周期要有上面说的 MAS 客户端。
-  删账号是停用（Matrix 没有删除），id 永久占用；删房间是启动 Synapse 的后台清除，房间可能在列表里多留一会儿。
-  不建房、没有全局设备列表。Synapse 专有的工具（彻底抹除、挂起、隐形封禁、媒体隔离、注册令牌、举报、房间封禁与清除、服务器通知、联邦状态）已有；
-  抹除、隐形封禁、封禁与清除要 admin 角色并照原样输入目标 ID。服务器通知要求服务端配置了 `server_notices`，面板事先探测不到：没配的话按钮会答「不支持」。
+- **Matrix 支持 Synapse 与 Tuwunel，而且不完整。** Synapse 在口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署，账号生命周期要有上面说的 MAS 客户端。
+  删账号是停用（Matrix 没有删除），id 永久占用；删房间是启动服务端的后台清除，房间可能在列表里多留一会儿。
+  不建房、没有全局设备列表。审核工具（彻底抹除、挂起、隐形封禁、媒体隔离、注册令牌、举报、房间封禁与清除、服务器通知、联邦状态）已有；
+  抹除、隐形封禁、封禁与清除要 admin 角色并照原样输入目标 ID。服务器通知要求 Synapse 配置了 `server_notices`，面板事先探测不到：没配的话按钮会答「不支持」。
+  Tuwunel 没有隐形封禁、举报和媒体隔离，设了 `mas_secret` 之后注册令牌归 MAS 管；面板在它那里不显示这些工具。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
 - **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
 - **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。

@@ -9,7 +9,7 @@
 
 </div>
 
-Self-hosted web admin panel for XMPP servers (Prosody, ejabberd) and Matrix homeservers (Synapse), with RBAC, MFA and a tamper-evident audit log. Go + React. The Matrix side is still being extended.
+Self-hosted web admin panel for XMPP servers (Prosody, ejabberd) and Matrix homeservers (Synapse, Tuwunel), with RBAC, MFA and a tamper-evident audit log. Go + React. The Matrix side is still being extended.
 
 English | [简体中文](README.zh-CN.md)
 
@@ -80,6 +80,12 @@ declared with `client_secret_basic` and listed in `policy.data.admin_clients`.
 Without that client the panel still lists accounts, devices and rooms, revokes
 devices and purges rooms, but does not create, lock, deactivate or change passwords.
 
+Tuwunel serves the Synapse admin API itself, so it needs the same kind of token:
+one from a server admin, meaning a member of its admin room (the first account
+registered, or one promoted with the admin room's `!admin users` commands). MAS is not
+involved: Tuwunel does not accept MAS tokens, and its own next-generation auth
+does not change what the panel can do.
+
 ## Usage
 
 Open `http://localhost:8080` and sign in as `admin`. If you've lost the password:
@@ -131,17 +137,20 @@ Set the JWT secret before you put real data in; the encryption key is checked at
 - **XMPP listings are paged in the panel, not by the server.** Both XMPP adapters
   fetch the full account or session list and page it in memory, so very large
   servers are slow to list. Synapse pages on the server.
-- **Matrix support is Synapse-only and partial.** Password (legacy) authentication
-  is fully supported; behind Matrix Authentication Service the account lifecycle
-  needs the MAS client described above.
+- **Matrix support covers Synapse and Tuwunel, and is partial.** On Synapse,
+  password (legacy) authentication is fully supported; behind Matrix
+  Authentication Service the account lifecycle needs the MAS client described above.
   Deleting an account deactivates it (Matrix has no deletion) and its id stays
-  taken; deleting a room starts Synapse's background purge, so the room can linger
-  in listings for a moment. No room creation and no global device list. The
-  Synapse-only tools (erase, suspend, shadow ban, media quarantine, registration
+  taken; deleting a room starts the server's background purge, so the room can
+  linger in listings for a moment. No room creation and no global device list. The
+  moderation tools (erase, suspend, shadow ban, media quarantine, registration
   tokens, reports, room block and purge, server notices, federation health) are
   in; erase, shadow ban, block and purge need the admin role and a typed-out id.
-  Server notices need `server_notices` configured on the homeserver, which the
-  panel cannot detect up front: without it the button answers "not supported".
+  Server notices need `server_notices` configured on Synapse, which the panel
+  cannot detect up front: without it the button answers "not supported".
+  Tuwunel has no shadow ban, no event reports and no media quarantine, and its
+  registration tokens are managed by MAS once `mas_secret` is set; the panel
+  hides those tools there.
 - **PostgreSQL only.** No SQLite, no MySQL.
 - **No container image for the panel itself.** Source build and a systemd
   unit; the compose file under `smoke/` only starts test servers.

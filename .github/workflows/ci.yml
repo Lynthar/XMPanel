@@ -147,10 +147,12 @@ jobs:
             synapse-mas.cache-to=type=gha,scope=smoke-synapse,mode=max
             mas.cache-from=type=gha,scope=smoke-mas
             mas.cache-to=type=gha,scope=smoke-mas,mode=max
+            tuwunel.cache-from=type=gha,scope=smoke-tuwunel
+            tuwunel.cache-to=type=gha,scope=smoke-tuwunel,mode=max
 
       # The test starts smoke/docker-compose.yml itself (real Prosody 13,
-      # ejabberd, Synapse and Synapse + MAS); the containers are kept so the
-      # log step can read them, the runner is discarded anyway.
+      # ejabberd, Synapse, Tuwunel and Synapse + MAS); the containers are kept
+      # so the log step can read them, the runner is discarded anyway.
       - name: Smoke against real servers
         env:
           XMPANEL_SMOKE_KEEP: "1"

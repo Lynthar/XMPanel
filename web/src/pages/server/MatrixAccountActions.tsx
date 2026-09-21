@@ -132,12 +132,12 @@ export default function MatrixAccountActions({ server, caps, account, onChanged 
         onConfirm={() => erase.mutate()}
         onCancel={() => setEraseTarget(false)}
       />
-      {showMedia && <MediaModal server={server} account={account} onClose={() => setShowMedia(false)} />}
+      {showMedia && <MediaModal server={server} account={account} quarantine={has('matrix.media_quarantine')} onClose={() => setShowMedia(false)} />}
     </>
   )
 }
 
-function MediaModal({ server, account, onClose }: { server: Server; account: Account; onClose: () => void }) {
+function MediaModal({ server, account, quarantine: canQuarantine, onClose }: { server: Server; account: Account; quarantine: boolean; onClose: () => void }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const paging = usePaging(20)
@@ -204,12 +204,12 @@ function MediaModal({ server, account, onClose }: { server: Server; account: Acc
         paging={paging}
         searchPlaceholder={t('backend.accounts.mediaSearchPlaceholder')}
         emptyMessage={t('backend.accounts.mediaEmpty')}
-        toolbar={
+        toolbar={canQuarantine && (
           <button onClick={() => quarantine.mutate()} disabled={quarantine.isPending} className="btn btn-secondary flex items-center gap-2 text-yellow-400">
             <ShieldAlert className="w-4 h-4" />
             {t('backend.accounts.quarantineAll')}
           </button>
-        }
+        )}
       />
       <ConfirmDialog
         open={deleteTarget !== null}

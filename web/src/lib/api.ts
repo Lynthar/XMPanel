@@ -121,6 +121,7 @@ export const implementations = {
   prosody: { protocol: 'xmpp' as Protocol },
   ejabberd: { protocol: 'xmpp' as Protocol },
   synapse: { protocol: 'matrix' as Protocol },
+  tuwunel: { protocol: 'matrix' as Protocol },
 } as const
 
 export type Implementation = keyof typeof implementations
@@ -138,7 +139,7 @@ export type Capability =
   | 'sessions.list_all' | 'sessions.list_by_account' | 'sessions.terminate'
   | 'rooms.list' | 'rooms.get' | 'rooms.create' | 'rooms.delete'
   | 'matrix.deactivate' | 'matrix.suspend' | 'matrix.shadow_ban' | 'matrix.registration_tokens' | 'matrix.reports'
-  | 'matrix.media' | 'matrix.room_block' | 'matrix.room_purge' | 'matrix.server_notice' | 'matrix.federation'
+  | 'matrix.media' | 'matrix.media_quarantine' | 'matrix.room_block' | 'matrix.room_purge' | 'matrix.server_notice' | 'matrix.federation'
 
 export interface MASCredentials {
   endpoint: string

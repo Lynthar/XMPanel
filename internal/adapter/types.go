@@ -18,6 +18,7 @@ const (
 	ImplProsody  Implementation = "prosody"
 	ImplEjabberd Implementation = "ejabberd"
 	ImplSynapse  Implementation = "synapse"
+	ImplTuwunel  Implementation = "tuwunel" // served by the synapse package behind a static mask
 )
 
 // ServerConfig is what the registry hands to a constructor; credentials are
@@ -110,7 +111,7 @@ type XMPPSessionFacts struct {
 }
 
 type Room struct {
-	ID      string           `json:"id"` // room JID or !id:server
+	ID      string           `json:"id"` // room JID, or !opaque:server (no server part from room version 12)
 	Name    string           `json:"name,omitempty"`
 	Alias   string           `json:"alias,omitempty"`
 	Members int              `json:"members"`

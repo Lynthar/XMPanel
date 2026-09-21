@@ -460,7 +460,7 @@ func matrixScenario(t *testing.T, ctx context.Context, c Config, fresh func(*tes
 		if got := ids(page.Items, func(md adapter.Media) string { return md.ID }); !sameStrings(got, pop.Media) {
 			t.Fatalf("media = %v, want %v", got, pop.Media)
 		}
-		if len(pop.Media) > 0 {
+		if len(pop.Media) > 0 && has(adapter.CapMatrixMediaQuarantine) {
 			n, err := m.QuarantineAccountMedia(ctx, pop.Accounts[0])
 			if err != nil || n != len(pop.Media) {
 				t.Errorf("quarantine = %d, %v; want %d", n, err, len(pop.Media))
@@ -474,6 +474,8 @@ func matrixScenario(t *testing.T, ctx context.Context, c Config, fresh func(*tes
 					t.Errorf("media %s not quarantined", md.ID)
 				}
 			}
+		}
+		if len(pop.Media) > 0 {
 			if err := m.DeleteMedia(ctx, pop.Media[0]); err != nil {
 				t.Fatalf("delete media: %v", err)
 			}
@@ -680,6 +682,9 @@ func invoke(ctx context.Context, a adapter.Adapter, cap adapter.Capability, pop 
 		if err == nil && media != "" {
 			err = m.DeleteMedia(ctx, media)
 		}
+		return err
+	case adapter.CapMatrixMediaQuarantine:
+		_, err := m.QuarantineAccountMedia(ctx, account)
 		return err
 	case adapter.CapMatrixRoomBlock:
 		return m.BlockRoom(ctx, room, false)

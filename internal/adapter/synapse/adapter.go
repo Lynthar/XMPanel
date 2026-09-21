@@ -20,6 +20,7 @@ import (
 // Adapter drives Synapse through its admin API with one admin access token.
 // Under MAS delegation the account lifecycle goes through MAS's admin API when
 // the credentials carry a MAS client, and is undeclared when they do not.
+// Tuwunel serves the same API and is driven by the same code behind a mask.
 type Adapter struct {
 	cfg        adapter.ServerConfig
 	httpClient *http.Client
@@ -53,6 +54,10 @@ var lifecycle = append([]adapter.Capability{
 	adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin,
 }, masLifecycle...)
 
+// tuwunelMask is what Tuwunel 1.9 leaves out of the Synapse admin API: those
+// routes answer 404 M_UNRECOGNIZED, so they are never declared for it.
+var tuwunelMask = []adapter.Capability{adapter.CapMatrixShadowBan, adapter.CapMatrixReports, adapter.CapMatrixMediaQuarantine}
+
 func New(cfg adapter.ServerConfig) *Adapter {
 	a := &Adapter{
 		cfg: cfg,
@@ -63,16 +68,24 @@ func New(cfg adapter.ServerConfig) *Adapter {
 		baseURL:   strings.TrimRight(cfg.Endpoint, "/"),
 		authMode:  AuthModeLegacy,
 		passwords: true,
-		caps:      legacyCapabilities,
 	}
+	a.caps = a.static()
 	if cfg.Creds.MAS != nil {
 		a.mas = newMASClient(cfg.Creds.MAS, a.httpClient)
 	}
 	return a
 }
 
-// Probe checks reachability, the token, the delegation mode and admin rights
-// in that order, so the first failure names the layer that is wrong.
+// static is the capability set before the probe narrows it.
+func (a *Adapter) static() adapter.CapabilitySet {
+	if a.cfg.Impl == adapter.ImplTuwunel {
+		return legacyCapabilities.Without(tuwunelMask...)
+	}
+	return legacyCapabilities
+}
+
+// Probe checks reachability, the token, the delegation mode, the version and
+// admin rights in that order, so the first failure names the layer at fault.
 func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	const op = "server.probe"
 	var versions struct {
@@ -100,57 +113,102 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: who.UserID, Err: fmt.Errorf("server_name is %q, not %q", serverName, a.cfg.Domain)}
 	}
 
-	authMode := AuthModeLegacy
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v1/auth_metadata", anonymous: true}, nil); err != nil {
-		if failure, ok := adapter.AsError(err); !ok || failure.Status != http.StatusNotFound {
-			return nil, err
-		}
-	} else {
-		authMode = AuthModeMAS
+	authMode, err := a.detectAuthMode(ctx, op)
+	if err != nil {
+		return nil, err
 	}
-
 	version, err := a.serverVersion(ctx, op)
 	if err != nil {
 		return nil, err
 	}
-	// MAS credentials are verified against MAS itself, and only make sense
-	// when the homeserver actually delegates to it. A MAS that has password
-	// login off (an upstream identity provider) cannot create accounts with
-	// a password or set one, so those two capabilities go.
+	// server_version needs no token on either implementation, so admin rights
+	// are proven on the admin's own record: a non-admin token fails here as
+	// Forbidden instead of as 502 on every later request.
+	if _, err := a.call(ctx, request{op: op, resource: who.UserID, method: http.MethodGet, path: userPath(who.UserID)}, nil); err != nil {
+		return nil, err
+	}
 	passwords := true
-	switch {
-	case authMode == AuthModeMAS && a.mas != nil:
-		var site struct {
-			ServerName    string `json:"server_name"`
-			PasswordLogin bool   `json:"password_login_enabled"`
-		}
-		if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: "/api/admin/v1/site-config"}, &site); err != nil {
+	if authMode == AuthModeMAS && a.mas != nil {
+		if passwords, err = a.masPasswordLogin(ctx, op); err != nil {
 			return nil, err
 		}
-		if site.ServerName != a.cfg.Domain {
-			return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: site.ServerName, Err: fmt.Errorf("MAS serves server_name %q, not %q", site.ServerName, a.cfg.Domain)}
-		}
-		passwords = site.PasswordLogin
-	case authMode == AuthModeLegacy && a.mas != nil:
-		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Err: errors.New("MAS credentials were given but the homeserver does not delegate authentication")}
 	}
-	caps := legacyCapabilities
+	caps := a.static()
 	switch {
 	case authMode == AuthModeMAS && a.mas == nil:
-		caps = legacyCapabilities.Without(lifecycle...)
+		caps = caps.Without(lifecycle...)
 	case authMode == AuthModeMAS && !passwords:
-		caps = legacyCapabilities.Without(adapter.CapAccountsCreate, adapter.CapAccountsSetPassword)
+		caps = caps.Without(adapter.CapAccountsCreate, adapter.CapAccountsSetPassword)
+	}
+	if a.cfg.Impl == adapter.ImplTuwunel {
+		tokens, err := a.tuwunelServesTokens(ctx, op)
+		if err != nil {
+			return nil, err
+		}
+		if !tokens {
+			caps = caps.Without(adapter.CapMatrixRegTokens)
+		}
 	}
 	a.mu.Lock()
 	a.authMode, a.passwords, a.caps = authMode, passwords, caps
 	a.mu.Unlock()
 	return &adapter.ServerInfo{
 		Protocol: adapter.ProtocolMatrix,
-		Impl:     adapter.ImplSynapse,
+		Impl:     a.cfg.Impl,
 		Version:  version,
 		Domains:  []string{serverName},
 		AuthMode: authMode,
 	}, nil
+}
+
+// detectAuthMode reads whether authentication is delegated to MAS. Tuwunel
+// never is: its own OIDC server answers auth_metadata too and it takes no
+// MAS tokens, so MAS credentials are refused rather than probed.
+func (a *Adapter) detectAuthMode(ctx context.Context, op string) (string, error) {
+	if a.cfg.Impl == adapter.ImplTuwunel {
+		if a.mas != nil {
+			return "", &adapter.Error{Kind: adapter.Invalid, Op: op, Err: errors.New("MAS credentials were given but Tuwunel does not accept MAS tokens")}
+		}
+		return AuthModeLegacy, nil
+	}
+	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v1/auth_metadata", anonymous: true}, nil); err != nil {
+		if failure, ok := adapter.AsError(err); !ok || failure.Status != http.StatusNotFound {
+			return "", err
+		}
+		if a.mas != nil {
+			return "", &adapter.Error{Kind: adapter.Invalid, Op: op, Err: errors.New("MAS credentials were given but the homeserver does not delegate authentication")}
+		}
+		return AuthModeLegacy, nil
+	}
+	return AuthModeMAS, nil
+}
+
+// masPasswordLogin verifies the MAS credentials against MAS itself and reads
+// whether it takes password logins; an upstream identity provider cannot
+// create accounts with a password or set one.
+func (a *Adapter) masPasswordLogin(ctx context.Context, op string) (bool, error) {
+	var site struct {
+		ServerName    string `json:"server_name"`
+		PasswordLogin bool   `json:"password_login_enabled"`
+	}
+	if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: "/api/admin/v1/site-config"}, &site); err != nil {
+		return false, err
+	}
+	if site.ServerName != a.cfg.Domain {
+		return false, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: site.ServerName, Err: fmt.Errorf("MAS serves server_name %q, not %q", site.ServerName, a.cfg.Domain)}
+	}
+	return site.PasswordLogin, nil
+}
+
+// tuwunelServesTokens reports whether the registration token routes exist:
+// Tuwunel drops them once MAS provisioning (mas_secret) is configured, and
+// nothing else reveals that.
+func (a *Adapter) tuwunelServesTokens(ctx context.Context, op string) (bool, error) {
+	_, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/registration_tokens"}, nil)
+	if failure, ok := adapter.AsError(err); ok && failure.Kind == adapter.NotSupported {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *Adapter) Capabilities() adapter.CapabilitySet {
@@ -302,7 +360,13 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 	if failure, ok := adapter.AsError(err); !ok || failure.Kind != adapter.NotFound {
 		return nil, err
 	}
-	body := map[string]any{"password": req.Password, "admin": req.Admin}
+	// admin is only sent when wanted: a new account is not an admin by
+	// default, and Tuwunel treats an explicit false as a revocation, which
+	// fails for an account that never was one.
+	body := map[string]any{"password": req.Password}
+	if req.Admin {
+		body["admin"] = true
+	}
 	if req.DisplayName != "" {
 		body["displayname"] = req.DisplayName
 	}
@@ -311,7 +375,9 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 	if err != nil {
 		return nil, err
 	}
-	if status != http.StatusCreated {
+	// Synapse answers 201 for a creation and 200 for a modification, which
+	// catches a concurrent creation; Tuwunel answers 200 for both.
+	if status != http.StatusCreated && a.cfg.Impl != adapter.ImplTuwunel {
 		return nil, conflict(op, mxid)
 	}
 	acc := created.account()
@@ -399,6 +465,9 @@ func (a *Adapter) SetAdmin(ctx context.Context, id string, admin bool) error {
 	if viaMAS {
 		return a.masAction(ctx, op, mxid, "/set-admin", map[string]bool{"admin": admin})
 	}
+	if a.cfg.Impl == adapter.ImplTuwunel {
+		return a.tuwunelSetAdmin(ctx, op, mxid, admin)
+	}
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
@@ -408,6 +477,27 @@ func (a *Adapter) SetAdmin(ctx context.Context, id string, admin bool) error {
 		body: map[string]bool{"admin": admin},
 	}, nil)
 	return err
+}
+
+// tuwunelSetAdmin uses the create-or-modify PUT, the only admin-bit route
+// Tuwunel serves. The grant joins the admin room: with no such room the PUT
+// changes nothing (so the reply is checked), and revoking a non-admin errors.
+func (a *Adapter) tuwunelSetAdmin(ctx context.Context, op, mxid string, admin bool) error {
+	current, err := a.user(ctx, op, mxid)
+	if err != nil {
+		return err
+	}
+	if bool(current.Admin) == admin {
+		return nil
+	}
+	var updated user
+	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: map[string]bool{"admin": admin}}, &updated); err != nil {
+		return err
+	}
+	if bool(updated.Admin) != admin {
+		return &adapter.Error{Kind: adapter.Upstream, Op: op, Resource: mxid, Status: http.StatusOK, Err: errors.New("admin bit unchanged; the server has no admin room to join")}
+	}
+	return nil
 }
 
 // ListSessions is undeclared: Synapse has no device listing across accounts.
@@ -508,8 +598,8 @@ func (a *Adapter) GetRoom(ctx context.Context, id string) (*adapter.Room, error)
 }
 
 func (a *Adapter) roomDetails(ctx context.Context, op, id string) (*adapter.Room, error) {
-	if !strings.HasPrefix(id, "!") || !strings.Contains(id, ":") {
-		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: id, Err: errors.New("room id must be !id:server")}
+	if !validRoomID(id) {
+		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: id, Err: errors.New("room id must be !opaque or !opaque:server")}
 	}
 	var r room
 	if _, err := a.call(ctx, request{op: op, resource: id, method: http.MethodGet, path: "/_synapse/admin/v1/rooms/" + url.PathEscape(id)}, &r); err != nil {
@@ -669,6 +759,12 @@ func (a *Adapter) mxid(op, id string) (string, error) {
 		return "", &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: id, Err: errors.New("account id must be @localpart:server")}
 	}
 	return "@" + id + ":" + a.cfg.Domain, nil
+}
+
+// validRoomID accepts !opaque:server and, since room version 12, !opaque
+// with no server part.
+func validRoomID(id string) bool {
+	return len(id) > 1 && strings.HasPrefix(id, "!") && !strings.ContainsAny(id, "/ ")
 }
 
 func userPath(mxid string) string {
@@ -934,12 +1030,13 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 	failure.Code = detail.Errcode
 	failure.Kind = classify(status, detail.Errcode)
 	// Two 400s carry a meaning the errcode does not: a missing server_notices
-	// block, and a registration token that already exists (M_INVALID_PARAM).
+	// block, and a registration token that already exists (M_INVALID_PARAM;
+	// Tuwunel words it differently and prefixes the errcode).
 	if status == http.StatusBadRequest {
 		switch {
 		case strings.Contains(detail.Error, "Server notices are not enabled"):
 			failure.Kind = adapter.NotSupported
-		case strings.HasPrefix(detail.Error, "Token already exists"):
+		case strings.Contains(strings.ToLower(detail.Error), "token already exists"):
 			failure.Kind = adapter.Conflict
 		}
 	}

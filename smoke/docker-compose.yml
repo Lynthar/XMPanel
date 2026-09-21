@@ -38,6 +38,17 @@ services:
       timeout: 3s
       retries: 60
 
+  tuwunel:
+    image: smoke-tuwunel
+    build: ./tuwunel
+    ports:
+      - "127.0.0.1:18010:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/tuwunel/admin-token.txt"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
   # A second Synapse that delegates authentication to MAS, which needs
   # PostgreSQL; the admin token for this pair comes from the mas container.
   postgres:

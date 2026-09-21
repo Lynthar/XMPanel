@@ -51,7 +51,7 @@ func InsertServer(t *testing.T, db *store.DB, ring *crypto.KeyRing, impl, endpoi
 		t.Fatal(err)
 	}
 	protocol := "xmpp"
-	if impl == "synapse" {
+	if impl == "synapse" || impl == "tuwunel" {
 		protocol = "matrix"
 	}
 	var id int64

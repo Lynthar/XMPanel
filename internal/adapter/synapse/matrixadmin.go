@@ -19,6 +19,15 @@ var _ adapter.MatrixAdmin = (*Adapter)(nil)
 // masLifecycle names the MatrixAdmin operations MAS owns under delegation.
 var masLifecycle = []adapter.Capability{adapter.CapMatrixDeactivate, adapter.CapMatrixRegTokens}
 
+// declared answers NotSupported before any request for an operation the
+// implementation mask or the probe left out of the capability set.
+func (a *Adapter) declared(op string, c adapter.Capability) error {
+	if !a.Capabilities().Has(c) {
+		return adapter.NotSupportedError(op)
+	}
+	return nil
+}
+
 func (a *Adapter) Deactivate(ctx context.Context, id string, erase bool) error {
 	const op = "matrix.deactivate"
 	viaMAS, mxid, err := a.lifecycleTarget(op, id)
@@ -57,6 +66,9 @@ func (a *Adapter) SetSuspended(ctx context.Context, id string, suspended bool) e
 // answers a missing one with a bare 404 M_UNKNOWN from the store.
 func (a *Adapter) SetShadowBanned(ctx context.Context, id string, banned bool) error {
 	const op = "matrix.shadow_ban"
+	if err := a.declared(op, adapter.CapMatrixShadowBan); err != nil {
+		return err
+	}
 	mxid, err := a.mxid(op, id)
 	if err != nil {
 		return err
@@ -77,6 +89,9 @@ func (a *Adapter) SetShadowBanned(ctx context.Context, id string, banned bool) e
 // a revocation that keeps the row.
 func (a *Adapter) ListRegistrationTokens(ctx context.Context) ([]adapter.RegistrationToken, error) {
 	const op = "matrix.registration_tokens.list"
+	if err := a.declared(op, adapter.CapMatrixRegTokens); err != nil {
+		return nil, err
+	}
 	viaMAS, err := a.lifecycle(op)
 	if err != nil {
 		return nil, err
@@ -107,6 +122,9 @@ func (a *Adapter) ListRegistrationTokens(ctx context.Context) ([]adapter.Registr
 
 func (a *Adapter) CreateRegistrationToken(ctx context.Context, req adapter.CreateRegistrationToken) (*adapter.RegistrationToken, error) {
 	const op = "matrix.registration_tokens.create"
+	if err := a.declared(op, adapter.CapMatrixRegTokens); err != nil {
+		return nil, err
+	}
 	viaMAS, err := a.lifecycle(op)
 	if err != nil {
 		return nil, err
@@ -151,6 +169,9 @@ func (a *Adapter) CreateRegistrationToken(ctx context.Context, req adapter.Creat
 
 func (a *Adapter) DeleteRegistrationToken(ctx context.Context, token string) error {
 	const op = "matrix.registration_tokens.delete"
+	if err := a.declared(op, adapter.CapMatrixRegTokens); err != nil {
+		return err
+	}
 	viaMAS, err := a.lifecycle(op)
 	if err != nil {
 		return err
@@ -183,6 +204,9 @@ func (a *Adapter) DeleteRegistrationToken(ctx context.Context, token string) err
 
 func (a *Adapter) ListReports(ctx context.Context, q adapter.ListQuery) (adapter.Page[adapter.EventReport], error) {
 	const op = "matrix.reports"
+	if err := a.declared(op, adapter.CapMatrixReports); err != nil {
+		return adapter.Page[adapter.EventReport]{}, err
+	}
 	from, err := offset(op, q.Cursor)
 	if err != nil {
 		return adapter.Page[adapter.EventReport]{}, err
@@ -271,6 +295,9 @@ func (a *Adapter) ListAccountMedia(ctx context.Context, id string, q adapter.Lis
 // unknown one with 0 quarantined rather than an error.
 func (a *Adapter) QuarantineAccountMedia(ctx context.Context, id string) (int, error) {
 	const op = "matrix.media.quarantine"
+	if err := a.declared(op, adapter.CapMatrixMediaQuarantine); err != nil {
+		return 0, err
+	}
 	mxid, err := a.mxid(op, id)
 	if err != nil {
 		return 0, err
@@ -306,8 +333,8 @@ func (a *Adapter) DeleteMedia(ctx context.Context, mediaID string) error {
 // not seen yet, which is the point of blocking.
 func (a *Adapter) BlockRoom(ctx context.Context, roomID string, block bool) error {
 	const op = "matrix.room_block"
-	if !strings.HasPrefix(roomID, "!") || !strings.Contains(roomID, ":") {
-		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: roomID, Err: errors.New("room id must be !id:server")}
+	if !validRoomID(roomID) {
+		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: roomID, Err: errors.New("room id must be !opaque or !opaque:server")}
 	}
 	_, err := a.call(ctx, request{
 		op: op, resource: roomID, method: http.MethodPut,

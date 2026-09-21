@@ -1,0 +1,10 @@
+# Tuwunel for the smoke run only: the secret exists just to register the
+# admin, and federation is off so the container never dials out.
+[global]
+server_name = "example.com"
+database_path = "/var/lib/tuwunel"
+address = "0.0.0.0"
+port = 8008
+allow_federation = false
+registration_shared_secret = "smoke-registration-secret"
+log = "info"

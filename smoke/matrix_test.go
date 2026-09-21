@@ -44,6 +44,15 @@ func matrixTargets() []matrixTarget {
 			build: build,
 		},
 		{
+			name: "tuwunel", impl: adapter.ImplTuwunel, authMode: synapse.AuthModeLegacy,
+			endpoint: "http://127.0.0.1:18010", loginBase: "http://127.0.0.1:18010",
+			creds: func(t *testing.T) adapter.Credentials {
+				token := strings.TrimSpace(compose(t, "exec", "-T", "tuwunel", "cat", "/var/lib/tuwunel/admin-token.txt"))
+				return adapter.Credentials{Kind: adapter.CredentialsBearer, Token: token}
+			},
+			build: build,
+		},
+		{
 			name: "synapse-mas", impl: adapter.ImplSynapse, authMode: synapse.AuthModeMAS,
 			endpoint: "http://127.0.0.1:18009", loginBase: "http://127.0.0.1:18080",
 			creds: func(t *testing.T) adapter.Credentials {
@@ -415,7 +424,7 @@ func runMatrixAdmin(t *testing.T, ctx context.Context, a adapter.Adapter, login 
 		}
 	}
 
-	// Media: an upload is listed, quarantined and deleted.
+	// Media: an upload is listed, quarantined where supported, and deleted.
 	if caps.Has(adapter.CapMatrixMedia) {
 		mediaID, err := client.upload("smoke.txt", []byte("smoke media "+suffix))
 		if err != nil {
@@ -438,11 +447,13 @@ func runMatrixAdmin(t *testing.T, ctx context.Context, a adapter.Adapter, login 
 				t.Errorf("media facts = %+v", md)
 			}
 		}
-		if n, err := m.QuarantineAccountMedia(ctx, id); err != nil || n < 1 {
-			t.Errorf("quarantine = %d, %v", n, err)
-		}
-		if page, err := m.ListAccountMedia(ctx, id, adapter.ListQuery{Limit: adapter.MaxLimit}); err != nil || len(page.Items) == 0 || !page.Items[0].Quarantined {
-			t.Errorf("media after quarantine = %+v, %v", page, err)
+		if caps.Has(adapter.CapMatrixMediaQuarantine) {
+			if n, err := m.QuarantineAccountMedia(ctx, id); err != nil || n < 1 {
+				t.Errorf("quarantine = %d, %v", n, err)
+			}
+			if page, err := m.ListAccountMedia(ctx, id, adapter.ListQuery{Limit: adapter.MaxLimit}); err != nil || len(page.Items) == 0 || !page.Items[0].Quarantined {
+				t.Errorf("media after quarantine = %+v, %v", page, err)
+			}
 		}
 		if err := m.DeleteMedia(ctx, mediaID); err != nil {
 			t.Fatalf("delete media: %v", err)

@@ -1,6 +1,7 @@
 // Package synapsetest is a fake Synapse for the contract and handler tests,
 // answering the way 1.161 does where that matters: create-or-modify PUT, v2
 // room delete accepting unknown rooms, listing quirks (locked, suspended, ts).
+// Switched to Tuwunel it answers the way 1.9 does where the two differ.
 package synapsetest
 
 import (
@@ -21,6 +22,7 @@ import (
 const (
 	AdminLocalpart = "admin"
 	ServerVersion  = "1.161.0"
+	TuwunelVersion = "1.9.2"
 	// The MAS admin client the fake accepts, and the token it issues to it.
 	MASClientID     = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 	MASClientSecret = "mas-client-secret"
@@ -87,6 +89,11 @@ type Fake struct {
 	token  string
 	fail   int
 	mas    bool
+	// Tuwunel knobs: the implementation, mas_secret being configured (which
+	// removes the registration token routes), and a deleted admin room.
+	tuwunel      bool
+	provisioning bool
+	noAdminRoom  bool
 	// MAS knobs: password login off makes set-password answer 403; a set-
 	// password failure injection answers 500; a slow token delays the grant.
 	noPasswords     bool
@@ -247,6 +254,31 @@ func (f *Fake) DelegateAuth(on bool) {
 	f.mas = on
 }
 
+// Tuwunel switches the fake to Tuwunel 1.9: shadow ban, reports, quarantine
+// and the admin-bit route are unserved (404 M_UNRECOGNIZED), a creating PUT
+// answers 200, a duplicate token is worded differently, creation_ts is 0.
+func (f *Fake) Tuwunel(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tuwunel = on
+}
+
+// MASProvisioning sets Tuwunel's mas_secret, which removes the registration
+// token routes while everything else stays.
+func (f *Fake) MASProvisioning(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.provisioning = on
+}
+
+// NoAdminRoom removes Tuwunel's admin room: an admin grant then answers 200
+// and changes nothing, because the grant is a join into that room.
+func (f *Fake) NoAdminRoom(gone bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noAdminRoom = gone
+}
+
 // PasswordLogin switches MAS's password login; off, set-password answers 403.
 func (f *Fake) PasswordLogin(enabled bool) {
 	f.mu.Lock()
@@ -316,8 +348,34 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Header.Get("Authorization") != "Bearer "+f.token:
 		matrixError(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Invalid access token passed.")
 		return
+	case strings.HasPrefix(r.URL.Path, "/_synapse/admin/") && r.URL.Path != "/_synapse/admin/v1/server_version":
+		// server_version is the one admin route open to any token.
+		if u, ok := f.users[f.mxid(AdminLocalpart)]; !ok || !u.admin {
+			matrixError(w, http.StatusForbidden, "M_FORBIDDEN", "You are not a server admin")
+			return
+		}
+	}
+	if f.tuwunel && !f.tuwunelServes(r) {
+		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
+		return
 	}
 	f.mux.ServeHTTP(w, r)
+}
+
+// tuwunelServes is false for the Synapse routes Tuwunel 1.9 does not serve,
+// and for the registration token routes once mas_secret is set.
+func (f *Fake) tuwunelServes(r *http.Request) bool {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/shadow_ban"),
+		strings.HasSuffix(r.URL.Path, "/media/quarantine"),
+		strings.HasPrefix(r.URL.Path, "/_synapse/admin/v1/event_reports"),
+		strings.HasPrefix(r.URL.Path, "/_synapse/admin/v1/users/") && strings.HasSuffix(r.URL.Path, "/admin"),
+		r.URL.Path == "/_matrix/client/v1/auth_metadata":
+		return false
+	case strings.HasPrefix(r.URL.Path, "/_synapse/admin/v1/registration_tokens"):
+		return !f.provisioning
+	}
+	return true
 }
 
 func (f *Fake) mxid(localpart string) string {
@@ -351,7 +409,11 @@ func (f *Fake) authMetadata(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (f *Fake) serverVersion(w http.ResponseWriter, _ *http.Request) {
-	reply(w, http.StatusOK, map[string]string{"server_version": ServerVersion})
+	version := ServerVersion
+	if f.tuwunel {
+		version = TuwunelVersion
+	}
+	reply(w, http.StatusOK, map[string]string{"server_version": version})
 }
 
 func (f *Fake) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +456,9 @@ func (f *Fake) listUsers(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids[from:end] {
 		u := f.users[id]
 		entry := f.userJSON(id, u)
-		entry["creation_ts"] = u.creationTS * 1000
+		if !f.tuwunel {
+			entry["creation_ts"] = u.creationTS * 1000
+		}
 		users = append(users, entry)
 	}
 	out := map[string]any{"users": users, "total": total}
@@ -405,7 +469,7 @@ func (f *Fake) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *Fake) userJSON(id string, u *user) map[string]any {
-	return map[string]any{
+	entry := map[string]any{
 		"name":          id,
 		"displayname":   u.displayName,
 		"admin":         u.admin,
@@ -418,6 +482,12 @@ func (f *Fake) userJSON(id string, u *user) map[string]any {
 		"avatar_url":    nil,
 		"creation_ts":   u.creationTS,
 	}
+	// Tuwunel keeps no creation time and carries suspended on every record.
+	if f.tuwunel {
+		entry["creation_ts"] = 0
+		entry["suspended"] = u.suspended
+	}
+	return entry
 }
 
 func (f *Fake) getUser(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +525,9 @@ func (f *Fake) putUser(w http.ResponseWriter, r *http.Request) {
 		}
 		u = &user{creationTS: 1700000000}
 		f.users[id] = u
-		status = http.StatusCreated
+		if !f.tuwunel {
+			status = http.StatusCreated
+		}
 	}
 	locked, hasLocked := body["locked"].(bool)
 	deactivated, hasDeactivated := body["deactivated"].(bool)
@@ -472,7 +544,10 @@ func (f *Fake) putUser(w http.ResponseWriter, r *http.Request) {
 	if name, ok := body["displayname"].(string); ok {
 		u.displayName = name
 	}
-	if admin, ok := body["admin"].(bool); ok {
+	// Tuwunel's grant is a join into the admin room; without the room the
+	// field is accepted and ignored.
+	grantable := !f.tuwunel || !f.noAdminRoom
+	if admin, ok := body["admin"].(bool); ok && grantable {
 		u.admin = admin
 	}
 	if hasLocked {
@@ -602,7 +677,11 @@ func (f *Fake) createToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, exists := f.tokens[*body.Token]; exists {
-			matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "Token already exists: "+*body.Token)
+			if f.tuwunel {
+				matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "M_INVALID_PARAM: Registration token already exists")
+			} else {
+				matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "Token already exists: "+*body.Token)
+			}
 			return
 		}
 		token = *body.Token
@@ -1048,7 +1127,7 @@ func (f *Fake) getRoom(w http.ResponseWriter, r *http.Request) {
 // room. The fake completes it at once.
 func (f *Fake) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !strings.HasPrefix(id, "!") || !strings.Contains(id, ":") {
+	if !strings.HasPrefix(id, "!") {
 		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", id+" is not a legal room ID")
 		return
 	}

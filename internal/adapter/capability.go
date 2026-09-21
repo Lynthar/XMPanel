@@ -26,16 +26,17 @@ const (
 	CapRoomsDelete         Capability = "rooms.delete"
 
 	// MatrixAdmin operations. Locking is not here: it is accounts.set_enabled.
-	CapMatrixDeactivate   Capability = "matrix.deactivate"
-	CapMatrixSuspend      Capability = "matrix.suspend"
-	CapMatrixShadowBan    Capability = "matrix.shadow_ban"
-	CapMatrixRegTokens    Capability = "matrix.registration_tokens"
-	CapMatrixReports      Capability = "matrix.reports"
-	CapMatrixMedia        Capability = "matrix.media"
-	CapMatrixRoomBlock    Capability = "matrix.room_block"
-	CapMatrixRoomPurge    Capability = "matrix.room_purge"
-	CapMatrixServerNotice Capability = "matrix.server_notice"
-	CapMatrixFederation   Capability = "matrix.federation"
+	CapMatrixDeactivate      Capability = "matrix.deactivate"
+	CapMatrixSuspend         Capability = "matrix.suspend"
+	CapMatrixShadowBan       Capability = "matrix.shadow_ban"
+	CapMatrixRegTokens       Capability = "matrix.registration_tokens"
+	CapMatrixReports         Capability = "matrix.reports"
+	CapMatrixMedia           Capability = "matrix.media" // list and delete; quarantine is its own bit
+	CapMatrixMediaQuarantine Capability = "matrix.media_quarantine"
+	CapMatrixRoomBlock       Capability = "matrix.room_block"
+	CapMatrixRoomPurge       Capability = "matrix.room_purge"
+	CapMatrixServerNotice    Capability = "matrix.server_notice"
+	CapMatrixFederation      Capability = "matrix.federation"
 )
 
 // AllCapabilities lists every declared capability; the frontend copy is kept
@@ -46,13 +47,13 @@ var AllCapabilities = []Capability{
 	CapSessionsListAll, CapSessionsListByAcct, CapSessionsTerminate,
 	CapRoomsList, CapRoomsGet, CapRoomsCreate, CapRoomsDelete,
 	CapMatrixDeactivate, CapMatrixSuspend, CapMatrixShadowBan, CapMatrixRegTokens, CapMatrixReports,
-	CapMatrixMedia, CapMatrixRoomBlock, CapMatrixRoomPurge, CapMatrixServerNotice, CapMatrixFederation,
+	CapMatrixMedia, CapMatrixMediaQuarantine, CapMatrixRoomBlock, CapMatrixRoomPurge, CapMatrixServerNotice, CapMatrixFederation,
 }
 
 // MatrixCapabilities are the ones MatrixAdmin serves.
 var MatrixCapabilities = []Capability{
 	CapMatrixDeactivate, CapMatrixSuspend, CapMatrixShadowBan, CapMatrixRegTokens, CapMatrixReports,
-	CapMatrixMedia, CapMatrixRoomBlock, CapMatrixRoomPurge, CapMatrixServerNotice, CapMatrixFederation,
+	CapMatrixMedia, CapMatrixMediaQuarantine, CapMatrixRoomBlock, CapMatrixRoomPurge, CapMatrixServerNotice, CapMatrixFederation,
 }
 
 type CapabilitySet map[Capability]struct{}

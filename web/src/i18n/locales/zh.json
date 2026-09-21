@@ -115,7 +115,8 @@
     "endpointHelp": {
       "prosody": "面板连接 Prosody HTTP 监听的地址，通常是本机回环；下方域名会放进 Host 头，所以这里可以填 IP。",
       "ejabberd": "面板连接 ejabberd mod_http_api 监听的地址，通常是本机回环。",
-      "synapse": "面板连接 Synapse 客户端监听的地址，通常是 http://127.0.0.1:8008；/_matrix 与 /_synapse/admin 都要能从这里访问。"
+      "synapse": "面板连接 Synapse 客户端监听的地址，通常是 http://127.0.0.1:8008；/_matrix 与 /_synapse/admin 都要能从这里访问。",
+      "tuwunel": "面板连接 Tuwunel 监听的地址，通常是 http://127.0.0.1:8008；/_synapse/admin 由它自己提供。"
     },
     "domain": "域名",
     "domainLabel": {
@@ -131,7 +132,8 @@
     "tokenHelp": {
       "prosody": "签发给管理员的 mod_tokenauth Bearer 令牌。",
       "ejabberd": "带 ejabberd:admin scope 的 OAuth 令牌，或 mod_http_api 接受的其他令牌。",
-      "synapse": "一个服务器管理员账号的 access token，例如 register_new_matrix_user -a 建的账号或管理员登录得到的。"
+      "synapse": "一个服务器管理员账号的 access token，例如 register_new_matrix_user -a 建的账号或管理员登录得到的。",
+      "tuwunel": "一个服务器管理员（admin room 成员）的 access token，例如该管理员登录得到的。"
     },
     "mas": {
       "toggle": "认证已委派给 Matrix Authentication Service",
@@ -165,7 +167,8 @@
     "implementations": {
       "prosody": "Prosody",
       "ejabberd": "ejabberd",
-      "synapse": "Synapse"
+      "synapse": "Synapse",
+      "tuwunel": "Tuwunel"
     },
     "stats": {
       "title": "服务器统计",
