@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/adapter/matrixhttp"
 )
 
 // masClient talks to Matrix Authentication Service's admin API with a token
@@ -62,9 +62,9 @@ func masUserPath(ulid string) string {
 
 // call performs one admin API request. A 401 on a cached token means MAS
 // revoked it early, so the token is dropped and the request sent once more.
-func (m *masClient) call(ctx context.Context, req request, out any) (int, error) {
+func (m *masClient) call(ctx context.Context, req matrixhttp.Request, out any) (int, error) {
 	for attempt := 0; ; attempt++ {
-		token, fresh, err := m.accessToken(ctx, req.op)
+		token, fresh, err := m.accessToken(ctx, req.Op)
 		if err != nil {
 			return 0, err
 		}
@@ -77,8 +77,8 @@ func (m *masClient) call(ctx context.Context, req request, out any) (int, error)
 	}
 }
 
-func (m *masClient) send(ctx context.Context, req request, token string, out any) (status int, err error) {
-	failure := &adapter.Error{Kind: adapter.Upstream, Op: req.op, Resource: req.resource}
+func (m *masClient) send(ctx context.Context, req matrixhttp.Request, token string, out any) (status int, err error) {
+	failure := &adapter.Error{Kind: adapter.Upstream, Op: req.Op, Resource: req.Resource}
 	defer func() {
 		if err != nil {
 			failure.Err = err
@@ -86,20 +86,20 @@ func (m *masClient) send(ctx context.Context, req request, token string, out any
 		}
 	}()
 	var payload []byte
-	if req.body != nil {
-		if payload, err = json.Marshal(req.body); err != nil {
+	if req.Body != nil {
+		if payload, err = json.Marshal(req.Body); err != nil {
 			return 0, fmt.Errorf("failed to marshal request body: %w", err)
 		}
 	}
 	header := http.Header{"Authorization": {"Bearer " + token}, "Accept": {"application/json"}}
-	if req.body != nil {
+	if req.Body != nil {
 		header.Set("Content-Type", "application/json")
 	}
-	target := m.base + req.path
-	if len(req.query) > 0 {
-		target += "?" + req.query.Encode()
+	target := m.base + req.Path
+	if len(req.Query) > 0 {
+		target += "?" + req.Query.Encode()
 	}
-	status, respBody, err := transport(ctx, m.httpClient, req.method, target, header, payload)
+	status, respBody, err := matrixhttp.Transport(ctx, m.httpClient, req.Method, target, header, payload)
 	if err != nil {
 		if status == 0 {
 			failure.Kind = adapter.Unreachable
@@ -118,7 +118,7 @@ func (m *masClient) send(ctx context.Context, req request, token string, out any
 		return status, nil
 	}
 	failure.Kind = classifyMAS(status)
-	return status, fmt.Errorf("MAS %s %s: %s", req.method, req.shown(), masMessage(respBody, status))
+	return status, fmt.Errorf("MAS %s %s: %s", req.Method, req.Shown(), masMessage(respBody, status))
 }
 
 // accessToken returns the cached token, or fetches one and reports it as
@@ -184,7 +184,7 @@ func (m *masClient) fetch(ctx context.Context, op string) (string, time.Time, er
 		"Accept":        {"application/json"},
 		"Authorization": {"Basic " + base64.StdEncoding.EncodeToString([]byte(m.clientID+":"+m.secret))},
 	}
-	status, respBody, err := transport(ctx, m.httpClient, http.MethodPost, m.base+"/oauth2/token", header, []byte(form.Encode()))
+	status, respBody, err := matrixhttp.Transport(ctx, m.httpClient, http.MethodPost, m.base+"/oauth2/token", header, []byte(form.Encode()))
 	if err != nil {
 		if status == 0 {
 			failure.Kind = adapter.Unreachable
@@ -269,7 +269,7 @@ func masMessage(body []byte, status int) string {
 		}
 		return oauth.Error
 	}
-	if message := snippet(string(body)); message != "" {
+	if message := matrixhttp.Snippet(string(body)); message != "" {
 		return message
 	}
 	return http.StatusText(status)
@@ -281,31 +281,4 @@ func oauthErrorCode(body []byte) string {
 	}
 	_ = json.Unmarshal(body, &oauth)
 	return oauth.Error
-}
-
-// transport performs one HTTP exchange and returns the status and body. A
-// status of 0 with an error means the server was not reached; the cause is
-// kept so a cancelled context stays recognisable through errors.Is.
-func transport(ctx context.Context, client *http.Client, method, target string, header http.Header, body []byte) (int, []byte, error) {
-	var payload io.Reader
-	if body != nil {
-		payload = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, payload)
-	if err != nil {
-		return 0, nil, err
-	}
-	for key, values := range header {
-		req.Header[key] = values
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, nil, err
-	}
-	return resp.StatusCode, respBody, nil
 }

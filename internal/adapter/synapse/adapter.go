@@ -12,9 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/adapter/matrixhttp"
 )
 
 // Adapter drives Synapse through its admin API with one admin access token.
@@ -24,7 +24,7 @@ import (
 type Adapter struct {
 	cfg        adapter.ServerConfig
 	httpClient *http.Client
-	baseURL    string
+	client     *matrixhttp.Client
 	mas        *masClient
 	mu         sync.RWMutex
 	authMode   string
@@ -42,7 +42,7 @@ const (
 // reveals a missing server_notices block when a notice is sent) and answers
 // NotSupported then; it is the one declared capability that may do so.
 var legacyCapabilities = adapter.NewCapabilitySet(append([]adapter.Capability{
-	adapter.CapAccountsList, adapter.CapAccountsSearch, adapter.CapAccountsCreate, adapter.CapAccountsDelete,
+	adapter.CapAccountsList, adapter.CapAccountsGet, adapter.CapAccountsSearch, adapter.CapAccountsCreate, adapter.CapAccountsDelete,
 	adapter.CapAccountsSetPassword, adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin,
 	adapter.CapSessionsListByAcct, adapter.CapSessionsTerminate,
 	adapter.CapRoomsList, adapter.CapRoomsGet, adapter.CapRoomsDelete,
@@ -65,10 +65,10 @@ func New(cfg adapter.ServerConfig) *Adapter {
 			Timeout:   30 * time.Second,
 			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		},
-		baseURL:   strings.TrimRight(cfg.Endpoint, "/"),
 		authMode:  AuthModeLegacy,
 		passwords: true,
 	}
+	a.client = &matrixhttp.Client{HTTP: a.httpClient, BaseURL: strings.TrimRight(cfg.Endpoint, "/"), Token: cfg.Creds.Token, Kind: kind}
 	a.caps = a.static()
 	if cfg.Creds.MAS != nil {
 		a.mas = newMASClient(cfg.Creds.MAS, a.httpClient)
@@ -91,7 +91,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	var versions struct {
 		Versions []string `json:"versions"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/versions", anonymous: true}, &versions); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_matrix/client/versions", Anonymous: true}, &versions); err != nil {
 		return nil, err
 	}
 	if len(versions.Versions) == 0 {
@@ -100,7 +100,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	var who struct {
 		UserID string `json:"user_id"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v3/account/whoami"}, &who); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_matrix/client/v3/account/whoami"}, &who); err != nil {
 		return nil, err
 	}
 	_, serverName := adapter.SplitMXID(who.UserID)
@@ -124,7 +124,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	// server_version needs no token on either implementation, so admin rights
 	// are proven on the admin's own record: a non-admin token fails here as
 	// Forbidden instead of as 502 on every later request.
-	if _, err := a.call(ctx, request{op: op, resource: who.UserID, method: http.MethodGet, path: userPath(who.UserID)}, nil); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: who.UserID, Method: http.MethodGet, Path: userPath(who.UserID)}, nil); err != nil {
 		return nil, err
 	}
 	passwords := true
@@ -171,7 +171,7 @@ func (a *Adapter) detectAuthMode(ctx context.Context, op string) (string, error)
 		}
 		return AuthModeLegacy, nil
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v1/auth_metadata", anonymous: true}, nil); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_matrix/client/v1/auth_metadata", Anonymous: true}, nil); err != nil {
 		if failure, ok := adapter.AsError(err); !ok || failure.Status != http.StatusNotFound {
 			return "", err
 		}
@@ -191,7 +191,7 @@ func (a *Adapter) masPasswordLogin(ctx context.Context, op string) (bool, error)
 		ServerName    string `json:"server_name"`
 		PasswordLogin bool   `json:"password_login_enabled"`
 	}
-	if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: "/api/admin/v1/site-config"}, &site); err != nil {
+	if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/api/admin/v1/site-config"}, &site); err != nil {
 		return false, err
 	}
 	if site.ServerName != a.cfg.Domain {
@@ -204,7 +204,7 @@ func (a *Adapter) masPasswordLogin(ctx context.Context, op string) (bool, error)
 // Tuwunel drops them once MAS provisioning (mas_secret) is configured, and
 // nothing else reveals that.
 func (a *Adapter) tuwunelServesTokens(ctx context.Context, op string) (bool, error) {
-	_, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/registration_tokens"}, nil)
+	_, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/registration_tokens"}, nil)
 	if failure, ok := adapter.AsError(err); ok && failure.Kind == adapter.NotSupported {
 		return false, nil
 	}
@@ -246,7 +246,7 @@ func (a *Adapter) serverVersion(ctx context.Context, op string) (string, error) 
 	var version struct {
 		ServerVersion string `json:"server_version"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/server_version"}, &version); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/server_version"}, &version); err != nil {
 		return "", err
 	}
 	return version.ServerVersion, nil
@@ -295,7 +295,7 @@ func (a *Adapter) listUsers(ctx context.Context, op string, q adapter.ListQuery)
 		query.Set("name", q.Search)
 	}
 	var page userPage
-	_, err = a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v3/users", query: query}, &page)
+	_, err = a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v3/users", Query: query}, &page)
 	return page, err
 }
 
@@ -325,7 +325,7 @@ func (a *Adapter) GetAccount(ctx context.Context, id string) (*adapter.Account, 
 // never deletes an account, so deactivation is what the panel's delete did.
 func (a *Adapter) user(ctx context.Context, op, mxid string) (*user, error) {
 	var u user
-	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: userPath(mxid)}, &u); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: userPath(mxid)}, &u); err != nil {
 		return nil, err
 	}
 	if u.Deactivated {
@@ -353,7 +353,7 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 	// PUT creates or modifies, so a taken id must be detected first: a
 	// deactivated account keeps its id forever and must not be revived here.
 	var existing user
-	_, err = a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: userPath(mxid)}, &existing)
+	_, err = a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: userPath(mxid)}, &existing)
 	if err == nil {
 		return nil, conflict(op, mxid)
 	}
@@ -371,7 +371,7 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 		body["displayname"] = req.DisplayName
 	}
 	var created user
-	status, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: body}, &created)
+	status, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPut, Path: userPath(mxid), Body: body}, &created)
 	if err != nil {
 		return nil, err
 	}
@@ -398,10 +398,10 @@ func (a *Adapter) DeleteAccount(ctx context.Context, id string) error {
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPost,
-		path: "/_synapse/admin/v1/deactivate/" + url.PathEscape(mxid),
-		body: map[string]bool{"erase": false},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPost,
+		Path: "/_synapse/admin/v1/deactivate/" + url.PathEscape(mxid),
+		Body: map[string]bool{"erase": false},
 	}, nil)
 	return err
 }
@@ -450,7 +450,7 @@ func (a *Adapter) modify(ctx context.Context, op, mxid string, fields map[string
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
-	_, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: fields}, nil)
+	_, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPut, Path: userPath(mxid), Body: fields}, nil)
 	return err
 }
 
@@ -471,10 +471,10 @@ func (a *Adapter) SetAdmin(ctx context.Context, id string, admin bool) error {
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPut,
-		path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/admin",
-		body: map[string]bool{"admin": admin},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPut,
+		Path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/admin",
+		Body: map[string]bool{"admin": admin},
 	}, nil)
 	return err
 }
@@ -491,7 +491,7 @@ func (a *Adapter) tuwunelSetAdmin(ctx context.Context, op, mxid string, admin bo
 		return nil
 	}
 	var updated user
-	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: map[string]bool{"admin": admin}}, &updated); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPut, Path: userPath(mxid), Body: map[string]bool{"admin": admin}}, &updated); err != nil {
 		return err
 	}
 	if bool(updated.Admin) != admin {
@@ -514,7 +514,7 @@ func (a *Adapter) ListAccountSessions(ctx context.Context, accountID string) ([]
 	var out struct {
 		Devices []device `json:"devices"`
 	}
-	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: userPath(mxid) + "/devices"}, &out); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: userPath(mxid) + "/devices"}, &out); err != nil {
 		return nil, err
 	}
 	sessions := make([]adapter.Session, len(out.Devices))
@@ -536,9 +536,9 @@ func (a *Adapter) TerminateSession(ctx context.Context, accountID, sessionID str
 	if sessionID == "" {
 		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: mxid, Err: errors.New("device id is required")}
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid + "/" + sessionID, method: http.MethodDelete,
-		path: userPath(mxid) + "/devices/" + url.PathEscape(sessionID),
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid + "/" + sessionID, Method: http.MethodDelete,
+		Path: userPath(mxid) + "/devices/" + url.PathEscape(sessionID),
 	}, nil)
 	return err
 }
@@ -557,10 +557,10 @@ func (a *Adapter) TerminateAccountSessions(ctx context.Context, accountID string
 	for i, s := range sessions {
 		ids[i] = s.ID
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPost,
-		path: userPath(mxid) + "/delete_devices",
-		body: map[string][]string{"devices": ids},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPost,
+		Path: userPath(mxid) + "/delete_devices",
+		Body: map[string][]string{"devices": ids},
 	}, nil)
 	return err
 }
@@ -589,7 +589,7 @@ func (a *Adapter) listRooms(ctx context.Context, op string, q adapter.ListQuery)
 		query.Set("search_term", q.Search)
 	}
 	var page roomPage
-	_, err = a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/rooms", query: query}, &page)
+	_, err = a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/rooms", Query: query}, &page)
 	return page, err
 }
 
@@ -602,7 +602,7 @@ func (a *Adapter) roomDetails(ctx context.Context, op, id string) (*adapter.Room
 		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: id, Err: errors.New("room id must be !opaque or !opaque:server")}
 	}
 	var r room
-	if _, err := a.call(ctx, request{op: op, resource: id, method: http.MethodGet, path: "/_synapse/admin/v1/rooms/" + url.PathEscape(id)}, &r); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: id, Method: http.MethodGet, Path: "/_synapse/admin/v1/rooms/" + url.PathEscape(id)}, &r); err != nil {
 		return nil, err
 	}
 	out := r.room()
@@ -626,10 +626,10 @@ func (a *Adapter) DeleteRoom(ctx context.Context, id string) error {
 	var out struct {
 		DeleteID string `json:"delete_id"`
 	}
-	_, err := a.call(ctx, request{
-		op: op, resource: id, method: http.MethodDelete,
-		path: "/_synapse/admin/v2/rooms/" + url.PathEscape(id),
-		body: map[string]bool{"purge": true, "block": false},
+	_, err := a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: id, Method: http.MethodDelete,
+		Path: "/_synapse/admin/v2/rooms/" + url.PathEscape(id),
+		Body: map[string]bool{"purge": true, "block": false},
 	}, &out)
 	return err
 }
@@ -673,7 +673,7 @@ func (a *Adapter) masUser(ctx context.Context, op, mxid string) (*masUser, error
 	var out struct {
 		Data masUser `json:"data"`
 	}
-	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: "/api/admin/v1/users/by-username/" + url.PathEscape(localpart)}, &out); err != nil {
+	if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: "/api/admin/v1/users/by-username/" + url.PathEscape(localpart)}, &out); err != nil {
 		return nil, err
 	}
 	if out.Data.Attributes.DeactivatedAt != nil {
@@ -694,7 +694,7 @@ func (a *Adapter) masAdmins(ctx context.Context, op string) (map[string]bool, er
 				Next string `json:"next"`
 			} `json:"links"`
 		}
-		if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: path}, &page); err != nil {
+		if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: path}, &page); err != nil {
 			return nil, err
 		}
 		for _, u := range page.Data {
@@ -711,7 +711,7 @@ func (a *Adapter) masAction(ctx context.Context, op, mxid, action string, body a
 	if err != nil {
 		return err
 	}
-	_, err = a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(record.ID) + action, body: body}, nil)
+	_, err = a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: masUserPath(record.ID) + action, Body: body}, nil)
 	return err
 }
 
@@ -727,17 +727,17 @@ func (a *Adapter) masCreateAccount(ctx context.Context, op, mxid string, req ada
 	var created struct {
 		Data masUser `json:"data"`
 	}
-	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: "/api/admin/v1/users", body: body}, &created); err != nil {
+	if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: "/api/admin/v1/users", Body: body}, &created); err != nil {
 		return nil, err
 	}
 	// From here on a failure must not leave a live account without the
 	// password or admin bit that was asked for; the id stays taken either way.
 	password := map[string]any{"password": req.Password, "skip_password_check": true}
-	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(created.Data.ID) + "/set-password", body: password}, nil); err != nil {
+	if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: masUserPath(created.Data.ID) + "/set-password", Body: password}, nil); err != nil {
 		return nil, a.masAbandon(ctx, op, mxid, created.Data.ID, err)
 	}
 	if req.Admin {
-		if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(created.Data.ID) + "/set-admin", body: map[string]bool{"admin": true}}, nil); err != nil {
+		if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: masUserPath(created.Data.ID) + "/set-admin", Body: map[string]bool{"admin": true}}, nil); err != nil {
 			return nil, a.masAbandon(ctx, op, mxid, created.Data.ID, err)
 		}
 	}
@@ -905,7 +905,7 @@ func (r room) room() adapter.Room {
 // masAbandon deactivates a half-created account and returns the cause; a
 // failed deactivation is reported alongside it rather than hidden.
 func (a *Adapter) masAbandon(ctx context.Context, op, mxid, ulid string, cause error) error {
-	_, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(ulid) + "/deactivate", body: map[string]bool{"skip_erase": true}}, nil)
+	_, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: masUserPath(ulid) + "/deactivate", Body: map[string]bool{"skip_erase": true}}, nil)
 	if err != nil {
 		return fmt.Errorf("%w (and deactivating the half-created account failed: %v)", cause, err)
 	}
@@ -955,138 +955,21 @@ func (f *flag) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// A request is anonymous when the endpoint needs no token; under MAS Synapse
-// validates any token presented, so an unauthenticated probe step must not
-// carry one or a bad token fails at the wrong step.
-type request struct {
-	op, resource, method, path string
-	query                      url.Values
-	body                       any
-	anonymous                  bool
-	label                      string // shown instead of path in error text when path carries a secret
+func (a *Adapter) call(ctx context.Context, req matrixhttp.Request, out any) (int, error) {
+	return a.client.Call(ctx, req, out)
 }
 
-func (r request) shown() string {
-	if r.label != "" {
-		return r.label
-	}
-	return r.path
-}
-
-// call performs one request and maps a failure to *adapter.Error. The Matrix
-// errcode decides the kind where the status alone is ambiguous; a 404 that
-// carries no errcode did not come from Synapse and is an upstream error.
-func (a *Adapter) call(ctx context.Context, req request, out any) (status int, err error) {
-	failure := &adapter.Error{Kind: adapter.Upstream, Op: req.op, Resource: req.resource}
-	defer func() {
-		if err != nil {
-			failure.Err = err
-			err = failure
-		}
-	}()
-
-	target := a.baseURL + req.path
-	if len(req.query) > 0 {
-		target += "?" + req.query.Encode()
-	}
-	var payload []byte
-	if req.body != nil {
-		if payload, err = json.Marshal(req.body); err != nil {
-			return 0, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-	}
-	header := http.Header{"Accept": {"application/json"}}
-	if !req.anonymous {
-		header.Set("Authorization", "Bearer "+a.cfg.Creds.Token)
-	}
-	if req.body != nil {
-		header.Set("Content-Type", "application/json")
-	}
-	status, respBody, err := transport(ctx, a.httpClient, req.method, target, header, payload)
-	if err != nil {
-		if status == 0 {
-			failure.Kind = adapter.Unreachable
-			return 0, fmt.Errorf("failed to connect to server: %w", err)
-		}
-		failure.Status = status
-		return status, fmt.Errorf("failed to read response: %w", err)
-	}
-	failure.Status = status
-	if status >= 200 && status < 300 {
-		if out != nil && len(bytes.TrimSpace(respBody)) > 0 {
-			if err := json.Unmarshal(respBody, out); err != nil {
-				return status, fmt.Errorf("unexpected response body: %w", err)
-			}
-		}
-		return status, nil
-	}
-
-	var detail struct {
-		Errcode      string `json:"errcode"`
-		Error        string `json:"error"`
-		RetryAfterMS int64  `json:"retry_after_ms"`
-	}
-	_ = json.Unmarshal(respBody, &detail)
-	failure.Code = detail.Errcode
-	failure.Kind = classify(status, detail.Errcode)
-	// Two 400s carry a meaning the errcode does not: a missing server_notices
-	// block, and a registration token that already exists (M_INVALID_PARAM;
-	// Tuwunel words it differently and prefixes the errcode).
+// kind refines the errcode mapping with two 400s whose meaning is only in
+// the text: a missing server_notices block, and a registration token that
+// already exists (M_INVALID_PARAM; Tuwunel words it differently).
+func kind(status int, errcode, message string) adapter.Kind {
 	if status == http.StatusBadRequest {
 		switch {
-		case strings.Contains(detail.Error, "Server notices are not enabled"):
-			failure.Kind = adapter.NotSupported
-		case strings.Contains(strings.ToLower(detail.Error), "token already exists"):
-			failure.Kind = adapter.Conflict
-		}
-	}
-	if failure.Kind == adapter.RateLimited && detail.RetryAfterMS > 0 {
-		failure.RetryAfter = time.Duration(detail.RetryAfterMS) * time.Millisecond
-	}
-	message := detail.Error
-	if message == "" {
-		message = snippet(string(respBody))
-	}
-	if message == "" {
-		message = http.StatusText(status)
-	}
-	return status, fmt.Errorf("%s %s: %s", req.method, req.shown(), message)
-}
-
-func classify(status int, errcode string) adapter.Kind {
-	switch status {
-	case http.StatusUnauthorized:
-		return adapter.Unauthorized
-	case http.StatusForbidden:
-		return adapter.Forbidden
-	case http.StatusNotFound:
-		switch errcode {
-		case "M_NOT_FOUND":
-			return adapter.NotFound
-		case "M_UNRECOGNIZED":
+		case strings.Contains(message, "Server notices are not enabled"):
 			return adapter.NotSupported
-		}
-		return adapter.Upstream
-	case http.StatusConflict:
-		return adapter.Conflict
-	case http.StatusBadRequest:
-		if errcode == "M_USER_IN_USE" {
+		case strings.Contains(strings.ToLower(message), "token already exists"):
 			return adapter.Conflict
 		}
-		return adapter.Invalid
-	case http.StatusTooManyRequests:
-		return adapter.RateLimited
 	}
-	return adapter.Upstream
-}
-
-// snippet keeps the start of a non-JSON body, such as a proxy's HTML page,
-// short enough for a log line.
-func snippet(body string) string {
-	body = strings.TrimSpace(body)
-	const limit = 200
-	if utf8.RuneCountInString(body) <= limit {
-		return body
-	}
-	return string([]rune(body)[:limit]) + "..."
+	return matrixhttp.Classify(status, errcode)
 }

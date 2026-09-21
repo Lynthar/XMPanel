@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, KeyRound, LogOut, Power, Trash2, UserPlus, U
 import clsx from 'clsx'
 import { useForm } from 'react-hook-form'
 import {
-  backendApi, errorMessage, listErrorMessage,
+  backendApi, errorMessage, isNotFound, listErrorMessage,
   type Account, type Capability, type CreateAccountRequest, type Page, type Server, type ServerCapabilities, type Session,
 } from '@/lib/api'
 import PagedTable from '@/components/PagedTable'
@@ -23,11 +23,16 @@ interface Props {
   caps: ServerCapabilities
 }
 
-/** Accounts tab: one page of accounts with per-row actions the backend declares. */
+/**
+ * Accounts tab: one page of accounts with per-row actions the backend
+ * declares. A backend that can only look accounts up (no listing) gets the
+ * same table with the search box taking one id and showing that one row.
+ */
 export default function Accounts({ server, caps }: Props) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const has = (c: Capability) => caps.capabilities.includes(c)
+  const lookupOnly = !has('accounts.list')
   const paging = usePaging()
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -39,7 +44,17 @@ export default function Accounts({ server, caps }: Props) {
   const accountsKey = ['accounts', server.id]
   const query = useQuery({
     queryKey: [...accountsKey, paging.params],
-    queryFn: async () => (await backendApi.listAccounts(server.id, paging.params)).data as Page<Account>,
+    queryFn: async (): Promise<Page<Account>> => {
+      if (!lookupOnly) return (await backendApi.listAccounts(server.id, paging.params)).data as Page<Account>
+      const id = paging.params.search?.trim()
+      if (!id) return { items: [] }
+      try {
+        return { items: [(await backendApi.getAccount(server.id, id)).data as Account] }
+      } catch (error) {
+        if (isNotFound(error)) return { items: [] }
+        throw error
+      }
+    },
     placeholderData: (previous) => previous,
   })
   const invalidate = () => {
@@ -203,8 +218,8 @@ export default function Accounts({ server, caps }: Props) {
         error={query.isError ? listErrorMessage(query.error, t) : undefined}
         rowKey={(a) => a.id}
         paging={paging}
-        searchPlaceholder={t('backend.accounts.searchPlaceholder')}
-        emptyMessage={t('backend.accounts.empty')}
+        searchPlaceholder={t(lookupOnly ? 'backend.accounts.lookupPlaceholder' : 'backend.accounts.searchPlaceholder')}
+        emptyMessage={t(lookupOnly ? (paging.params.search ? 'backend.accounts.lookupMissing' : 'backend.accounts.lookupHint') : 'backend.accounts.empty')}
         expandedKeys={expanded}
         expansion={(a) => <AccountSessions server={server} account={a} canTerminate={has('sessions.terminate')} />}
         toolbar={

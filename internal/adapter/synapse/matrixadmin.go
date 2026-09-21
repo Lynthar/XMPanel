@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/adapter/matrixhttp"
 )
 
 // The adapter's MatrixAdmin side: Synapse's moderation endpoints, with the
@@ -40,10 +41,10 @@ func (a *Adapter) Deactivate(ctx context.Context, id string, erase bool) error {
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPost,
-		path: "/_synapse/admin/v1/deactivate/" + url.PathEscape(mxid),
-		body: map[string]bool{"erase": erase},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPost,
+		Path: "/_synapse/admin/v1/deactivate/" + url.PathEscape(mxid),
+		Body: map[string]bool{"erase": erase},
 	}, nil)
 	return err
 }
@@ -54,10 +55,10 @@ func (a *Adapter) SetSuspended(ctx context.Context, id string, suspended bool) e
 	if err != nil {
 		return err
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPut,
-		path: "/_synapse/admin/v1/suspend/" + url.PathEscape(mxid),
-		body: map[string]bool{"suspend": suspended},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPut,
+		Path: "/_synapse/admin/v1/suspend/" + url.PathEscape(mxid),
+		Body: map[string]bool{"suspend": suspended},
 	}, nil)
 	return err
 }
@@ -80,7 +81,7 @@ func (a *Adapter) SetShadowBanned(ctx context.Context, id string, banned bool) e
 	if !banned {
 		method = http.MethodDelete
 	}
-	_, err = a.call(ctx, request{op: op, resource: mxid, method: method, path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/shadow_ban"}, nil)
+	_, err = a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: method, Path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/shadow_ban"}, nil)
 	return err
 }
 
@@ -110,7 +111,7 @@ func (a *Adapter) ListRegistrationTokens(ctx context.Context) ([]adapter.Registr
 	var page struct {
 		Tokens []synapseRegToken `json:"registration_tokens"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/registration_tokens"}, &page); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/registration_tokens"}, &page); err != nil {
 		return nil, err
 	}
 	out := make([]adapter.RegistrationToken, len(page.Tokens))
@@ -143,7 +144,7 @@ func (a *Adapter) CreateRegistrationToken(ctx context.Context, req adapter.Creat
 		var created struct {
 			Data masRegToken `json:"data"`
 		}
-		if _, err := a.mas.call(ctx, request{op: op, resource: adapter.MaskToken(req.Token), method: http.MethodPost, path: "/api/admin/v1/user-registration-tokens", body: body}, &created); err != nil {
+		if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: adapter.MaskToken(req.Token), Method: http.MethodPost, Path: "/api/admin/v1/user-registration-tokens", Body: body}, &created); err != nil {
 			return nil, err
 		}
 		tk := created.Data.token()
@@ -160,7 +161,7 @@ func (a *Adapter) CreateRegistrationToken(ctx context.Context, req adapter.Creat
 		body["expiry_time"] = req.ExpiresAt.UnixMilli()
 	}
 	var created synapseRegToken
-	if _, err := a.call(ctx, request{op: op, resource: adapter.MaskToken(req.Token), method: http.MethodPost, path: "/_synapse/admin/v1/registration_tokens/new", body: body}, &created); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: adapter.MaskToken(req.Token), Method: http.MethodPost, Path: "/_synapse/admin/v1/registration_tokens/new", Body: body}, &created); err != nil {
 		return nil, err
 	}
 	tk := created.token()
@@ -189,15 +190,15 @@ func (a *Adapter) DeleteRegistrationToken(ctx context.Context, token string) err
 				if tk.Attributes.RevokedAt != nil {
 					return nil
 				}
-				_, err := a.mas.call(ctx, request{op: op, resource: adapter.MaskToken(token), method: http.MethodPost, path: "/api/admin/v1/user-registration-tokens/" + url.PathEscape(tk.ID) + "/revoke"}, nil)
+				_, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: adapter.MaskToken(token), Method: http.MethodPost, Path: "/api/admin/v1/user-registration-tokens/" + url.PathEscape(tk.ID) + "/revoke"}, nil)
 				return err
 			}
 		}
 		return &adapter.Error{Kind: adapter.NotFound, Op: op, Resource: adapter.MaskToken(token), Status: http.StatusOK, Err: errors.New("registration token not found")}
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: adapter.MaskToken(token), method: http.MethodDelete,
-		path: "/_synapse/admin/v1/registration_tokens/" + url.PathEscape(token), label: "/_synapse/admin/v1/registration_tokens/{token}",
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: adapter.MaskToken(token), Method: http.MethodDelete,
+		Path: "/_synapse/admin/v1/registration_tokens/" + url.PathEscape(token), Label: "/_synapse/admin/v1/registration_tokens/{token}",
 	}, nil)
 	return err
 }
@@ -228,7 +229,7 @@ func (a *Adapter) ListReports(ctx context.Context, q adapter.ListQuery) (adapter
 		NextToken pageToken `json:"next_token"`
 		Total     int       `json:"total"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/event_reports", query: query}, &page); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/event_reports", Query: query}, &page); err != nil {
 		return adapter.Page[adapter.EventReport]{}, err
 	}
 	items := make([]adapter.EventReport, len(page.Reports))
@@ -268,7 +269,7 @@ func (a *Adapter) ListAccountMedia(ctx context.Context, id string, q adapter.Lis
 		NextToken pageToken `json:"next_token"`
 		Total     int       `json:"total"`
 	}
-	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/media", query: query}, &page); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: "/_synapse/admin/v1/users/" + url.PathEscape(mxid) + "/media", Query: query}, &page); err != nil {
 		return adapter.Page[adapter.Media]{}, err
 	}
 	items := make([]adapter.Media, len(page.Media))
@@ -308,7 +309,7 @@ func (a *Adapter) QuarantineAccountMedia(ctx context.Context, id string) (int, e
 	var out struct {
 		NumQuarantined int `json:"num_quarantined"`
 	}
-	if _, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: "/_synapse/admin/v1/user/" + url.PathEscape(mxid) + "/media/quarantine", body: map[string]any{}}, &out); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodPost, Path: "/_synapse/admin/v1/user/" + url.PathEscape(mxid) + "/media/quarantine", Body: map[string]any{}}, &out); err != nil {
 		return 0, err
 	}
 	return out.NumQuarantined, nil
@@ -321,10 +322,10 @@ func (a *Adapter) DeleteMedia(ctx context.Context, mediaID string) error {
 	if mediaID == "" || strings.ContainsAny(mediaID, "/") {
 		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: mediaID, Err: errors.New("media id must be a bare local id")}
 	}
-	_, err := a.call(ctx, request{
-		op: op, resource: mediaID, method: http.MethodDelete,
-		path: "/_synapse/admin/v1/media/" + url.PathEscape(a.cfg.Domain) + "/" + url.PathEscape(mediaID),
-		body: map[string]any{},
+	_, err := a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mediaID, Method: http.MethodDelete,
+		Path: "/_synapse/admin/v1/media/" + url.PathEscape(a.cfg.Domain) + "/" + url.PathEscape(mediaID),
+		Body: map[string]any{},
 	}, nil)
 	return err
 }
@@ -336,10 +337,10 @@ func (a *Adapter) BlockRoom(ctx context.Context, roomID string, block bool) erro
 	if !validRoomID(roomID) {
 		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: roomID, Err: errors.New("room id must be !opaque or !opaque:server")}
 	}
-	_, err := a.call(ctx, request{
-		op: op, resource: roomID, method: http.MethodPut,
-		path: "/_synapse/admin/v1/rooms/" + url.PathEscape(roomID) + "/block",
-		body: map[string]bool{"block": block},
+	_, err := a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: roomID, Method: http.MethodPut,
+		Path: "/_synapse/admin/v1/rooms/" + url.PathEscape(roomID) + "/block",
+		Body: map[string]bool{"block": block},
 	}, nil)
 	return err
 }
@@ -364,7 +365,7 @@ func (a *Adapter) PurgeRoom(ctx context.Context, roomID string, opts adapter.Pur
 	var out struct {
 		DeleteID string `json:"delete_id"`
 	}
-	if _, err := a.call(ctx, request{op: op, resource: roomID, method: http.MethodDelete, path: "/_synapse/admin/v2/rooms/" + url.PathEscape(roomID), body: body}, &out); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: roomID, Method: http.MethodDelete, Path: "/_synapse/admin/v2/rooms/" + url.PathEscape(roomID), Body: body}, &out); err != nil {
 		return "", err
 	}
 	return out.DeleteID, nil
@@ -381,9 +382,9 @@ func (a *Adapter) SendServerNotice(ctx context.Context, accountID, body string) 
 	if strings.TrimSpace(body) == "" {
 		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: mxid, Err: errors.New("notice body is required")}
 	}
-	_, err = a.call(ctx, request{
-		op: op, resource: mxid, method: http.MethodPost, path: "/_synapse/admin/v1/send_server_notice",
-		body: map[string]any{"user_id": mxid, "content": map[string]string{"msgtype": "m.text", "body": body}},
+	_, err = a.call(ctx, matrixhttp.Request{
+		Op: op, Resource: mxid, Method: http.MethodPost, Path: "/_synapse/admin/v1/send_server_notice",
+		Body: map[string]any{"user_id": mxid, "content": map[string]string{"msgtype": "m.text", "body": body}},
 	}, nil)
 	return err
 }
@@ -405,7 +406,7 @@ func (a *Adapter) ListFederationDestinations(ctx context.Context, q adapter.List
 		NextToken pageToken `json:"next_token"`
 		Total     int       `json:"total"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_synapse/admin/v1/federation/destinations", query: query}, &page); err != nil {
+	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_synapse/admin/v1/federation/destinations", Query: query}, &page); err != nil {
 		return adapter.Page[adapter.FederationDestination]{}, err
 	}
 	items := make([]adapter.FederationDestination, len(page.Destinations))
@@ -436,7 +437,7 @@ func (a *Adapter) masRegistrationTokens(ctx context.Context, op string) ([]masRe
 				Next string `json:"next"`
 			} `json:"links"`
 		}
-		if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: path}, &page); err != nil {
+		if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: path}, &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)

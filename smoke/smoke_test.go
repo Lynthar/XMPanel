@@ -96,6 +96,9 @@ func TestRealServers(t *testing.T) {
 	for _, tg := range matrixTargets() {
 		t.Run(tg.name, func(t *testing.T) { runMatrix(t, tg) })
 	}
+	for _, tg := range genericTargets() {
+		t.Run(tg.name, func(t *testing.T) { runMatrixGeneric(t, tg) })
+	}
 }
 
 func run(t *testing.T, tg target) {

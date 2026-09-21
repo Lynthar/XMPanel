@@ -9,7 +9,7 @@
 
 </div>
 
-XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse、Tuwunel）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 这一侧还在扩展。
+XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse、Tuwunel，以及任何走客户端规范接入的实现）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 这一侧还在扩展。
 
 [English](README.md) | 简体中文
 
@@ -72,6 +72,10 @@ Tuwunel 自己提供 Synapse 的 admin API，所以要的是同一种令牌：�
 管理员即它 admin room 的成员（第一个注册的账号，或在 admin room 里用 `!admin users` 命令提拔的）。
 这里没有 MAS 的事：Tuwunel 不接受 MAS 令牌，它自带的新一代认证也不改变面板能做什么。
 
+其他 Matrix 服务器（Continuwuity、Dendrite、Conduit 等）以「其他 Matrix 服务器」添加，给一枚管理员的 access token。
+只用规范端点，所以没有账号列表：账号 tab 一次查一个 id。服务器声明了 `m.account_moderation`（规范 v1.18；
+Continuwuity 与 Tuwunel 有，Synapse 1.161 还没有）就能锁定与挂起，服务器提供 `whois` 就能看到用户的连接。
+
 ## 用法
 
 打开 `http://localhost:8080`，用 `admin` 登录。忘记口令时：
@@ -123,6 +127,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
   不建房、没有全局设备列表。审核工具（彻底抹除、挂起、隐形封禁、媒体隔离、注册令牌、举报、房间封禁与清除、服务器通知、联邦状态）已有；
   抹除、隐形封禁、封禁与清除要 admin 角色并照原样输入目标 ID。服务器通知要求 Synapse 配置了 `server_notices`，面板事先探测不到：没配的话按钮会答「不支持」。
   Tuwunel 没有隐形封禁、举报和媒体隔离，设了 `mas_secret` 之后注册令牌归 MAS 管；面板在它那里不显示这些工具。
+  其他服务器只有规范能给的那一小部分：查一个账号、锁定、挂起、看连接，没有列表，没有别的。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
 - **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
 - **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。

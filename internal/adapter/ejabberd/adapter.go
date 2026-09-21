@@ -25,7 +25,7 @@ type Adapter struct {
 }
 
 var capabilities = adapter.NewCapabilitySet(
-	adapter.CapAccountsList, adapter.CapAccountsCreate, adapter.CapAccountsDelete, adapter.CapAccountsSetPassword,
+	adapter.CapAccountsList, adapter.CapAccountsGet, adapter.CapAccountsCreate, adapter.CapAccountsDelete, adapter.CapAccountsSetPassword,
 	adapter.CapSessionsListAll, adapter.CapSessionsListByAcct, adapter.CapSessionsTerminate,
 	adapter.CapRoomsList, adapter.CapRoomsGet, adapter.CapRoomsCreate, adapter.CapRoomsDelete,
 )

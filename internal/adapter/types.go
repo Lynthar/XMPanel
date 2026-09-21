@@ -19,6 +19,8 @@ const (
 	ImplEjabberd Implementation = "ejabberd"
 	ImplSynapse  Implementation = "synapse"
 	ImplTuwunel  Implementation = "tuwunel" // served by the synapse package behind a static mask
+	// ImplMatrixGeneric is any homeserver driven through the spec alone.
+	ImplMatrixGeneric Implementation = "matrix-generic"
 )
 
 // ServerConfig is what the registry hands to a constructor; credentials are

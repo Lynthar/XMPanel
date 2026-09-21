@@ -49,6 +49,17 @@ services:
       timeout: 3s
       retries: 60
 
+  continuwuity:
+    image: smoke-continuwuity
+    build: ./continuwuity
+    ports:
+      - "127.0.0.1:18011:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/continuwuity/admin-token.txt"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
   # A second Synapse that delegates authentication to MAS, which needs
   # PostgreSQL; the admin token for this pair comes from the mas container.
   postgres:

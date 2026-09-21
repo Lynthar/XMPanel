@@ -11,6 +11,7 @@ type Capability string
 
 const (
 	CapAccountsList        Capability = "accounts.list"
+	CapAccountsGet         Capability = "accounts.get"    // single lookup; a backend may have it without a listing
 	CapAccountsSearch      Capability = "accounts.search" // server-side search; otherwise the UI filters locally
 	CapAccountsCreate      Capability = "accounts.create"
 	CapAccountsDelete      Capability = "accounts.delete"
@@ -42,7 +43,7 @@ const (
 // AllCapabilities lists every declared capability; the frontend copy is kept
 // in step with it by a test.
 var AllCapabilities = []Capability{
-	CapAccountsList, CapAccountsSearch, CapAccountsCreate, CapAccountsDelete,
+	CapAccountsList, CapAccountsGet, CapAccountsSearch, CapAccountsCreate, CapAccountsDelete,
 	CapAccountsSetPassword, CapAccountsSetEnabled, CapAccountsSetAdmin,
 	CapSessionsListAll, CapSessionsListByAcct, CapSessionsTerminate,
 	CapRoomsList, CapRoomsGet, CapRoomsCreate, CapRoomsDelete,

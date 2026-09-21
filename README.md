@@ -9,7 +9,7 @@
 
 </div>
 
-Self-hosted web admin panel for XMPP servers (Prosody, ejabberd) and Matrix homeservers (Synapse, Tuwunel), with RBAC, MFA and a tamper-evident audit log. Go + React. The Matrix side is still being extended.
+Self-hosted web admin panel for XMPP servers (Prosody, ejabberd) and Matrix homeservers (Synapse, Tuwunel, and any other through the client-server spec), with RBAC, MFA and a tamper-evident audit log. Go + React. The Matrix side is still being extended.
 
 English | [简体中文](README.zh-CN.md)
 
@@ -86,6 +86,13 @@ registered, or one promoted with the admin room's `!admin users` commands). MAS 
 involved: Tuwunel does not accept MAS tokens, and its own next-generation auth
 does not change what the panel can do.
 
+Any other homeserver (Continuwuity, Dendrite, Conduit, ...) is added as "Other
+Matrix homeserver" with an admin's access token. Only specification endpoints are
+used, so there is no account listing: the accounts tab looks one id up at a time.
+Lock and suspend work where the server advertises `m.account_moderation` (spec
+v1.18; Continuwuity and Tuwunel do, Synapse 1.161 does not yet), and a user's
+connections are shown where the server serves `whois`.
+
 ## Usage
 
 Open `http://localhost:8080` and sign in as `admin`. If you've lost the password:
@@ -150,7 +157,8 @@ Set the JWT secret before you put real data in; the encryption key is checked at
   cannot detect up front: without it the button answers "not supported".
   Tuwunel has no shadow ban, no event reports and no media quarantine, and its
   registration tokens are managed by MAS once `mas_secret` is set; the panel
-  hides those tools there.
+  hides those tools there. Any other homeserver gets the spec-only subset:
+  lookup, lock, suspend and connections, no listing, nothing else.
 - **PostgreSQL only.** No SQLite, no MySQL.
 - **No container image for the panel itself.** Source build and a systemd
   unit; the compose file under `smoke/` only starts test servers.

@@ -199,6 +199,7 @@ const defaultEndpoint: Record<Implementation, string> = {
   ejabberd: 'http://127.0.0.1:5280',
   synapse: 'http://127.0.0.1:8008',
   tuwunel: 'http://127.0.0.1:8008',
+  'matrix-generic': 'http://127.0.0.1:8008',
 }
 
 function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {

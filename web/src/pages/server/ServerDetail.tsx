@@ -18,7 +18,7 @@ type Tab = 'accounts' | 'sessions' | 'rooms' | 'tools'
 
 // The tools tab appears when any of its server-wide capabilities is declared.
 const tabCapability: Record<Tab, Capability[]> = {
-  accounts: ['accounts.list'],
+  accounts: ['accounts.list', 'accounts.get'],
   sessions: ['sessions.list_all'],
   rooms: ['rooms.list'],
   tools: ['matrix.registration_tokens', 'matrix.reports', 'matrix.federation', 'matrix.server_notice'],
@@ -156,7 +156,7 @@ export default function ServerDetail() {
 
           <div className="card">
             {caps && tabs.length === 0 && <p className="text-center text-gray-400 py-8">{t('backend.noCapabilities')}</p>}
-            {caps && activeTab === 'accounts' && has('accounts.list') && <Accounts server={server} caps={caps} />}
+            {caps && activeTab === 'accounts' && (has('accounts.list') || has('accounts.get')) && <Accounts server={server} caps={caps} />}
             {caps && activeTab === 'sessions' && has('sessions.list_all') && <Sessions server={server} caps={caps} />}
             {caps && activeTab === 'rooms' && has('rooms.list') && <Rooms server={server} caps={caps} />}
             {caps && activeTab === 'tools' && <MatrixTools server={server} caps={caps} />}

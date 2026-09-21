@@ -101,6 +101,19 @@ func Run(t *testing.T, c Config) {
 		}
 	})
 
+	if c.Expected.Has(adapter.CapAccountsGet) {
+		t.Run("account lookup", func(t *testing.T) {
+			a, pop := fresh(t)
+			got, err := a.GetAccount(ctx, pop.Accounts[0])
+			if err != nil || got.ID != pop.Accounts[0] || accountID(c.Protocol, got.Localpart, got.Domain) != got.ID {
+				t.Fatalf("get %s: %+v, %v", pop.Accounts[0], got, err)
+			}
+			if _, err := a.GetAccount(ctx, accountID(c.Protocol, "ghost", c.Domain)); !isKind(err, adapter.NotFound) {
+				t.Errorf("get missing account: %v", err)
+			}
+		})
+	}
+
 	if c.Expected.Has(adapter.CapAccountsList) {
 		t.Run("accounts", func(t *testing.T) { accountScenario(t, ctx, c, fresh) })
 		t.Run("account paging", func(t *testing.T) {
@@ -619,6 +632,9 @@ func invoke(ctx context.Context, a adapter.Adapter, cap adapter.Capability, pop 
 	switch cap {
 	case adapter.CapAccountsList:
 		_, err := a.ListAccounts(ctx, adapter.ListQuery{})
+		return err
+	case adapter.CapAccountsGet:
+		_, err := a.GetAccount(ctx, account)
 		return err
 	case adapter.CapAccountsCreate:
 		_, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "invoke", Password: "invoke-pass-1"})

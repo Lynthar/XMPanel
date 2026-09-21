@@ -29,7 +29,7 @@ type Adapter struct {
 }
 
 var baseCapabilities = adapter.NewCapabilitySet(
-	adapter.CapAccountsList, adapter.CapAccountsCreate, adapter.CapAccountsDelete,
+	adapter.CapAccountsList, adapter.CapAccountsGet, adapter.CapAccountsCreate, adapter.CapAccountsDelete,
 	adapter.CapAccountsSetPassword, adapter.CapAccountsSetEnabled,
 	adapter.CapSessionsListAll, adapter.CapSessionsListByAcct, adapter.CapSessionsTerminate,
 )

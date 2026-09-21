@@ -12,6 +12,7 @@ import (
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/adaptertest"
+	"github.com/xmpanel/xmpanel/internal/adapter/matrixhttp"
 	"github.com/xmpanel/xmpanel/internal/adapter/synapse/synapsetest"
 )
 
@@ -600,7 +601,7 @@ func TestStats(t *testing.T) {
 func TestUnknownEndpointIsNotSupportedAndProxy404IsUpstream(t *testing.T) {
 	a, fake := start(t)
 	ctx := context.Background()
-	_, err := a.call(ctx, request{op: "probe", method: http.MethodGet, path: "/_synapse/admin/v1/background_updates/status"}, nil)
+	_, err := a.call(ctx, matrixhttp.Request{Op: "probe", Method: http.MethodGet, Path: "/_synapse/admin/v1/background_updates/status"}, nil)
 	if !isKind(err, adapter.NotSupported) {
 		t.Errorf("M_UNRECOGNIZED: %v", err)
 	}
@@ -744,29 +745,23 @@ func TestMatrixAdminUnderMAS(t *testing.T) {
 	}
 }
 
-func TestClassify(t *testing.T) {
+// kind adds the two text-only 400 meanings on top of the errcode mapping.
+func TestKindRefinesTwo400s(t *testing.T) {
 	for _, tc := range []struct {
-		status  int
-		errcode string
+		message string
 		want    adapter.Kind
 	}{
-		{401, "M_UNKNOWN_TOKEN", adapter.Unauthorized},
-		{401, "", adapter.Unauthorized},
-		{403, "M_FORBIDDEN", adapter.Forbidden},
-		{404, "M_NOT_FOUND", adapter.NotFound},
-		{404, "M_UNRECOGNIZED", adapter.NotSupported},
-		{404, "", adapter.Upstream},
-		{400, "M_USER_IN_USE", adapter.Conflict},
-		{400, "M_INVALID_USERNAME", adapter.Invalid},
-		{400, "M_INVALID_PARAM", adapter.Invalid},
-		{409, "", adapter.Conflict},
-		{429, "M_LIMIT_EXCEEDED", adapter.RateLimited},
-		{500, "M_UNKNOWN", adapter.Upstream},
-		{502, "", adapter.Upstream},
+		{"Server notices are not enabled on this server", adapter.NotSupported},
+		{"Token already exists: abc", adapter.Conflict},
+		{"M_INVALID_PARAM: Registration token already exists", adapter.Conflict},
+		{"Invalid user type", adapter.Invalid},
 	} {
-		if got := classify(tc.status, tc.errcode); got != tc.want {
-			t.Errorf("classify(%d, %q) = %d, want %d", tc.status, tc.errcode, got, tc.want)
+		if got := kind(http.StatusBadRequest, "M_INVALID_PARAM", tc.message); got != tc.want {
+			t.Errorf("kind(400, %q) = %d, want %d", tc.message, got, tc.want)
 		}
+	}
+	if got := kind(http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request"); got != adapter.NotSupported {
+		t.Errorf("kind(404, M_UNRECOGNIZED) = %d", got)
 	}
 }
 

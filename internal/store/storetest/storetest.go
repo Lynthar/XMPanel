@@ -3,6 +3,7 @@
 package storetest
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -23,11 +24,30 @@ func NewDB(t *testing.T) *store.DB {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if err := store.Migrate(db); err != nil {
+	if err := migrate(db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// migrateLockID serialises test packages migrating the same empty database:
+// PostgreSQL's CREATE TABLE IF NOT EXISTS races itself across sessions and
+// one loser fails with a duplicate pg_type row.
+const migrateLockID = 7_205_759_403
+
+func migrate(db *store.DB) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrateLockID); err != nil {
+		return err
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrateLockID) }()
+	return store.Migrate(db)
 }
 
 func NewKeyRing(t *testing.T) *crypto.KeyRing {
@@ -51,7 +71,7 @@ func InsertServer(t *testing.T, db *store.DB, ring *crypto.KeyRing, impl, endpoi
 		t.Fatal(err)
 	}
 	protocol := "xmpp"
-	if impl == "synapse" || impl == "tuwunel" {
+	if impl == "synapse" || impl == "tuwunel" || impl == "matrix-generic" {
 		protocol = "matrix"
 	}
 	var id int64

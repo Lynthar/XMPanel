@@ -57,6 +57,29 @@ func matrixLogin(loginBase, base, localpart, password, deviceName string) (*matr
 	return c, nil
 }
 
+// matrixRegister creates an account through the client API with a
+// registration token, sending the token in the first request: the servers
+// under test open a user-interactive session on the spot for that.
+func matrixRegister(base, localpart, password, token, deviceName string) (*matrixClient, error) {
+	c := &matrixClient{loginBase: strings.TrimRight(base, "/"), base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 15 * time.Second}}
+	var out struct {
+		AccessToken string `json:"access_token"`
+		DeviceID    string `json:"device_id"`
+		UserID      string `json:"user_id"`
+	}
+	err := c.do(http.MethodPost, "/_matrix/client/v3/register", map[string]any{
+		"username":                    localpart,
+		"password":                    password,
+		"auth":                        map[string]string{"type": "m.login.registration_token", "token": token},
+		"initial_device_display_name": deviceName,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	c.token, c.DeviceID, c.UserID = out.AccessToken, out.DeviceID, out.UserID
+	return c, nil
+}
+
 // whoami reports whether the device's token is still accepted.
 func (c *matrixClient) whoami() error {
 	return c.do(http.MethodGet, "/_matrix/client/v3/account/whoami", nil, nil)

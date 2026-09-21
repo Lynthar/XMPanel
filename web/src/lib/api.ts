@@ -122,6 +122,7 @@ export const implementations = {
   ejabberd: { protocol: 'xmpp' as Protocol },
   synapse: { protocol: 'matrix' as Protocol },
   tuwunel: { protocol: 'matrix' as Protocol },
+  'matrix-generic': { protocol: 'matrix' as Protocol },
 } as const
 
 export type Implementation = keyof typeof implementations
@@ -134,7 +135,7 @@ export function implementationsFor(protocol: Protocol): Implementation[] {
 }
 
 export type Capability =
-  | 'accounts.list' | 'accounts.search' | 'accounts.create' | 'accounts.delete'
+  | 'accounts.list' | 'accounts.get' | 'accounts.search' | 'accounts.create' | 'accounts.delete'
   | 'accounts.set_password' | 'accounts.set_enabled' | 'accounts.set_admin'
   | 'sessions.list_all' | 'sessions.list_by_account' | 'sessions.terminate'
   | 'rooms.list' | 'rooms.get' | 'rooms.create' | 'rooms.delete'
@@ -520,6 +521,11 @@ export function listErrorMessage(error: unknown, t: (key: string) => string): st
   if (status === 403) return t('errors.forbidden')
   if (status === 401) return t('errors.unauthorized')
   return t('errors.generic')
+}
+
+/** Whether a request failed because the resource does not exist. */
+export function isNotFound(error: unknown): boolean {
+  return (error as { response?: { status?: number } } | null)?.response?.status === 404
 }
 
 /** The backend's translated error message, if the response carried one. */

@@ -10,6 +10,7 @@ import (
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/ejabberd"
+	"github.com/xmpanel/xmpanel/internal/adapter/matrixgeneric"
 	"github.com/xmpanel/xmpanel/internal/adapter/prosody"
 	"github.com/xmpanel/xmpanel/internal/adapter/synapse"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
@@ -21,17 +22,19 @@ import (
 type factory func(adapter.ServerConfig) adapter.Adapter
 
 var factories = map[adapter.Implementation]factory{
-	adapter.ImplProsody:  func(cfg adapter.ServerConfig) adapter.Adapter { return prosody.New(cfg) },
-	adapter.ImplEjabberd: func(cfg adapter.ServerConfig) adapter.Adapter { return ejabberd.New(cfg) },
-	adapter.ImplSynapse:  func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
-	adapter.ImplTuwunel:  func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
+	adapter.ImplProsody:       func(cfg adapter.ServerConfig) adapter.Adapter { return prosody.New(cfg) },
+	adapter.ImplEjabberd:      func(cfg adapter.ServerConfig) adapter.Adapter { return ejabberd.New(cfg) },
+	adapter.ImplSynapse:       func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
+	adapter.ImplTuwunel:       func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
+	adapter.ImplMatrixGeneric: func(cfg adapter.ServerConfig) adapter.Adapter { return matrixgeneric.New(cfg) },
 }
 
 var protocols = map[adapter.Implementation]adapter.Protocol{
-	adapter.ImplProsody:  adapter.ProtocolXMPP,
-	adapter.ImplEjabberd: adapter.ProtocolXMPP,
-	adapter.ImplSynapse:  adapter.ProtocolMatrix,
-	adapter.ImplTuwunel:  adapter.ProtocolMatrix,
+	adapter.ImplProsody:       adapter.ProtocolXMPP,
+	adapter.ImplEjabberd:      adapter.ProtocolXMPP,
+	adapter.ImplSynapse:       adapter.ProtocolMatrix,
+	adapter.ImplTuwunel:       adapter.ProtocolMatrix,
+	adapter.ImplMatrixGeneric: adapter.ProtocolMatrix,
 }
 
 // ProbeRetryAfter is how long a failed probe is answered from cache before

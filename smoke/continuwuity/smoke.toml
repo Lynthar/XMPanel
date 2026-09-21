@@ -1,0 +1,15 @@
+# Continuwuity for the smoke run only: the admin is created by the startup
+# command (the first account becomes the server admin), the token registers
+# the ordinary accounts the test needs, and federation is off so the
+# container never dials out.
+[global]
+server_name = "example.com"
+database_path = "/var/lib/continuwuity"
+address = "0.0.0.0"
+port = 8008
+allow_federation = false
+allow_registration = true
+registration_token = "smoke-registration-token"
+admin_execute = ["users create-user admin admin-password-smoke"]
+admin_execute_errors_ignore = true
+log = "info"

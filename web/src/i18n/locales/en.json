@@ -116,7 +116,8 @@
       "prosody": "Where the panel reaches Prosody's HTTP listener, usually loopback. The domain below goes in the Host header, so this may be an address.",
       "ejabberd": "Where the panel reaches ejabberd's mod_http_api listener, usually loopback.",
       "synapse": "Where the panel reaches Synapse's client listener, usually http://127.0.0.1:8008; both /_matrix and /_synapse/admin must be served there.",
-      "tuwunel": "Where the panel reaches Tuwunel's listener, usually http://127.0.0.1:8008; it serves /_synapse/admin itself."
+      "tuwunel": "Where the panel reaches Tuwunel's listener, usually http://127.0.0.1:8008; it serves /_synapse/admin itself.",
+      "matrix-generic": "The client-server API of any other homeserver (Continuwuity, Dendrite, Conduit, ...). Only spec endpoints are used: one account at a time, lock and suspend where the server allows."
     },
     "domain": "Domain",
     "domainLabel": {
@@ -133,7 +134,8 @@
       "prosody": "A mod_tokenauth bearer token issued to an admin.",
       "ejabberd": "An OAuth token with the ejabberd:admin scope, or another token mod_http_api accepts.",
       "synapse": "An access token of a server admin account, e.g. from register_new_matrix_user -a or an admin's login.",
-      "tuwunel": "An access token of a server admin (a member of the admin room), e.g. from that admin's login."
+      "tuwunel": "An access token of a server admin (a member of the admin room), e.g. from that admin's login.",
+      "matrix-generic": "An access token of a server admin; what the server lets that admin do decides what the panel offers."
     },
     "mas": {
       "toggle": "Authentication is delegated to Matrix Authentication Service",
@@ -168,7 +170,8 @@
       "prosody": "Prosody",
       "ejabberd": "ejabberd",
       "synapse": "Synapse",
-      "tuwunel": "Tuwunel"
+      "tuwunel": "Tuwunel",
+      "matrix-generic": "Other Matrix homeserver"
     },
     "stats": {
       "title": "Server Statistics",
@@ -399,6 +402,9 @@
       "disable": "Disable",
       "searchPlaceholder": "Search accounts...",
       "empty": "No accounts",
+      "lookupPlaceholder": "Account id, e.g. @alice:example.com",
+      "lookupHint": "This server has no account listing. Enter an account id to look one up.",
+      "lookupMissing": "No such account",
       "selectAll": "Select all accounts on this page",
       "add": "Add Account",
       "addTitle": "Add Account",
