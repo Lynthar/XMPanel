@@ -33,7 +33,7 @@ upgrading); stored XMPP API keys are encrypted at rest with AES-256-GCM.
 ## Install
 
 No packages, no container images and no releases; you build it yourself. You'll
-need Go 1.24.7+, Node 20+, and PostgreSQL 14+ (the only supported database).
+need Go 1.24.7+, Node 20.19+ / 22.13+ / 24+, and PostgreSQL 14+ (the only supported database).
 
 ```bash
 git clone https://github.com/Lynthar/XMPanel.git
