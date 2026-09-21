@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -190,15 +190,25 @@ interface ServerForm {
   token: string
 }
 
+const defaultEndpoint: Record<Implementation, string> = {
+  prosody: 'http://127.0.0.1:5280',
+  ejabberd: 'http://127.0.0.1:5280',
+  synapse: 'http://127.0.0.1:8008',
+}
+
 function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const { t } = useTranslation()
-  const { register, handleSubmit, watch, setValue, formState: { errors, isSubmitting } } = useForm<ServerForm>({
-    defaultValues: { protocol: 'xmpp', implementation: 'prosody', endpoint: 'http://127.0.0.1:5280' },
+  const { register, handleSubmit, watch, setValue, getValues, formState: { errors, isSubmitting } } = useForm<ServerForm>({
+    defaultValues: { protocol: 'xmpp', implementation: 'prosody', endpoint: defaultEndpoint.prosody },
   })
   const protocol = watch('protocol')
   const implementation = watch('implementation')
   const options = implementationsFor(protocol)
   if (!options.includes(implementation) && options.length > 0) setValue('implementation', options[0])
+  // The endpoint follows the implementation until the operator types their own.
+  useEffect(() => {
+    if (Object.values(defaultEndpoint).includes(getValues('endpoint'))) setValue('endpoint', defaultEndpoint[implementation])
+  }, [implementation, getValues, setValue])
 
   const onSubmit = async (form: ServerForm) => {
     const body: CreateServerRequest = {
@@ -240,7 +250,7 @@ function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess
           <input
             type="url"
             className="input font-mono text-sm"
-            placeholder="http://127.0.0.1:5280"
+            placeholder={defaultEndpoint[implementation]}
             {...register('endpoint', { required: t('validation.required'), pattern: { value: /^https?:\/\/\S+$/, message: t('servers.endpointHint') } })}
           />
           <p className="mt-1 text-xs text-gray-500">{t(`servers.endpointHelp.${implementation}`)}</p>

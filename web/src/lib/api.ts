@@ -120,11 +120,12 @@ export type Protocol = 'xmpp' | 'matrix'
 export const implementations = {
   prosody: { protocol: 'xmpp' as Protocol },
   ejabberd: { protocol: 'xmpp' as Protocol },
+  synapse: { protocol: 'matrix' as Protocol },
 } as const
 
 export type Implementation = keyof typeof implementations
 
-export const protocols: Protocol[] = ['xmpp']
+export const protocols: Protocol[] = ['xmpp', 'matrix']
 
 /** Implementations that belong to a protocol, in declaration order. */
 export function implementationsFor(protocol: Protocol): Implementation[] {
@@ -203,6 +204,15 @@ export interface XMPPAccountFacts {
   roles?: string[]
 }
 
+export interface MatrixAccountFacts {
+  deactivated: boolean
+  locked: boolean
+  suspended?: boolean
+  shadow_banned: boolean
+  erased: boolean
+  user_type?: string
+}
+
 export interface Account {
   id: string
   localpart: string
@@ -212,6 +222,7 @@ export interface Account {
   admin: boolean
   created_at?: string
   last_seen?: string
+  matrix?: MatrixAccountFacts
   xmpp?: XMPPAccountFacts
 }
 
@@ -247,12 +258,22 @@ export interface XMPPRoomFacts {
   moderated: boolean
 }
 
+export interface MatrixRoomFacts {
+  version: string
+  creator?: string
+  encryption?: string
+  federatable: boolean
+  joined_local_members: number
+  topic?: string
+}
+
 export interface Room {
   id: string
   name?: string
   alias?: string
   members: number
   public: boolean
+  matrix?: MatrixRoomFacts
   xmpp?: XMPPRoomFacts
 }
 

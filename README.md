@@ -9,12 +9,12 @@
 
 </div>
 
-Self-hosted web admin panel for XMPP servers (Prosody, ejabberd), with RBAC, MFA and a tamper-evident audit log. Go + React. Matrix support is in progress.
+Self-hosted web admin panel for XMPP servers (Prosody, ejabberd) and Matrix homeservers (Synapse), with RBAC, MFA and a tamper-evident audit log. Go + React. The Matrix side is still being extended.
 
 English | [简体中文](README.zh-CN.md)
 
 > **Under construction.** No release yet — you build it from source. The Prosody
-> side has been deployed and used against a real server; both adapters are
+> side has been deployed and used against a real server; all three adapters are
 > exercised against real servers in CI (`smoke/`). Watch the repository if
 > that's interesting, but don't expect a packaged product.
 
@@ -68,6 +68,13 @@ Prosody needs preparation on its side: three community modules
 account creation without creating anything, and doesn't expose sessions at all —
 the extra module exists to solve both of those.
 
+Synapse needs an admin account's access token (from `register_new_matrix_user -a`,
+or an admin's login). The endpoint is the client-server listener, and both
+`/_matrix` and `/_synapse/admin` must be reachable there. A deployment that
+delegates authentication to Matrix Authentication Service is detected: the panel
+then reads accounts, devices and rooms but does not create, lock, deactivate or
+change passwords, because those go through MAS and that client is not written yet.
+
 ## Usage
 
 Open `http://localhost:8080` and sign in as `admin`. If you've lost the password:
@@ -82,7 +89,7 @@ revoked — then exits.
 Add a server from the Servers page. A server has two addresses: the **admin
 API endpoint** the panel connects to (usually a loopback URL such as
 `http://127.0.0.1:5280`) and the **domain** the accounts belong to (the XMPP
-VirtualHost). For Prosody the domain is sent as the HTTP Host header, which is
+VirtualHost, or the Matrix `server_name`). For Prosody the domain is sent as the HTTP Host header, which is
 how `mod_http_admin_api` picks the VirtualHost, so the endpoint may be an IP
 address. "Test connection" probes the server and reports what it supports.
 
@@ -114,13 +121,20 @@ Set the JWT secret before you put real data in; the encryption key is checked at
 
 ## Limitations
 
-- **Room management only exists on the ejabberd side.** Prosody's upstream
-  API doesn't expose rooms.
-- **Listings are paged in the panel, not by the server.** Both XMPP adapters
+- **Room management exists on ejabberd and Synapse.** Prosody's upstream API
+  doesn't expose rooms.
+- **XMPP listings are paged in the panel, not by the server.** Both XMPP adapters
   fetch the full account or session list and page it in memory, so very large
-  servers are slow to list.
-- **No Matrix backend yet.** The adapter interface and the data model are
-  protocol-neutral, but only Prosody and ejabberd are implemented.
+  servers are slow to list. Synapse pages on the server.
+- **Matrix support is Synapse-only and partial.** Password (legacy) authentication
+  is fully supported; behind Matrix Authentication Service the panel still lists
+  everything, revokes devices and purges rooms, but leaves creating, locking,
+  deactivating and passwords alone.
+  Deleting an account deactivates it (Matrix has no deletion) and its id stays
+  taken; deleting a room starts Synapse's background purge, so the room can linger
+  in listings for a moment. No room creation, no global device list, and none of
+  the Synapse-only tools (erase, suspend, shadow ban, registration tokens, reports,
+  media) yet.
 - **PostgreSQL only.** No SQLite, no MySQL.
 - **No container image for the panel itself.** Source build and a systemd
   unit; the compose file under `smoke/` only starts test servers.

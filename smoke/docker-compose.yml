@@ -24,3 +24,13 @@ services:
       interval: 3s
       timeout: 5s
       retries: 60
+
+  synapse:
+    build: ./synapse
+    ports:
+      - "127.0.0.1:18008:8008"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/matrix-synapse/admin-token.txt"]
+      interval: 3s
+      timeout: 3s
+      retries: 60

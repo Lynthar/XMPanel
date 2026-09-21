@@ -1,0 +1,28 @@
+# Overrides for the packaged homeserver.yaml: reachable from the host, a
+# shared secret to register the admin, logs on stdout, no rate limits (the
+# test logs in far more than a person), and directory publication allowed.
+server_name: "example.com"
+report_stats: false
+room_list_publication_rules:
+  - action: allow
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: false
+    bind_addresses: ['0.0.0.0']
+    resources:
+      - names: [client]
+        compress: false
+registration_shared_secret: "smoke-registration-secret"
+log_config: "/etc/matrix-synapse/log-smoke.yaml"
+rc_login:
+  address: { per_second: 1000, burst_count: 1000 }
+  account: { per_second: 1000, burst_count: 1000 }
+  failed_attempts: { per_second: 1000, burst_count: 1000 }
+rc_message: { per_second: 1000, burst_count: 1000 }
+rc_registration: { per_second: 1000, burst_count: 1000 }
+rc_admin_redaction: { per_second: 1000, burst_count: 1000 }
+rc_joins:
+  local: { per_second: 1000, burst_count: 1000 }
+  remote: { per_second: 1000, burst_count: 1000 }

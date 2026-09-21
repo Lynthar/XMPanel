@@ -114,7 +114,8 @@
     "endpointHint": "Enter an http:// or https:// URL",
     "endpointHelp": {
       "prosody": "Where the panel reaches Prosody's HTTP listener, usually loopback. The domain below goes in the Host header, so this may be an address.",
-      "ejabberd": "Where the panel reaches ejabberd's mod_http_api listener, usually loopback."
+      "ejabberd": "Where the panel reaches ejabberd's mod_http_api listener, usually loopback.",
+      "synapse": "Where the panel reaches Synapse's client listener, usually http://127.0.0.1:8008; both /_matrix and /_synapse/admin must be served there."
     },
     "domain": "Domain",
     "domainLabel": {
@@ -129,7 +130,8 @@
     "tokenPlaceholder": "Enter the admin API token",
     "tokenHelp": {
       "prosody": "A mod_tokenauth bearer token issued to an admin.",
-      "ejabberd": "An OAuth token with the ejabberd:admin scope, or another token mod_http_api accepts."
+      "ejabberd": "An OAuth token with the ejabberd:admin scope, or another token mod_http_api accepts.",
+      "synapse": "An access token of a server admin account, e.g. from register_new_matrix_user -a or an admin's login."
     },
     "namePlaceholder": "My server",
     "status": "Status",
@@ -155,7 +157,8 @@
     },
     "implementations": {
       "prosody": "Prosody",
-      "ejabberd": "ejabberd"
+      "ejabberd": "ejabberd",
+      "synapse": "Synapse"
     },
     "stats": {
       "title": "Server Statistics",

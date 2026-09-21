@@ -11,6 +11,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/ejabberd"
 	"github.com/xmpanel/xmpanel/internal/adapter/prosody"
+	"github.com/xmpanel/xmpanel/internal/adapter/synapse"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/store"
 
@@ -22,11 +23,13 @@ type factory func(adapter.ServerConfig) adapter.Adapter
 var factories = map[adapter.Implementation]factory{
 	adapter.ImplProsody:  func(cfg adapter.ServerConfig) adapter.Adapter { return prosody.New(cfg) },
 	adapter.ImplEjabberd: func(cfg adapter.ServerConfig) adapter.Adapter { return ejabberd.New(cfg) },
+	adapter.ImplSynapse:  func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
 }
 
 var protocols = map[adapter.Implementation]adapter.Protocol{
 	adapter.ImplProsody:  adapter.ProtocolXMPP,
 	adapter.ImplEjabberd: adapter.ProtocolXMPP,
+	adapter.ImplSynapse:  adapter.ProtocolMatrix,
 }
 
 // ProbeRetryAfter is how long a failed probe is answered from cache before

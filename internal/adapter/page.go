@@ -49,6 +49,19 @@ func Paginate[T any](items []T, q ListQuery, key func(T) string) (Page[T], error
 	return page, nil
 }
 
+// SplitMXID separates @localpart:server into its parts; both are empty when
+// id is not an MXID.
+func SplitMXID(id string) (localpart, domain string) {
+	if !strings.HasPrefix(id, "@") {
+		return "", ""
+	}
+	localpart, domain, ok := strings.Cut(id[1:], ":")
+	if !ok || localpart == "" || domain == "" {
+		return "", ""
+	}
+	return localpart, domain
+}
+
 // SplitJID separates a bare or full JID into localpart, domain and resource.
 func SplitJID(jid string) (localpart, domain, resource string) {
 	bare, resource, _ := strings.Cut(jid, "/")

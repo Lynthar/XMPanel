@@ -9,12 +9,12 @@
 
 </div>
 
-XMPP 服务器（Prosody、ejabberd）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 支持正在做。
+XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse）的自托管 Web 管理面板：账号与会话管理、RBAC、MFA、防篡改审计日志。Go + React。Matrix 这一侧还在扩展。
 
 [English](README.md) | 简体中文
 
 > **施工中。** 还没有发过版，只能从源码构建。Prosody 这一侧已经在真实服务器上部署使用过；
-> 两个适配器都在 CI 里对着真实服务器跑 smoke（`smoke/`）。觉得有意思可以先关注，
+> 三个适配器都在 CI 里对着真实服务器跑 smoke（`smoke/`）。觉得有意思可以先关注，
 > 但别指望拿到一个打包好的产品。
 
 它挂在服务器外面，每台单独登记、各自走一个协议中立的适配器，所以可以同时管好几台。
@@ -59,6 +59,11 @@ Prosody 那边需要先准备：装三个社区模块（`mod_http_admin_api`、`
 再把本仓库的 `prosody/mod_admin_panel.lua` 装上。上游自带的 admin API 建账号时会返回
 200 但**账号根本没建出来**，而且完全不暴露在线会话——那个额外模块就是为了解决这两点。
 
+Synapse 那边只要一枚管理员账号的 access token（`register_new_matrix_user -a` 建的账号，
+或管理员登录得到的）。地址填客户端监听，`/_matrix` 与 `/_synapse/admin` 都要能从那里访问。
+把认证委派给 Matrix Authentication Service 的部署会被探测出来：面板届时只读账号、设备和房间，
+不建号、不锁定、不停用、不改密——这些要走 MAS，那个客户端还没写。
+
 ## 用法
 
 打开 `http://localhost:8080`，用 `admin` 登录。忘记口令时：
@@ -70,7 +75,7 @@ Prosody 那边需要先准备：装三个社区模块（`mod_http_admin_api`、`
 它只重置 `admin` 这一个账号——换新口令、清掉 MFA、吊销它的全部会话——然后退出。
 
 在 Servers 页添加服务器。一台服务器有两个地址：面板连过去的**管理 API 地址**
-（通常是回环 URL，比如 `http://127.0.0.1:5280`）和账号所属的**域名**（XMPP 的 VirtualHost）。
+（通常是回环 URL，比如 `http://127.0.0.1:5280`）和账号所属的**域名**（XMPP 的 VirtualHost，或 Matrix 的 `server_name`）。
 Prosody 那边域名会放进 HTTP Host 头，`mod_http_admin_api` 靠它选 VirtualHost，所以地址填 IP 没问题。
 「测试连接」会探测服务器并报告它支持什么。
 
@@ -102,10 +107,12 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ## 能力边界
 
-- **房间管理只存在于 ejabberd 那一侧。** Prosody 的上游 API 不暴露房间。
-- **分页是面板做的，不是服务器做的。** 两个 XMPP 适配器都是取全表再在内存里分页，
-  账号特别多的服务器列表会慢。
-- **还没有 Matrix 后端。** 适配器接口和数据模型是协议中立的，但目前只实现了 Prosody 和 ejabberd。
+- **房间管理只有 ejabberd 和 Synapse 有。** Prosody 的上游 API 不暴露房间。
+- **XMPP 的分页是面板做的，不是服务器做的。** 两个 XMPP 适配器都是取全表再在内存里分页，
+  账号特别多的服务器列表会慢。Synapse 由服务端分页。
+- **Matrix 只支持 Synapse，而且不完整。** 口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署仍能列出一切、注销设备、清除房间，但不建号、不锁定、不停用、不改密。
+  删账号是停用（Matrix 没有删除），id 永久占用；删房间是启动 Synapse 的后台清除，房间可能在列表里多留一会儿。
+  不建房、没有全局设备列表，Synapse 专有的工具（彻底抹除、suspend、shadow ban、注册 token、举报、媒体）都还没有。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
 - **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
 - **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。

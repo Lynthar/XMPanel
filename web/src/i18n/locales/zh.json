@@ -114,7 +114,8 @@
     "endpointHint": "请输入 http:// 或 https:// 开头的 URL",
     "endpointHelp": {
       "prosody": "面板连接 Prosody HTTP 监听的地址，通常是本机回环；下方域名会放进 Host 头，所以这里可以填 IP。",
-      "ejabberd": "面板连接 ejabberd mod_http_api 监听的地址，通常是本机回环。"
+      "ejabberd": "面板连接 ejabberd mod_http_api 监听的地址，通常是本机回环。",
+      "synapse": "面板连接 Synapse 客户端监听的地址，通常是 http://127.0.0.1:8008；/_matrix 与 /_synapse/admin 都要能从这里访问。"
     },
     "domain": "域名",
     "domainLabel": {
@@ -129,7 +130,8 @@
     "tokenPlaceholder": "请输入管理 API 令牌",
     "tokenHelp": {
       "prosody": "签发给管理员的 mod_tokenauth Bearer 令牌。",
-      "ejabberd": "带 ejabberd:admin scope 的 OAuth 令牌，或 mod_http_api 接受的其他令牌。"
+      "ejabberd": "带 ejabberd:admin scope 的 OAuth 令牌，或 mod_http_api 接受的其他令牌。",
+      "synapse": "一个服务器管理员账号的 access token，例如 register_new_matrix_user -a 建的账号或管理员登录得到的。"
     },
     "namePlaceholder": "我的服务器",
     "status": "状态",
@@ -155,7 +157,8 @@
     },
     "implementations": {
       "prosody": "Prosody",
-      "ejabberd": "ejabberd"
+      "ejabberd": "ejabberd",
+      "synapse": "Synapse"
     },
     "stats": {
       "title": "服务器统计",

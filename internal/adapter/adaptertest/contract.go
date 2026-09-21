@@ -22,10 +22,10 @@ type Upstream interface {
 	FailWith(status int)
 }
 
-// Population describes what Reset leaves on the fake: bare account ids,
-// live sessions (ID and AccountID) and room ids. Sessions must belong to
-// accounts in Accounts; at least two of each populated kind are needed for
-// the paging scenario.
+// Population describes what Reset leaves on the fake: account ids in the
+// protocol's native form, sessions (ID and AccountID) and room ids. Sessions
+// must belong to accounts in Accounts, the first two to different accounts;
+// at least two of each populated kind are needed for the paging scenario.
 type Population struct {
 	Accounts []string
 	Sessions []adapter.Session
@@ -114,7 +114,7 @@ func Run(t *testing.T, c Config) {
 		})
 	}
 
-	if c.Expected.Has(adapter.CapSessionsListAll) {
+	if c.Expected.Has(adapter.CapSessionsListAll) || c.Expected.Has(adapter.CapSessionsListByAcct) {
 		t.Run("sessions", func(t *testing.T) { sessionScenario(t, ctx, c, fresh) })
 	}
 
@@ -167,7 +167,7 @@ func accountScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 		t.Fatalf("list = %v, want %v", got, pop.Accounts)
 	}
 	for _, acc := range page.Items {
-		if acc.Localpart == "" || acc.Domain == "" || acc.Localpart+"@"+acc.Domain != acc.ID {
+		if acc.Localpart == "" || acc.Domain == "" || accountID(c.Protocol, acc.Localpart, acc.Domain) != acc.ID {
 			t.Errorf("account %+v has inconsistent parts", acc)
 		}
 	}
@@ -179,7 +179,7 @@ func accountScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if created.ID != "contract@"+c.Domain {
+	if created.ID != accountID(c.Protocol, "contract", c.Domain) {
 		t.Fatalf("created id = %q", created.ID)
 	}
 	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "contract", Password: "contract-pass-1"}); !isKind(err, adapter.Conflict) {
@@ -193,7 +193,7 @@ func accountScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 		if err := a.SetPassword(ctx, created.ID, "contract-pass-2"); err != nil {
 			t.Errorf("set password: %v", err)
 		}
-		if err := a.SetPassword(ctx, "ghost@"+c.Domain, "contract-pass-2"); !isKind(err, adapter.NotFound) {
+		if err := a.SetPassword(ctx, accountID(c.Protocol, "ghost", c.Domain), "contract-pass-2"); !isKind(err, adapter.NotFound) {
 			t.Errorf("set password on missing account: %v", err)
 		}
 	}
@@ -203,6 +203,23 @@ func accountScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 		}
 		if got, err := a.GetAccount(ctx, created.ID); err != nil || got.Enabled {
 			t.Errorf("disabled account reads enabled: %v %+v", err, got)
+		}
+		// A disabled account must stay listed, or it could never be re-enabled.
+		listed, err := a.ListAccounts(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+		if err != nil {
+			t.Fatalf("list while disabled: %v", err)
+		}
+		found := false
+		for _, acc := range listed.Items {
+			if acc.ID == created.ID {
+				found = true
+				if acc.Enabled {
+					t.Errorf("listing shows the disabled account as enabled: %+v", acc)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("disabled account vanished from the listing")
 		}
 		if err := a.SetEnabled(ctx, created.ID, true); err != nil {
 			t.Errorf("enable: %v", err)
@@ -216,24 +233,49 @@ func accountScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 			t.Errorf("get after delete: %v", err)
 		}
 	}
-	if _, err := a.GetAccount(ctx, "ghost@"+c.Domain); !isKind(err, adapter.NotFound) {
+	if _, err := a.GetAccount(ctx, accountID(c.Protocol, "ghost", c.Domain)); !isKind(err, adapter.NotFound) {
 		t.Errorf("get missing account: %v", err)
 	}
 }
 
+// sessionScenario goes through whichever listing the implementation
+// declares: the global one, or only the per-account one where there is no
+// global list (Synapse has no device listing across accounts).
 func sessionScenario(t *testing.T, ctx context.Context, c Config, fresh func(*testing.T) (adapter.Adapter, Population)) {
 	a, pop := fresh(t)
-	page, err := a.ListSessions(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	listAll := c.Expected.Has(adapter.CapSessionsListAll)
+	sessionID := func(s adapter.Session) string { return s.ID }
+	listed := func(t *testing.T, want adapter.Session) bool {
+		t.Helper()
+		var sessions []adapter.Session
+		var err error
+		if listAll {
+			var page adapter.Page[adapter.Session]
+			page, err = a.ListSessions(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+			sessions = page.Items
+		} else {
+			sessions, err = a.ListAccountSessions(ctx, want.AccountID)
+		}
+		if err != nil {
+			t.Fatalf("list sessions: %v", err)
+		}
+		return contains(ids(sessions, sessionID), want.ID)
 	}
-	want := ids(pop.Sessions, func(s adapter.Session) string { return s.ID })
-	if got := ids(page.Items, func(s adapter.Session) string { return s.ID }); !sameStrings(got, want) {
-		t.Fatalf("list = %v, want %v", got, want)
-	}
-	for _, s := range page.Items {
-		if s.AccountID == "" || !s.Live {
-			t.Errorf("session %+v lacks account or liveness", s)
+
+	if listAll {
+		page, err := a.ListSessions(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		want := ids(pop.Sessions, sessionID)
+		if got := ids(page.Items, sessionID); !sameStrings(got, want) {
+			t.Fatalf("list = %v, want %v", got, want)
+		}
+		// An XMPP session is a live connection; a Matrix device is not.
+		for _, s := range page.Items {
+			if s.AccountID == "" || (c.Protocol == adapter.ProtocolXMPP && !s.Live) {
+				t.Errorf("session %+v lacks account or liveness", s)
+			}
 		}
 	}
 
@@ -258,19 +300,17 @@ func sessionScenario(t *testing.T, ctx context.Context, c Config, fresh func(*te
 	if err := a.TerminateSession(ctx, first.AccountID, first.ID); err != nil {
 		t.Fatalf("terminate: %v", err)
 	}
-	page, err = a.ListSessions(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
-	if err != nil {
-		t.Fatalf("list after terminate: %v", err)
-	}
-	if contains(ids(page.Items, func(s adapter.Session) string { return s.ID }), first.ID) {
+	if listed(t, first) {
 		t.Errorf("%s still listed after termination", first.ID)
 	}
-	if err := a.TerminateAccountSessions(ctx, pop.Sessions[1].AccountID); err != nil {
+	other := pop.Sessions[1]
+	if err := a.TerminateAccountSessions(ctx, other.AccountID); err != nil {
 		t.Fatalf("terminate all: %v", err)
 	}
-	mine, err := a.ListAccountSessions(ctx, pop.Sessions[1].AccountID)
-	if err != nil || len(mine) != 0 {
-		t.Errorf("sessions remain after terminate all: %v %v", err, mine)
+	for _, s := range pop.Sessions {
+		if s.AccountID == other.AccountID && listed(t, s) {
+			t.Errorf("%s remains after terminate all", s.ID)
+		}
 	}
 }
 
@@ -288,7 +328,7 @@ func roomScenario(t *testing.T, ctx context.Context, c Config, fresh func(*testi
 		if err != nil || room.ID != pop.Rooms[0] {
 			t.Fatalf("get: %v %+v", err, room)
 		}
-		if _, err := a.GetRoom(ctx, "ghost@"+c.Domain); !isKind(err, adapter.NotFound) {
+		if _, err := a.GetRoom(ctx, missingRoomID(c)); !isKind(err, adapter.NotFound) {
 			t.Errorf("get missing room: %v", err)
 		}
 	}
@@ -423,6 +463,22 @@ func invoke(ctx context.Context, a adapter.Adapter, cap adapter.Capability, pop 
 		return a.DeleteRoom(ctx, room)
 	}
 	panic("unknown capability " + string(cap))
+}
+
+// accountID composes the protocol's native id for a localpart on domain.
+func accountID(protocol adapter.Protocol, localpart, domain string) string {
+	if protocol == adapter.ProtocolMatrix {
+		return "@" + localpart + ":" + domain
+	}
+	return localpart + "@" + domain
+}
+
+// missingRoomID is a well-formed room id no fake populates.
+func missingRoomID(c Config) string {
+	if c.Protocol == adapter.ProtocolMatrix {
+		return "!ghost:" + c.Domain
+	}
+	return "ghost@" + c.Domain
 }
 
 func isKind(err error, kind adapter.Kind) bool {

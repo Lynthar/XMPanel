@@ -14,6 +14,7 @@ type Implementation string
 const (
 	ImplProsody  Implementation = "prosody"
 	ImplEjabberd Implementation = "ejabberd"
+	ImplSynapse  Implementation = "synapse"
 )
 
 // ServerConfig is what the registry hands to a constructor; credentials are
@@ -38,19 +39,32 @@ type Credentials struct {
 const CredentialsBearer = "bearer"
 
 type Account struct {
-	ID          string            `json:"id"` // bare JID or MXID
-	Localpart   string            `json:"localpart"`
-	Domain      string            `json:"domain"`
-	DisplayName string            `json:"display_name,omitempty"`
-	Enabled     bool              `json:"enabled"`
-	Admin       bool              `json:"admin"`
-	CreatedAt   *time.Time        `json:"created_at,omitempty"`
-	LastSeen    *time.Time        `json:"last_seen,omitempty"`
-	XMPP        *XMPPAccountFacts `json:"xmpp,omitempty"`
+	ID          string              `json:"id"` // bare JID or MXID
+	Localpart   string              `json:"localpart"`
+	Domain      string              `json:"domain"`
+	DisplayName string              `json:"display_name,omitempty"`
+	Enabled     bool                `json:"enabled"`
+	Admin       bool                `json:"admin"`
+	CreatedAt   *time.Time          `json:"created_at,omitempty"`
+	LastSeen    *time.Time          `json:"last_seen,omitempty"`
+	Matrix      *MatrixAccountFacts `json:"matrix,omitempty"`
+	XMPP        *XMPPAccountFacts   `json:"xmpp,omitempty"`
 }
 
 type XMPPAccountFacts struct {
 	Roles []string `json:"roles,omitempty"`
+}
+
+// MatrixAccountFacts are the states Synapse keeps beside Enabled, which is
+// !deactivated && !locked. Suspended is nil when unknown: the account
+// listing does not carry it, only the single-account query does.
+type MatrixAccountFacts struct {
+	Deactivated  bool   `json:"deactivated"`
+	Locked       bool   `json:"locked"`
+	Suspended    *bool  `json:"suspended,omitempty"`
+	ShadowBanned bool   `json:"shadow_banned"`
+	Erased       bool   `json:"erased"`
+	UserType     string `json:"user_type,omitempty"`
 }
 
 type CreateAccount struct {
@@ -80,12 +94,22 @@ type XMPPSessionFacts struct {
 }
 
 type Room struct {
-	ID      string         `json:"id"` // room JID or !id:server
-	Name    string         `json:"name,omitempty"`
-	Alias   string         `json:"alias,omitempty"`
-	Members int            `json:"members"`
-	Public  bool           `json:"public"`
-	XMPP    *XMPPRoomFacts `json:"xmpp,omitempty"`
+	ID      string           `json:"id"` // room JID or !id:server
+	Name    string           `json:"name,omitempty"`
+	Alias   string           `json:"alias,omitempty"`
+	Members int              `json:"members"`
+	Public  bool             `json:"public"`
+	Matrix  *MatrixRoomFacts `json:"matrix,omitempty"`
+	XMPP    *XMPPRoomFacts   `json:"xmpp,omitempty"`
+}
+
+type MatrixRoomFacts struct {
+	Version            string `json:"version"`
+	Creator            string `json:"creator,omitempty"`
+	Encryption         string `json:"encryption,omitempty"`
+	Federatable        bool   `json:"federatable"`
+	JoinedLocalMembers int    `json:"joined_local_members"`
+	Topic              string `json:"topic,omitempty"`
 }
 
 type XMPPRoomFacts struct {

@@ -72,3 +72,21 @@ func isKind(err error, kind Kind) bool {
 	failure, ok := AsError(err)
 	return ok && failure.Kind == kind
 }
+
+func TestSplitMXID(t *testing.T) {
+	for _, tc := range []struct {
+		id, localpart, domain string
+	}{
+		{"@alice:example.com", "alice", "example.com"},
+		{"@alice:example.com:8448", "alice", "example.com:8448"},
+		{"alice@example.com", "", ""},
+		{"@:example.com", "", ""},
+		{"@alice", "", ""},
+		{"", "", ""},
+	} {
+		localpart, domain := SplitMXID(tc.id)
+		if localpart != tc.localpart || domain != tc.domain {
+			t.Errorf("SplitMXID(%q) = %q, %q; want %q, %q", tc.id, localpart, domain, tc.localpart, tc.domain)
+		}
+	}
+}
