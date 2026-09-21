@@ -138,9 +138,16 @@ export type Capability =
   | 'sessions.list_all' | 'sessions.list_by_account' | 'sessions.terminate'
   | 'rooms.list' | 'rooms.get' | 'rooms.create' | 'rooms.delete'
 
+export interface MASCredentials {
+  endpoint: string
+  client_id: string
+  client_secret: string
+}
+
 export interface Credentials {
-  kind?: string
+  kind: string
   token?: string
+  mas?: MASCredentials
 }
 
 export interface User {

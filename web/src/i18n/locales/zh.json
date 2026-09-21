@@ -133,6 +133,13 @@
       "ejabberd": "带 ejabberd:admin scope 的 OAuth 令牌，或 mod_http_api 接受的其他令牌。",
       "synapse": "一个服务器管理员账号的 access token，例如 register_new_matrix_user -a 建的账号或管理员登录得到的。"
     },
+    "mas": {
+      "toggle": "认证已委派给 Matrix Authentication Service",
+      "endpoint": "MAS 地址",
+      "clientId": "MAS client id",
+      "clientSecret": "MAS client secret",
+      "help": "在 MAS 的 clients: 里以 client_secret_basic 声明、并列入 policy.data.admin_clients 的 OAuth 2.0 客户端。上面的令牌此时须由 MAS 签发（mas-cli manage issue-compatibility-token <用户> --yes-i-want-to-grant-synapse-admin-privileges）。"
+    },
     "namePlaceholder": "我的服务器",
     "status": "状态",
     "active": "运行中",

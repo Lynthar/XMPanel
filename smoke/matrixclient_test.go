@@ -14,13 +14,15 @@ import (
 
 // matrixClient is the smallest client that produces a real device: a
 // password login. The smoke test uses it to watch a device appear, be
-// listed and be revoked by the adapter rather than by the client.
+// listed and be revoked by the adapter rather than by the client. Login and
+// logout go to loginBase, which is MAS when authentication is delegated.
 type matrixClient struct {
-	base     string
-	token    string
-	DeviceID string
-	UserID   string
-	http     *http.Client
+	loginBase string
+	base      string
+	token     string
+	DeviceID  string
+	UserID    string
+	http      *http.Client
 }
 
 type matrixError struct {
@@ -33,14 +35,14 @@ func (e *matrixError) Error() string {
 	return fmt.Sprintf("%d %s: %s", e.Status, e.Errcode, e.Message)
 }
 
-func matrixLogin(base, localpart, password, deviceName string) (*matrixClient, error) {
-	c := &matrixClient{base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 15 * time.Second}}
+func matrixLogin(loginBase, base, localpart, password, deviceName string) (*matrixClient, error) {
+	c := &matrixClient{loginBase: strings.TrimRight(loginBase, "/"), base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 15 * time.Second}}
 	var out struct {
 		AccessToken string `json:"access_token"`
 		DeviceID    string `json:"device_id"`
 		UserID      string `json:"user_id"`
 	}
-	err := c.do(http.MethodPost, "/_matrix/client/v3/login", map[string]any{
+	err := c.doAt(c.loginBase, http.MethodPost, "/_matrix/client/v3/login", map[string]any{
 		"type":                        "m.login.password",
 		"identifier":                  map[string]string{"type": "m.id.user", "user": localpart},
 		"password":                    password,
@@ -71,10 +73,14 @@ func (c *matrixClient) createRoom(name string, public bool) (string, error) {
 }
 
 func (c *matrixClient) logout() {
-	_ = c.do(http.MethodPost, "/_matrix/client/v3/logout", map[string]any{}, nil)
+	_ = c.doAt(c.loginBase, http.MethodPost, "/_matrix/client/v3/logout", map[string]any{}, nil)
 }
 
 func (c *matrixClient) do(method, path string, body, out any) error {
+	return c.doAt(c.base, method, path, body, out)
+}
+
+func (c *matrixClient) doAt(base, method, path string, body, out any) error {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -83,7 +89,7 @@ func (c *matrixClient) do(method, path string, body, out any) error {
 		}
 		payload = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequest(method, c.base+path, payload)
+	req, err := http.NewRequest(method, base+path, payload)
 	if err != nil {
 		return err
 	}

@@ -210,6 +210,8 @@ func TestWireTypesMatchFrontend(t *testing.T) {
 	sameSet(t, "adapter.CreateAccount json", jsonFields(adapter.CreateAccount{}), "lib/api.ts CreateAccountRequest", tsFields(t, "CreateAccountRequest"))
 	sameSet(t, "adapter.CreateRoom json", jsonFields(adapter.CreateRoom{}), "lib/api.ts CreateRoomRequest", tsFields(t, "CreateRoomRequest"))
 	sameSet(t, "models.CreateServerRequest json", jsonFields(CreateServerRequest{}), "lib/api.ts CreateServerRequest", tsFields(t, "CreateServerRequest"))
+	sameSet(t, "adapter.Credentials json", jsonFields(adapter.Credentials{}), "lib/api.ts Credentials", tsFields(t, "Credentials"))
+	sameSet(t, "adapter.MASCredentials json", jsonFields(adapter.MASCredentials{}), "lib/api.ts MASCredentials", tsFields(t, "MASCredentials"))
 }
 
 // The implementation table and the capability list are the only protocol

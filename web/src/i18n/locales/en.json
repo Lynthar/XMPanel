@@ -133,6 +133,13 @@
       "ejabberd": "An OAuth token with the ejabberd:admin scope, or another token mod_http_api accepts.",
       "synapse": "An access token of a server admin account, e.g. from register_new_matrix_user -a or an admin's login."
     },
+    "mas": {
+      "toggle": "Authentication is delegated to Matrix Authentication Service",
+      "endpoint": "MAS endpoint",
+      "clientId": "MAS client id",
+      "clientSecret": "MAS client secret",
+      "help": "An OAuth 2.0 client declared in MAS's clients: with client_secret_basic and listed in policy.data.admin_clients. The token above must then come from MAS (mas-cli manage issue-compatibility-token <user> --yes-i-want-to-grant-synapse-admin-privileges)."
+    },
     "namePlaceholder": "My server",
     "status": "Status",
     "active": "Active",

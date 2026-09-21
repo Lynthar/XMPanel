@@ -188,6 +188,10 @@ interface ServerForm {
   endpoint: string
   domain: string
   token: string
+  mas: boolean
+  masEndpoint: string
+  masClientId: string
+  masClientSecret: string
 }
 
 const defaultEndpoint: Record<Implementation, string> = {
@@ -203,6 +207,7 @@ function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess
   })
   const protocol = watch('protocol')
   const implementation = watch('implementation')
+  const mas = watch('mas')
   const options = implementationsFor(protocol)
   if (!options.includes(implementation) && options.length > 0) setValue('implementation', options[0])
   // The endpoint follows the implementation until the operator types their own.
@@ -217,7 +222,9 @@ function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess
       implementation: form.implementation,
       endpoint: form.endpoint,
       domain: form.domain,
-      credentials: { kind: 'bearer', token: form.token },
+      credentials: form.implementation === 'synapse' && form.mas
+        ? { kind: 'bearer+mas', token: form.token, mas: { endpoint: form.masEndpoint, client_id: form.masClientId, client_secret: form.masClientSecret } }
+        : { kind: 'bearer', token: form.token },
     }
     try {
       await serversApi.create(body)
@@ -263,6 +270,33 @@ function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess
           <input type="password" className="input" placeholder={t('servers.tokenPlaceholder')} {...register('token', { required: t('validation.required') })} />
           <p className="mt-1 text-xs text-gray-500">{t(`servers.tokenHelp.${implementation}`)}</p>
         </Field>
+        {implementation === 'synapse' && (
+          <div className="space-y-4 rounded-lg border border-gray-700 p-4">
+            <label className="flex items-center gap-2 text-sm text-gray-300">
+              <input type="checkbox" {...register('mas')} />
+              {t('servers.mas.toggle')}
+            </label>
+            {mas && (
+              <>
+                <Field label={t('servers.mas.endpoint')} error={errors.masEndpoint?.message}>
+                  <input
+                    type="url"
+                    className="input font-mono text-sm"
+                    placeholder="http://127.0.0.1:8080"
+                    {...register('masEndpoint', { required: t('validation.required'), pattern: { value: /^https?:\/\/\S+$/, message: t('servers.endpointHint') } })}
+                  />
+                </Field>
+                <Field label={t('servers.mas.clientId')} error={errors.masClientId?.message}>
+                  <input type="text" className="input font-mono text-sm" {...register('masClientId', { required: t('validation.required') })} />
+                </Field>
+                <Field label={t('servers.mas.clientSecret')} error={errors.masClientSecret?.message}>
+                  <input type="password" className="input" {...register('masClientSecret', { required: t('validation.required') })} />
+                </Field>
+                <p className="text-xs text-gray-500">{t('servers.mas.help')}</p>
+              </>
+            )}
+          </div>
+        )}
         <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
           <button type="button" onClick={onClose} className="btn btn-secondary">{t('common.cancel')}</button>
           <button type="submit" disabled={isSubmitting} className="btn btn-primary">{isSubmitting ? '...' : t('servers.addServer')}</button>

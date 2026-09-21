@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,36 @@ func newAdapter(endpoint, domain string) *Adapter {
 		Protocol: adapter.ProtocolMatrix, Impl: adapter.ImplSynapse, Endpoint: endpoint, Domain: domain,
 		Creds: adapter.Credentials{Kind: adapter.CredentialsBearer, Token: fakeToken},
 	})
+}
+
+// newMASAdapter carries MAS credentials whose endpoint is the fake itself.
+func newMASAdapter(endpoint string, secret string) *Adapter {
+	return New(adapter.ServerConfig{
+		Protocol: adapter.ProtocolMatrix, Impl: adapter.ImplSynapse, Endpoint: endpoint, Domain: fakeDomain,
+		Creds: adapter.Credentials{
+			Kind: adapter.CredentialsBearerMAS, Token: fakeToken,
+			MAS: &adapter.MASCredentials{Endpoint: endpoint, ClientID: synapsetest.MASClientID, ClientSecret: secret},
+		},
+	})
+}
+
+// startMAS returns a probed adapter against a fake that delegates to MAS.
+func startMAS(t *testing.T) (*Adapter, *synapsetest.Fake) {
+	t.Helper()
+	fake := synapsetest.New(fakeDomain, fakeToken)
+	fake.DelegateAuth(true)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	a := newMASAdapter(srv.URL, synapsetest.MASClientSecret)
+	t.Cleanup(func() { _ = a.Close() })
+	info, err := a.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if info.AuthMode != AuthModeMAS {
+		t.Fatalf("auth mode = %q", info.AuthMode)
+	}
+	return a, fake
 }
 
 // start returns a probed adapter against a fresh fake.
@@ -49,6 +80,257 @@ func TestContract(t *testing.T) {
 		New:      func(endpoint string) adapter.Adapter { return newAdapter(endpoint, fakeDomain) },
 		Expected: legacyCapabilities,
 	})
+}
+
+// With MAS credentials the full capability set applies under delegation.
+func TestContractWithMAS(t *testing.T) {
+	fake := synapsetest.New(fakeDomain, fakeToken)
+	fake.DelegateAuth(true)
+	adaptertest.Run(t, adaptertest.Config{
+		Protocol: adapter.ProtocolMatrix,
+		Impl:     adapter.ImplSynapse,
+		Domain:   fakeDomain,
+		Upstream: fake,
+		New:      func(endpoint string) adapter.Adapter { return newMASAdapter(endpoint, synapsetest.MASClientSecret) },
+		Expected: legacyCapabilities,
+	})
+}
+
+func TestMASLifecycleGoesThroughMAS(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	if got := a.Capabilities(); len(got) != len(legacyCapabilities) {
+		t.Fatalf("capabilities under MAS with credentials = %v", got.Sorted())
+	}
+	created, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "new", Password: "pw", DisplayName: "New", Admin: true})
+	if err != nil || created.ID != "@new:"+fakeDomain || !created.Admin || !created.Enabled || created.DisplayName != "New" {
+		t.Fatalf("create = %+v, %v", created, err)
+	}
+	for _, want := range []string{"POST /api/admin/v1/users", "/set-password", "/set-admin"} {
+		if !requestedContaining(fake, want) {
+			t.Errorf("create did not use MAS (%s): %v", want, fake.Requests)
+		}
+	}
+	if requested(fake, "PUT /_synapse/admin/v2/users/") {
+		t.Errorf("create wrote to Synapse under MAS: %v", fake.Requests)
+	}
+	got, err := a.GetAccount(ctx, created.ID)
+	if err != nil || !got.Admin || !got.Enabled {
+		t.Fatalf("get after create = %+v, %v", got, err)
+	}
+	if err := a.SetEnabled(ctx, created.ID, false); err != nil || !requestedContaining(fake, "/lock") {
+		t.Errorf("lock through MAS: %v %v", err, fake.Requests)
+	}
+	if got, err := a.GetAccount(ctx, created.ID); err != nil || got.Enabled {
+		t.Errorf("locked account reads enabled: %+v, %v", got, err)
+	}
+	if err := a.SetEnabled(ctx, created.ID, true); err != nil || !requestedContaining(fake, "/unlock") {
+		t.Errorf("unlock through MAS: %v", err)
+	}
+	if err := a.SetPassword(ctx, created.ID, "short"); !isKind(err, adapter.Invalid) {
+		t.Errorf("weak password must be Invalid through MAS: %v", err)
+	}
+	if err := a.SetPassword(ctx, created.ID, "long-enough-1"); err != nil {
+		t.Errorf("set password through MAS: %v", err)
+	}
+	if err := a.SetAdmin(ctx, created.ID, false); err != nil {
+		t.Errorf("set admin through MAS: %v", err)
+	}
+	if got, err := a.GetAccount(ctx, created.ID); err != nil || got.Admin {
+		t.Errorf("admin bit not cleared: %+v, %v", got, err)
+	}
+	if err := a.DeleteAccount(ctx, created.ID); err != nil || !requestedContaining(fake, "/deactivate") {
+		t.Fatalf("deactivate through MAS: %v", err)
+	}
+	if requested(fake, "POST /_synapse/admin/v1/deactivate/") {
+		t.Errorf("deactivation went to Synapse under MAS: %v", fake.Requests)
+	}
+	if _, err := a.GetAccount(ctx, created.ID); !isKind(err, adapter.NotFound) {
+		t.Errorf("get after deactivate: %v", err)
+	}
+	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "new", Password: "pw"}); !isKind(err, adapter.Conflict) {
+		t.Errorf("recreating a taken username: %v", err)
+	}
+	if err := a.SetPassword(ctx, "@ghost:"+fakeDomain, "long-enough-1"); !isKind(err, adapter.NotFound) {
+		t.Errorf("set password on a missing MAS user: %v", err)
+	}
+}
+
+// MAS never writes its admin bit into Synapse's column, so both the single
+// account and the listing must take it from MAS under delegation.
+func TestMASAdminBitComesFromMASInListingsToo(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	alice, bob := "@alice:"+fakeDomain, "@bob:"+fakeDomain
+	if err := a.SetAdmin(ctx, alice, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.SetHomeserverAdmin(bob, true) // a Synapse-only admin bit, stale under MAS
+	page, err := a.ListAccounts(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, acc := range page.Items {
+		seen[acc.ID] = acc.Admin
+	}
+	if !seen[alice] || seen[bob] || !seen["@admin:"+fakeDomain] {
+		t.Errorf("listing admin bits = %v, want alice and admin only", seen)
+	}
+	if got, err := a.GetAccount(ctx, bob); err != nil || got.Admin {
+		t.Errorf("single account shows Synapse's stale admin bit: %+v, %v", got, err)
+	}
+}
+
+// A MAS without password login (an upstream identity provider) can neither
+// create an account with a password nor set one.
+func TestMASWithoutPasswordLoginNarrowsCapabilities(t *testing.T) {
+	fake := synapsetest.New(fakeDomain, fakeToken)
+	fake.DelegateAuth(true)
+	fake.PasswordLogin(false)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	a := newMASAdapter(srv.URL, synapsetest.MASClientSecret)
+	defer func() { _ = a.Close() }()
+	ctx := context.Background()
+	if _, err := a.Probe(ctx); err != nil {
+		t.Fatal(err)
+	}
+	caps := a.Capabilities()
+	if caps.Has(adapter.CapAccountsCreate) || caps.Has(adapter.CapAccountsSetPassword) || !caps.Has(adapter.CapAccountsSetEnabled) {
+		t.Fatalf("capabilities without password login = %v", caps.Sorted())
+	}
+	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "new", Password: "pw"}); !isKind(err, adapter.NotSupported) {
+		t.Errorf("create without password login: %v", err)
+	}
+	adaptertest.CheckConsistency(t, ctx, a, fake.Reset())
+}
+
+// A failure after MAS created the account must not leave it live without
+// the password that was asked for.
+func TestMASCreateDeactivatesAHalfCreatedAccount(t *testing.T) {
+	a, fake := startMAS(t)
+	fake.FailSetPassword(true)
+	_, err := a.CreateAccount(context.Background(), adapter.CreateAccount{Localpart: "half", Password: "pw"})
+	if failure, ok := adapter.AsError(err); !ok || failure.Kind != adapter.Upstream {
+		t.Fatalf("create with a failing set-password: %v", err)
+	}
+	if !fake.HasUser("@half:"+fakeDomain) || !fake.Deactivated("@half:"+fakeDomain) {
+		t.Errorf("half-created account was not deactivated")
+	}
+}
+
+func TestMASPasswordResetRevokesDevices(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	bob := "@bob:" + fakeDomain
+	if err := a.SetPassword(ctx, bob, "long-enough-1"); err != nil {
+		t.Fatal(err)
+	}
+	if devices, err := a.ListAccountSessions(ctx, bob); err != nil || len(devices) != 0 {
+		t.Errorf("devices survived a MAS password reset: %+v, %v", devices, err)
+	}
+	if !requestedContaining(fake, "/delete_devices") {
+		t.Errorf("no device revocation was sent: %v", fake.Requests)
+	}
+}
+
+// One token fetch serves every concurrent caller, and a caller whose own
+// context ends does not wait for the fetch.
+func TestMASTokenFetchIsSharedAndCancellable(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	fake.SlowToken(300 * time.Millisecond)
+	a.mas.mu.Lock()
+	a.mas.expiresAt = time.Now()
+	a.mas.mu.Unlock()
+	before := countRequests(fake, "POST /oauth2/token")
+	var wg sync.WaitGroup
+	errs := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.GetAccount(ctx, "@alice:"+fakeDomain)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent call: %v", err)
+		}
+	}
+	if n := countRequests(fake, "POST /oauth2/token") - before; n != 1 {
+		t.Errorf("token fetches for five concurrent callers = %d, want 1", n)
+	}
+
+	a.mas.mu.Lock()
+	a.mas.expiresAt = time.Now()
+	a.mas.mu.Unlock()
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, _ = a.GetAccount(ctx, "@alice:"+fakeDomain)
+	}()
+	time.Sleep(50 * time.Millisecond) // the leader is now inside the slow grant
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := a.GetAccount(short, "@alice:"+fakeDomain)
+	if err == nil || time.Since(started) > 200*time.Millisecond {
+		t.Errorf("waiter with a dead context: err=%v after %v", err, time.Since(started))
+	}
+	<-leaderDone
+}
+
+func TestMASTokenIsCachedUntilExpiry(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	if _, err := a.GetAccount(ctx, "@alice:"+fakeDomain); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetAdmin(ctx, "@alice:"+fakeDomain, true); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRequests(fake, "POST /oauth2/token"); n != 1 {
+		t.Fatalf("token requests = %d, want 1 (probe only)", n)
+	}
+	a.mas.mu.Lock()
+	a.mas.expiresAt = time.Now()
+	a.mas.mu.Unlock()
+	if err := a.SetAdmin(ctx, "@alice:"+fakeDomain, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRequests(fake, "POST /oauth2/token"); n != 2 {
+		t.Errorf("token requests after expiry = %d, want 2", n)
+	}
+}
+
+func TestMASRejectsBadClientCredentials(t *testing.T) {
+	fake := synapsetest.New(fakeDomain, fakeToken)
+	fake.DelegateAuth(true)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	a := newMASAdapter(srv.URL, "wrong-secret")
+	defer func() { _ = a.Close() }()
+	_, err := a.Probe(context.Background())
+	if failure, ok := adapter.AsError(err); !ok || failure.Kind != adapter.Unauthorized || !strings.Contains(err.Error(), "MAS") {
+		t.Fatalf("probe with a bad MAS client: %v", err)
+	}
+}
+
+func TestMASCredentialsAgainstLegacyHomeserverFailProbe(t *testing.T) {
+	fake := synapsetest.New(fakeDomain, fakeToken)
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	a := newMASAdapter(srv.URL, synapsetest.MASClientSecret)
+	defer func() { _ = a.Close() }()
+	_, err := a.Probe(context.Background())
+	if failure, ok := adapter.AsError(err); !ok || failure.Kind != adapter.Invalid || !strings.Contains(err.Error(), "delegate") {
+		t.Fatalf("MAS credentials on a legacy homeserver: %v", err)
+	}
 }
 
 func TestProbeReportsLegacyMode(t *testing.T) {
@@ -381,6 +663,25 @@ func TestPageTokenAndFlagShapes(t *testing.T) {
 
 func jsonUnmarshal(s string, v any) error {
 	return json.Unmarshal([]byte(s), v)
+}
+
+func requestedContaining(f *synapsetest.Fake, part string) bool {
+	for _, r := range f.Requests {
+		if strings.Contains(r, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func countRequests(f *synapsetest.Fake, prefix string) int {
+	n := 0
+	for _, r := range f.Requests {
+		if strings.HasPrefix(r, prefix) {
+			n++
+		}
+	}
+	return n
 }
 
 func requested(f *synapsetest.Fake, prefix string) bool {

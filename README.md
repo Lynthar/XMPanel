@@ -71,9 +71,14 @@ the extra module exists to solve both of those.
 Synapse needs an admin account's access token (from `register_new_matrix_user -a`,
 or an admin's login). The endpoint is the client-server listener, and both
 `/_matrix` and `/_synapse/admin` must be reachable there. A deployment that
-delegates authentication to Matrix Authentication Service is detected: the panel
-then reads accounts, devices and rooms but does not create, lock, deactivate or
-change passwords, because those go through MAS and that client is not written yet.
+delegates authentication to Matrix Authentication Service is detected. Its admin
+token then comes from MAS (`mas-cli manage issue-compatibility-token <admin>
+--yes-i-want-to-grant-synapse-admin-privileges`, followed by a provisioning run so
+that Synapse learns the session's device), and the account lifecycle goes through
+MAS's admin API once the server entry carries a MAS client: an OAuth 2.0 client
+declared with `client_secret_basic` and listed in `policy.data.admin_clients`.
+Without that client the panel still lists accounts, devices and rooms, revokes
+devices and purges rooms, but does not create, lock, deactivate or change passwords.
 
 ## Usage
 
@@ -127,9 +132,8 @@ Set the JWT secret before you put real data in; the encryption key is checked at
   fetch the full account or session list and page it in memory, so very large
   servers are slow to list. Synapse pages on the server.
 - **Matrix support is Synapse-only and partial.** Password (legacy) authentication
-  is fully supported; behind Matrix Authentication Service the panel still lists
-  everything, revokes devices and purges rooms, but leaves creating, locking,
-  deactivating and passwords alone.
+  is fully supported; behind Matrix Authentication Service the account lifecycle
+  needs the MAS client described above.
   Deleting an account deactivates it (Matrix has no deletion) and its id stays
   taken; deleting a room starts Synapse's background purge, so the room can linger
   in listings for a moment. No room creation, no global device list, and none of

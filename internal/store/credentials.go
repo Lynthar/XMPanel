@@ -9,7 +9,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 )
 
-// BearerCredentials wraps a plain token, the only credential kind so far.
+// BearerCredentials wraps a plain token, the kind every XMPP backend uses.
 func BearerCredentials(token string) adapter.Credentials {
 	return adapter.Credentials{Kind: adapter.CredentialsBearer, Token: token}
 }

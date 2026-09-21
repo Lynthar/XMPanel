@@ -95,8 +95,8 @@ func validEndpoint(raw string) bool {
 	return true
 }
 
-// credentialsOrError normalises a request's credentials: bearer is the only
-// kind so far and its token may not be empty.
+// credentialsOrError normalises a request's credentials: bearer needs a
+// token; bearer+mas also needs the MAS endpoint, client id and secret.
 func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string) {
 	if creds == nil {
 		return adapter.Credentials{}, "Credentials are required"
@@ -104,7 +104,22 @@ func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string
 	if creds.Kind == "" {
 		creds.Kind = adapter.CredentialsBearer
 	}
-	if creds.Kind != adapter.CredentialsBearer {
+	switch creds.Kind {
+	case adapter.CredentialsBearer:
+		creds.MAS = nil
+	case adapter.CredentialsBearerMAS:
+		if creds.MAS == nil || !validEndpoint(strings.TrimSpace(creds.MAS.Endpoint)) {
+			return adapter.Credentials{}, "MAS endpoint must be an http or https URL"
+		}
+		if strings.TrimSpace(creds.MAS.ClientID) == "" || strings.TrimSpace(creds.MAS.ClientSecret) == "" {
+			return adapter.Credentials{}, "MAS client id and client secret are required"
+		}
+		creds.MAS = &adapter.MASCredentials{
+			Endpoint:     strings.TrimSpace(creds.MAS.Endpoint),
+			ClientID:     strings.TrimSpace(creds.MAS.ClientID),
+			ClientSecret: strings.TrimSpace(creds.MAS.ClientSecret),
+		}
+	default:
 		return adapter.Credentials{}, "Unsupported credential kind"
 	}
 	if strings.TrimSpace(creds.Token) == "" {
@@ -139,6 +154,10 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	creds, problem := credentialsOrError(req.Credentials)
 	if problem != "" {
 		writeError(w, r, http.StatusBadRequest, problem)
+		return
+	}
+	if creds.MAS != nil && req.Implementation != adapter.ImplSynapse {
+		writeError(w, r, http.StatusBadRequest, "MAS credentials apply to Synapse only")
 		return
 	}
 	encrypted, err := store.EncryptCredentials(h.keyRing, creds)
@@ -217,6 +236,20 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		if problem != "" {
 			writeError(w, r, http.StatusBadRequest, problem)
 			return
+		}
+		if creds.MAS != nil {
+			var impl adapter.Implementation
+			switch err := h.db.QueryRow(`SELECT implementation FROM servers WHERE id = $1`, id).Scan(&impl); {
+			case errors.Is(err, sql.ErrNoRows):
+				writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
+				return
+			case err != nil:
+				writeInternalError(w, r, h.logger, "failed to load server", err)
+				return
+			case impl != adapter.ImplSynapse:
+				writeError(w, r, http.StatusBadRequest, "MAS credentials apply to Synapse only")
+				return
+			}
 		}
 		encrypted, err := store.EncryptCredentials(h.keyRing, creds)
 		if err != nil {

@@ -28,15 +28,28 @@ type ServerConfig struct {
 	Creds    Credentials
 }
 
-// Credentials is the decrypted form of servers.credentials_encrypted.
-// Kind "bearer" needs Token only; other kinds are added with the backends
-// that need them.
+// Credentials is the decrypted form of servers.credentials_encrypted. Kind
+// "bearer" needs Token only; "bearer+mas" adds the MAS admin client that a
+// Synapse delegating authentication needs for account lifecycle operations.
 type Credentials struct {
-	Kind  string `json:"kind"`
-	Token string `json:"token,omitempty"`
+	Kind  string          `json:"kind"`
+	Token string          `json:"token,omitempty"`
+	MAS   *MASCredentials `json:"mas,omitempty"`
 }
 
-const CredentialsBearer = "bearer"
+// MASCredentials identify the panel to Matrix Authentication Service's admin
+// API: an OAuth 2.0 client declared with client_secret_basic and listed in
+// policy.data.admin_clients.
+type MASCredentials struct {
+	Endpoint     string `json:"endpoint"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+const (
+	CredentialsBearer    = "bearer"
+	CredentialsBearerMAS = "bearer+mas"
+)
 
 type Account struct {
 	ID          string              `json:"id"` // bare JID or MXID

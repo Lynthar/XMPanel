@@ -15,43 +15,69 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter/synapse"
 )
 
+// The MAS admin client declared in smoke/mas/smoke.yaml.
+const (
+	masClientID     = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	masClientSecret = "smoke-mas-client-secret"
+)
+
 type matrixTarget struct {
-	name     string
-	impl     adapter.Implementation
-	endpoint string
-	token    func(t *testing.T) string
-	build    func(adapter.ServerConfig) adapter.Adapter
+	name      string
+	impl      adapter.Implementation
+	authMode  string
+	endpoint  string
+	loginBase string // where /login and /logout go: MAS under delegation
+	creds     func(t *testing.T) adapter.Credentials
+	build     func(adapter.ServerConfig) adapter.Adapter
 }
 
 func matrixTargets() []matrixTarget {
+	build := func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) }
 	return []matrixTarget{
 		{
-			name: "synapse", impl: adapter.ImplSynapse, endpoint: "http://127.0.0.1:18008",
-			token: func(t *testing.T) string {
-				return strings.TrimSpace(compose(t, "exec", "-T", "synapse", "cat", "/var/lib/matrix-synapse/admin-token.txt"))
+			name: "synapse", impl: adapter.ImplSynapse, authMode: synapse.AuthModeLegacy,
+			endpoint: "http://127.0.0.1:18008", loginBase: "http://127.0.0.1:18008",
+			creds: func(t *testing.T) adapter.Credentials {
+				token := strings.TrimSpace(compose(t, "exec", "-T", "synapse", "cat", "/var/lib/matrix-synapse/admin-token.txt"))
+				return adapter.Credentials{Kind: adapter.CredentialsBearer, Token: token}
 			},
-			build: func(cfg adapter.ServerConfig) adapter.Adapter { return synapse.New(cfg) },
+			build: build,
+		},
+		{
+			name: "synapse-mas", impl: adapter.ImplSynapse, authMode: synapse.AuthModeMAS,
+			endpoint: "http://127.0.0.1:18009", loginBase: "http://127.0.0.1:18080",
+			creds: func(t *testing.T) adapter.Credentials {
+				token := strings.TrimSpace(compose(t, "exec", "-T", "mas", "cat", "/var/lib/mas/admin-token.txt"))
+				return adapter.Credentials{
+					Kind: adapter.CredentialsBearerMAS, Token: token,
+					MAS: &adapter.MASCredentials{Endpoint: "http://127.0.0.1:18080", ClientID: masClientID, ClientSecret: masClientSecret},
+				}
+			},
+			build: build,
 		},
 	}
 }
 
 // runMatrix is run for a Matrix backend: devices stand in for sessions,
 // delete is deactivation, and a deactivated id stays taken forever, so every
-// account this run creates carries a fresh suffix.
+// account this run creates carries a fresh suffix. Under MAS the account
+// state reaches Synapse asynchronously, hence the waits after each change.
 func runMatrix(t *testing.T, tg matrixTarget) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	a := tg.build(adapter.ServerConfig{
-		Protocol: adapter.ProtocolMatrix, Impl: tg.impl, Endpoint: tg.endpoint, Domain: domain,
-		Creds: adapter.Credentials{Kind: adapter.CredentialsBearer, Token: tg.token(t)},
+		Protocol: adapter.ProtocolMatrix, Impl: tg.impl, Endpoint: tg.endpoint, Domain: domain, Creds: tg.creds(t),
 	})
 	defer func() { _ = a.Close() }()
+	login := func(localpart, password, device string) (*matrixClient, error) {
+		return matrixLogin(tg.loginBase, tg.endpoint, localpart, password, device)
+	}
 
 	info, err := a.Probe(ctx)
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	if info.Impl != tg.impl || info.Version == "" || !contains(info.Domains, domain) || info.AuthMode != synapse.AuthModeLegacy {
+	if info.Impl != tg.impl || info.Version == "" || !contains(info.Domains, domain) || info.AuthMode != tg.authMode {
 		t.Fatalf("info = %+v", info)
 	}
 	caps := a.Capabilities()
@@ -75,34 +101,40 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: local, Password: "first-password-1"}); !isKind(err, adapter.Conflict) {
 		t.Errorf("duplicate create: %v", err)
 	}
-	if got, err := a.GetAccount(ctx, id); err != nil || got.ID != id || !got.Enabled || got.DisplayName != "Smoke" {
-		t.Fatalf("get: %+v, %v", got, err)
+	got := waitFor(t, func() (*adapter.Account, bool) {
+		got, err := a.GetAccount(ctx, id)
+		return got, err == nil
+	})
+	if got.ID != id || !got.Enabled || got.DisplayName != "Smoke" {
+		t.Fatalf("get: %+v", got)
 	}
 	if _, err := a.GetAccount(ctx, ghost); !isKind(err, adapter.NotFound) {
 		t.Errorf("get missing: %v", err)
 	}
-	first, err := matrixLogin(tg.endpoint, local, "first-password-1", "first")
+	first, err := login(local, "first-password-1", "first")
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	// A password change logs every device out, like the panel's own.
 	if err := a.SetPassword(ctx, id, "second-password-2"); err != nil {
 		t.Fatalf("set password: %v", err)
 	}
 	if err := a.SetPassword(ctx, ghost, "x-password-x"); !isKind(err, adapter.NotFound) {
 		t.Errorf("set password on missing account: %v", err)
 	}
-	if c, err := matrixLogin(tg.endpoint, local, "first-password-1", "old"); err == nil {
+	if c, err := login(local, "first-password-1", "old"); err == nil {
 		c.logout()
 		t.Errorf("old password still logs in")
 	}
-	if err := first.whoami(); err == nil {
-		t.Errorf("device survived the password change")
-	}
+	// A password change logs every device out on both pairs (MAS has no
+	// switch for it, so the adapter revokes the devices itself).
+	waitFor(t, func() (string, bool) {
+		err := first.whoami()
+		return fmt.Sprint(err), err != nil
+	})
 
 	// Devices: a login must appear under the account, be attributable, and
 	// be revoked by the adapter.
-	client, err := matrixLogin(tg.endpoint, local, "second-password-2", "smoke")
+	client, err := login(local, "second-password-2", "smoke")
 	if err != nil {
 		t.Fatalf("login with the new password: %v", err)
 	}
@@ -128,11 +160,11 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 		own, err := a.ListAccountSessions(ctx, id)
 		return fmt.Sprintf("%v %v", own, err), err == nil && !sessionListed(own, client.DeviceID)
 	})
-	second, err := matrixLogin(tg.endpoint, local, "second-password-2", "again")
+	second, err := login(local, "second-password-2", "again")
 	if err != nil {
 		t.Fatalf("second login: %v", err)
 	}
-	third, err := matrixLogin(tg.endpoint, local, "second-password-2", "third")
+	third, err := login(local, "second-password-2", "third")
 	if err != nil {
 		t.Fatalf("third login: %v", err)
 	}
@@ -150,22 +182,24 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	if err := a.SetEnabled(ctx, id, false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if got, err := a.GetAccount(ctx, id); err != nil || got.Enabled || got.Matrix == nil || !got.Matrix.Locked {
-		t.Errorf("locked account = %+v, %v", got, err)
-	}
-	if c, err := matrixLogin(tg.endpoint, local, "second-password-2", "locked"); err == nil {
+	waitFor(t, func() (*adapter.Account, bool) {
+		got, err := a.GetAccount(ctx, id)
+		return got, err == nil && !got.Enabled && got.Matrix != nil && got.Matrix.Locked
+	})
+	if c, err := login(local, "second-password-2", "locked"); err == nil {
 		c.logout()
 		t.Errorf("locked account logged in")
 	} else {
 		t.Logf("locked login refused: %v", err)
 	}
-	if page, err := a.ListAccounts(ctx, adapter.ListQuery{Search: local, Limit: adapter.MaxLimit}); err != nil || len(page.Items) != 1 || page.Items[0].Enabled {
-		t.Errorf("locked account must stay listed as disabled: %+v, %v", page, err)
-	}
+	waitFor(t, func() (adapter.Page[adapter.Account], bool) {
+		page, err := a.ListAccounts(ctx, adapter.ListQuery{Search: local, Limit: adapter.MaxLimit})
+		return page, err == nil && len(page.Items) == 1 && !page.Items[0].Enabled
+	})
 	if err := a.SetEnabled(ctx, id, true); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
-	unlocked, err := matrixLogin(tg.endpoint, local, "second-password-2", "unlocked")
+	unlocked, err := login(local, "second-password-2", "unlocked")
 	if err != nil {
 		t.Fatalf("unlocked account cannot log in: %v", err)
 	}
@@ -176,6 +210,9 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	}
 	if got, err := a.GetAccount(ctx, id); err != nil || !got.Admin {
 		t.Errorf("admin not set: %+v, %v", got, err)
+	}
+	if page, err := a.ListAccounts(ctx, adapter.ListQuery{Search: local, Limit: adapter.MaxLimit}); err != nil || len(page.Items) != 1 || !page.Items[0].Admin {
+		t.Errorf("listing does not show the admin bit: %+v, %v", page, err)
 	}
 	if err := a.SetAdmin(ctx, id, false); err != nil {
 		t.Fatalf("clear admin: %v", err)
@@ -228,19 +265,21 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	if err := a.DeleteAccount(ctx, id); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := a.GetAccount(ctx, id); !isKind(err, adapter.NotFound) {
-		t.Errorf("get after delete: %v", err)
-	}
-	if c, err := matrixLogin(tg.endpoint, local, "second-password-2", "gone"); err == nil {
+	waitFor(t, func() (string, bool) {
+		_, err := a.GetAccount(ctx, id)
+		return fmt.Sprint(err), isKind(err, adapter.NotFound)
+	})
+	if c, err := login(local, "second-password-2", "gone"); err == nil {
 		c.logout()
 		t.Errorf("deactivated account still logs in")
 	}
 	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: local, Password: "again-3"}); !isKind(err, adapter.Conflict) {
 		t.Errorf("recreating a deactivated id: %v", err)
 	}
-	if page, err := a.ListAccounts(ctx, adapter.ListQuery{Search: local, Limit: adapter.MaxLimit}); err != nil || len(page.Items) != 0 {
-		t.Errorf("deactivated account still listed: %+v, %v", page, err)
-	}
+	waitFor(t, func() (adapter.Page[adapter.Account], bool) {
+		page, err := a.ListAccounts(ctx, adapter.ListQuery{Search: local, Limit: adapter.MaxLimit})
+		return page, err == nil && len(page.Items) == 0
+	})
 
 	// Every declared capability must work here and every undeclared one must
 	// answer NotSupported, on a disposable account with one device and one room.
@@ -249,7 +288,11 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: disposable, Password: "consistency-pass-1"}); err != nil {
 		t.Fatalf("consistency account: %v", err)
 	}
-	probe, err := matrixLogin(tg.endpoint, disposable, "consistency-pass-1", "consistency")
+	waitFor(t, func() (string, bool) {
+		_, err := a.GetAccount(ctx, pop.Accounts[0])
+		return fmt.Sprint(err), err == nil
+	})
+	probe, err := login(disposable, "consistency-pass-1", "consistency")
 	if err != nil {
 		t.Fatalf("consistency login: %v", err)
 	}

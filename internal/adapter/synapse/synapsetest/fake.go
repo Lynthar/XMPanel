@@ -5,12 +5,14 @@ package synapsetest
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/adaptertest"
@@ -19,6 +21,10 @@ import (
 const (
 	AdminLocalpart = "admin"
 	ServerVersion  = "1.161.0"
+	// The MAS admin client the fake accepts, and the token it issues to it.
+	MASClientID     = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	MASClientSecret = "mas-client-secret"
+	MASToken        = "mat_fake_admin_token"
 )
 
 type user struct {
@@ -28,6 +34,8 @@ type user struct {
 	deactivated bool
 	locked      bool
 	creationTS  int64 // seconds
+	ulid        string
+	masAdmin    bool // MAS's can_request_admin; Synapse's admin column is separate
 }
 
 type device struct {
@@ -44,17 +52,23 @@ type room struct {
 // Fake is safe for concurrent use; Requests records every request that got
 // past the failure injection, as "METHOD path?query".
 type Fake struct {
-	mu       sync.Mutex
-	domain   string
-	token    string
-	fail     int
-	mas      bool
-	users    map[string]*user
-	devices  map[string][]device
-	rooms    map[string]*room
-	deletes  int
-	mux      *http.ServeMux
-	Requests []string
+	mu     sync.Mutex
+	domain string
+	token  string
+	fail   int
+	mas    bool
+	// MAS knobs: password login off makes set-password answer 403; a set-
+	// password failure injection answers 500; a slow token delays the grant.
+	noPasswords     bool
+	failSetPassword bool
+	slowToken       time.Duration
+	users           map[string]*user
+	devices         map[string][]device
+	rooms           map[string]*room
+	deletes         int
+	sequence        int
+	mux             *http.ServeMux
+	Requests        []string
 }
 
 var localpartPattern = regexp.MustCompile(`^[a-z0-9._=/+-]+$`)
@@ -77,6 +91,12 @@ func New(domain, token string) *Fake {
 	f.mux.HandleFunc("GET /_synapse/admin/v1/rooms", f.listRooms)
 	f.mux.HandleFunc("GET /_synapse/admin/v1/rooms/{id}", f.getRoom)
 	f.mux.HandleFunc("DELETE /_synapse/admin/v2/rooms/{id}", f.deleteRoom)
+	f.mux.HandleFunc("POST /oauth2/token", f.masToken)
+	f.mux.HandleFunc("GET /api/admin/v1/site-config", f.masSiteConfig)
+	f.mux.HandleFunc("GET /api/admin/v1/users/by-username/{username}", f.masUserByUsername)
+	f.mux.HandleFunc("GET /api/admin/v1/users", f.masListUsers)
+	f.mux.HandleFunc("POST /api/admin/v1/users", f.masCreateUser)
+	f.mux.HandleFunc("POST /api/admin/v1/users/{id}/{action}", f.masUserAction)
 	f.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
 	})
@@ -91,9 +111,12 @@ func (f *Fake) Reset() adaptertest.Population {
 	defer f.mu.Unlock()
 	admin, alice, bob := f.mxid(AdminLocalpart), f.mxid("alice"), f.mxid("bob")
 	f.users = map[string]*user{
-		admin: {displayName: "Admin", admin: true, creationTS: 1560432506},
+		admin: {displayName: "Admin", admin: true, masAdmin: true, creationTS: 1560432506},
 		alice: {displayName: "Alice", creationTS: 1561550621},
 		bob:   {displayName: "Bob", creationTS: 1562000000},
+	}
+	for _, u := range f.users {
+		u.ulid = f.nextULID()
 	}
 	f.devices = map[string][]device{
 		alice: {{id: "DEV1", displayName: "laptop", ip: "10.0.0.1", userAgent: "Element/1.11", lastSeen: 1732919539393}},
@@ -125,12 +148,50 @@ func (f *Fake) FailWith(status int) {
 }
 
 // DelegateAuth switches the fake to a deployment whose authentication is
-// delegated to MAS: auth_metadata answers 200 and the admin-bit endpoint is
-// gone, as in Synapse.
+// delegated to MAS: auth_metadata answers 200, the admin-bit endpoint is gone
+// as in Synapse, and MAS's token endpoint and admin API appear on this fake.
 func (f *Fake) DelegateAuth(on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.mas = on
+}
+
+// PasswordLogin switches MAS's password login; off, set-password answers 403.
+func (f *Fake) PasswordLogin(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noPasswords = !enabled
+}
+
+// FailSetPassword makes MAS's set-password answer 500 until switched off.
+func (f *Fake) FailSetPassword(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failSetPassword = on
+}
+
+// SlowToken delays every token grant by d.
+func (f *Fake) SlowToken(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.slowToken = d
+}
+
+// SetHomeserverAdmin flips Synapse's own admin column, which MAS never writes.
+func (f *Fake) SetHomeserverAdmin(mxid string, admin bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if u, ok := f.users[mxid]; ok {
+		u.admin = admin
+	}
+}
+
+// Deactivated reports whether an account exists and is deactivated.
+func (f *Fake) Deactivated(mxid string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.users[mxid]
+	return ok && u.deactivated
 }
 
 // HasUser reports whether an account exists, deactivated or not.
@@ -150,8 +211,18 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.Requests = append(f.Requests, r.Method+" "+r.URL.RequestURI())
-	public := r.URL.Path == "/_matrix/client/versions" || r.URL.Path == "/_matrix/client/v1/auth_metadata"
-	if !public && r.Header.Get("Authorization") != "Bearer "+f.token {
+	switch {
+	case r.URL.Path == "/_matrix/client/versions" || r.URL.Path == "/_matrix/client/v1/auth_metadata" || r.URL.Path == "/oauth2/token":
+	case strings.HasPrefix(r.URL.Path, "/api/admin/"):
+		if !f.mas {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+MASToken {
+			masError(w, http.StatusUnauthorized, "Unauthorized")
+			return
+		}
+	case r.Header.Get("Authorization") != "Bearer "+f.token:
 		matrixError(w, http.StatusUnauthorized, "M_UNKNOWN_TOKEN", "Invalid access token passed.")
 		return
 	}
@@ -594,4 +665,189 @@ func reply(w http.ResponseWriter, status int, v any) {
 
 func matrixError(w http.ResponseWriter, status int, errcode, message string) {
 	reply(w, status, map[string]string{"errcode": errcode, "error": message})
+}
+
+// masToken answers the client_credentials grant for the configured client.
+func (f *Fake) masToken(w http.ResponseWriter, r *http.Request) {
+	if !f.mas {
+		http.NotFound(w, r)
+		return
+	}
+	id, secret, ok := r.BasicAuth()
+	if err := r.ParseForm(); err != nil || !ok || id != MASClientID || secret != MASClientSecret {
+		reply(w, http.StatusUnauthorized, map[string]string{"error": "invalid_client", "error_description": "Client authentication failed"})
+		return
+	}
+	if r.PostForm.Get("grant_type") != "client_credentials" || r.PostForm.Get("scope") != "urn:mas:admin" {
+		reply(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "error_description": "Unsupported grant or scope"})
+		return
+	}
+	if f.slowToken > 0 {
+		time.Sleep(f.slowToken)
+	}
+	reply(w, http.StatusOK, map[string]any{"access_token": MASToken, "token_type": "Bearer", "expires_in": 300, "scope": "urn:mas:admin"})
+}
+
+func (f *Fake) masSiteConfig(w http.ResponseWriter, _ *http.Request) {
+	reply(w, http.StatusOK, map[string]any{
+		"server_name": f.domain, "password_login_enabled": !f.noPasswords, "password_registration_enabled": false,
+		"minimum_password_complexity": 3,
+	})
+}
+
+// masListUsers serves the admin filter only, in one page, which is what the
+// adapter's admin overlay asks for.
+func (f *Fake) masListUsers(w http.ResponseWriter, r *http.Request) {
+	adminsOnly := r.URL.Query().Get("filter[admin]") == "true"
+	ids := make([]string, 0, len(f.users))
+	for id, u := range f.users {
+		if !adminsOnly || u.masAdmin {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	data := make([]any, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, f.masResource(id, f.users[id])["data"])
+	}
+	reply(w, http.StatusOK, map[string]any{
+		"meta": map[string]int{"count": len(data)}, "data": data,
+		"links": map[string]any{"self": r.URL.RequestURI(), "next": nil},
+	})
+}
+
+// masResource renders a user the way the admin API does: a ULID id and the
+// lock and deactivation as timestamps.
+func (f *Fake) masResource(id string, u *user) map[string]any {
+	localpart, _ := adapter.SplitMXID(id)
+	attributes := map[string]any{
+		"username": localpart, "created_at": time.Unix(u.creationTS, 0).UTC().Format(time.RFC3339),
+		"locked_at": nil, "deactivated_at": nil, "admin": u.masAdmin, "legacy_guest": false,
+	}
+	if u.locked {
+		attributes["locked_at"] = "2026-01-01T00:00:00Z"
+	}
+	if u.deactivated {
+		attributes["deactivated_at"] = "2026-01-01T00:00:00Z"
+	}
+	self := "/api/admin/v1/users/" + u.ulid
+	return map[string]any{
+		"data":  map[string]any{"type": "user", "id": u.ulid, "attributes": attributes, "links": map[string]string{"self": self}},
+		"links": map[string]string{"self": self},
+	}
+}
+
+func (f *Fake) masUserByUsername(w http.ResponseWriter, r *http.Request) {
+	id := f.mxid(r.PathValue("username"))
+	u, ok := f.users[id]
+	if !ok {
+		masError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	reply(w, http.StatusOK, f.masResource(id, u))
+}
+
+// masCreateUser registers the account; the fake provisions it into the
+// Synapse side at once, where the real MAS does so in the background.
+func (f *Fake) masCreateUser(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username    string  `json:"username"`
+		DisplayName *string `json:"displayname"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Username == "" {
+		masError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	if !localpartPattern.MatchString(body.Username) {
+		masError(w, http.StatusBadRequest, "Invalid username")
+		return
+	}
+	id := f.mxid(body.Username)
+	if _, exists := f.users[id]; exists {
+		masError(w, http.StatusConflict, "User already exists")
+		return
+	}
+	u := &user{creationTS: 1700000000, ulid: f.nextULID()}
+	if body.DisplayName != nil {
+		u.displayName = *body.DisplayName
+	}
+	f.users[id] = u
+	reply(w, http.StatusCreated, f.masResource(id, u))
+}
+
+// masUserAction handles the per-user actions. The password rule stands in
+// for MAS's complexity check: eight characters unless the check is skipped.
+func (f *Fake) masUserAction(w http.ResponseWriter, r *http.Request) {
+	id, u := f.userByULID(r.PathValue("id"))
+	if u == nil {
+		masError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	switch r.PathValue("action") {
+	case "set-password":
+		if f.noPasswords {
+			masError(w, http.StatusForbidden, "Password authentication is disabled")
+			return
+		}
+		if f.failSetPassword {
+			masError(w, http.StatusInternalServerError, "Internal error")
+			return
+		}
+		password, _ := body["password"].(string)
+		skip, _ := body["skip_password_check"].(bool)
+		if password == "" {
+			masError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+		if !skip && len(password) < 8 {
+			masError(w, http.StatusBadRequest, "Password is too weak")
+			return
+		}
+		u.password = password
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case "lock":
+		u.locked = true
+	case "unlock":
+		u.locked = false
+	case "deactivate":
+		u.deactivated = true
+		u.locked = false
+		delete(f.devices, id)
+	case "reactivate":
+		u.deactivated = false
+	case "set-admin":
+		admin, ok := body["admin"].(bool)
+		if !ok {
+			masError(w, http.StatusBadRequest, "Invalid request")
+			return
+		}
+		u.masAdmin = admin
+	default:
+		masError(w, http.StatusNotFound, "Not found")
+		return
+	}
+	reply(w, http.StatusOK, f.masResource(id, u))
+}
+
+func (f *Fake) userByULID(ulid string) (string, *user) {
+	for id, u := range f.users {
+		if u.ulid == ulid {
+			return id, u
+		}
+	}
+	return "", nil
+}
+
+// nextULID yields a distinct 26-character id; digits are valid Crockford
+// base32, so it has the shape of a real ULID.
+func (f *Fake) nextULID() string {
+	f.sequence++
+	return fmt.Sprintf("%026d", f.sequence)
+}
+
+func masError(w http.ResponseWriter, status int, title string) {
+	reply(w, status, map[string]any{"errors": []map[string]string{{"title": title}}})
 }

@@ -1,0 +1,6 @@
+# Mounted into the MAS-delegating Synapse only: authentication is handed to
+# MAS on the compose network with the secret the MAS config shares.
+matrix_authentication_service:
+  enabled: true
+  endpoint: http://mas:8080/
+  secret: smoke-mas-shared-secret

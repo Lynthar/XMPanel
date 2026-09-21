@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,14 +18,16 @@ import (
 )
 
 // Adapter drives Synapse through its admin API with one admin access token.
-// Under MAS delegation the account lifecycle belongs to MAS, so Probe narrows
-// the capability set instead of writing where MAS would not see it.
+// Under MAS delegation the account lifecycle goes through MAS's admin API when
+// the credentials carry a MAS client, and is undeclared when they do not.
 type Adapter struct {
 	cfg        adapter.ServerConfig
 	httpClient *http.Client
 	baseURL    string
+	mas        *masClient
 	mu         sync.RWMutex
 	authMode   string
+	passwords  bool // MAS accepts password logins, so creating and setting passwords work
 	caps       adapter.CapabilitySet
 }
 
@@ -49,16 +50,21 @@ var lifecycle = []adapter.Capability{
 }
 
 func New(cfg adapter.ServerConfig) *Adapter {
-	return &Adapter{
+	a := &Adapter{
 		cfg: cfg,
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		},
-		baseURL:  strings.TrimRight(cfg.Endpoint, "/"),
-		authMode: AuthModeLegacy,
-		caps:     legacyCapabilities,
+		baseURL:   strings.TrimRight(cfg.Endpoint, "/"),
+		authMode:  AuthModeLegacy,
+		passwords: true,
+		caps:      legacyCapabilities,
 	}
+	if cfg.Creds.MAS != nil {
+		a.mas = newMASClient(cfg.Creds.MAS, a.httpClient)
+	}
+	return a
 }
 
 // Probe checks reachability, the token, the delegation mode and admin rights
@@ -68,7 +74,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	var versions struct {
 		Versions []string `json:"versions"`
 	}
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/versions"}, &versions); err != nil {
+	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/versions", anonymous: true}, &versions); err != nil {
 		return nil, err
 	}
 	if len(versions.Versions) == 0 {
@@ -91,7 +97,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	}
 
 	authMode := AuthModeLegacy
-	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v1/auth_metadata"}, nil); err != nil {
+	if _, err := a.call(ctx, request{op: op, method: http.MethodGet, path: "/_matrix/client/v1/auth_metadata", anonymous: true}, nil); err != nil {
 		if failure, ok := adapter.AsError(err); !ok || failure.Status != http.StatusNotFound {
 			return nil, err
 		}
@@ -103,12 +109,36 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	// MAS credentials are verified against MAS itself, and only make sense
+	// when the homeserver actually delegates to it. A MAS that has password
+	// login off (an upstream identity provider) cannot create accounts with
+	// a password or set one, so those two capabilities go.
+	passwords := true
+	switch {
+	case authMode == AuthModeMAS && a.mas != nil:
+		var site struct {
+			ServerName    string `json:"server_name"`
+			PasswordLogin bool   `json:"password_login_enabled"`
+		}
+		if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: "/api/admin/v1/site-config"}, &site); err != nil {
+			return nil, err
+		}
+		if site.ServerName != a.cfg.Domain {
+			return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: site.ServerName, Err: fmt.Errorf("MAS serves server_name %q, not %q", site.ServerName, a.cfg.Domain)}
+		}
+		passwords = site.PasswordLogin
+	case authMode == AuthModeLegacy && a.mas != nil:
+		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Err: errors.New("MAS credentials were given but the homeserver does not delegate authentication")}
+	}
 	caps := legacyCapabilities
-	if authMode == AuthModeMAS {
+	switch {
+	case authMode == AuthModeMAS && a.mas == nil:
 		caps = legacyCapabilities.Without(lifecycle...)
+	case authMode == AuthModeMAS && !passwords:
+		caps = legacyCapabilities.Without(adapter.CapAccountsCreate, adapter.CapAccountsSetPassword)
 	}
 	a.mu.Lock()
-	a.authMode, a.caps = authMode, caps
+	a.authMode, a.passwords, a.caps = authMode, passwords, caps
 	a.mu.Unlock()
 	return &adapter.ServerInfo{
 		Protocol: adapter.ProtocolMatrix,
@@ -169,6 +199,17 @@ func (a *Adapter) ListAccounts(ctx context.Context, q adapter.ListQuery) (adapte
 	for i, u := range page.Users {
 		accounts[i] = u.account()
 	}
+	// Under delegation the admin bit lives in MAS and is never written to
+	// Synapse's column, so the listing is corrected from MAS's admin list.
+	if a.delegated() {
+		admins, err := a.masAdmins(ctx, "accounts.list")
+		if err != nil {
+			return adapter.Page[adapter.Account]{}, err
+		}
+		for i := range accounts {
+			accounts[i].Admin = admins[accounts[i].Localpart]
+		}
+	}
 	total := page.Total
 	return adapter.Page[adapter.Account]{Items: accounts, Next: string(page.NextToken), Total: &total}, nil
 }
@@ -207,6 +248,14 @@ func (a *Adapter) GetAccount(ctx context.Context, id string) (*adapter.Account, 
 		return nil, err
 	}
 	acc := u.account()
+	// Under delegation the admin bit lives in MAS; Synapse's column is stale.
+	if a.delegated() {
+		record, err := a.masUser(ctx, op, mxid)
+		if err != nil {
+			return nil, err
+		}
+		acc.Admin = record.Attributes.Admin
+	}
 	return &acc, nil
 }
 
@@ -225,7 +274,8 @@ func (a *Adapter) user(ctx context.Context, op, mxid string) (*user, error) {
 
 func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) (*adapter.Account, error) {
 	const op = "accounts.create"
-	if err := a.lifecycleAllowed(op); err != nil {
+	viaMAS, err := a.lifecycle(op)
+	if err != nil {
 		return nil, err
 	}
 	if req.Domain != "" && req.Domain != a.cfg.Domain {
@@ -235,10 +285,13 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 		return nil, &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: req.Localpart, Err: errors.New("localpart is empty or contains @ or a colon")}
 	}
 	mxid := "@" + req.Localpart + ":" + a.cfg.Domain
+	if viaMAS {
+		return a.masCreateAccount(ctx, op, mxid, req)
+	}
 	// PUT creates or modifies, so a taken id must be detected first: a
 	// deactivated account keeps its id forever and must not be revived here.
 	var existing user
-	_, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: userPath(mxid)}, &existing)
+	_, err = a.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: userPath(mxid)}, &existing)
 	if err == nil {
 		return nil, conflict(op, mxid)
 	}
@@ -265,12 +318,12 @@ func (a *Adapter) CreateAccount(ctx context.Context, req adapter.CreateAccount) 
 // erasing form is a MatrixAdmin operation behind its own permission.
 func (a *Adapter) DeleteAccount(ctx context.Context, id string) error {
 	const op = "accounts.delete"
-	if err := a.lifecycleAllowed(op); err != nil {
-		return err
-	}
-	mxid, err := a.mxid(op, id)
+	viaMAS, mxid, err := a.lifecycleTarget(op, id)
 	if err != nil {
 		return err
+	}
+	if viaMAS {
+		return a.masAction(ctx, op, mxid, "/deactivate", map[string]bool{"skip_erase": true})
 	}
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
@@ -283,41 +336,64 @@ func (a *Adapter) DeleteAccount(ctx context.Context, id string) error {
 	return err
 }
 
+// SetPassword logs every device out on both paths, as Synapse does by default
+// and as the panel's own password change does; MAS has no such switch, so
+// the devices are deleted afterwards. MAS also enforces its password policy
+// here (a weak one is Invalid).
 func (a *Adapter) SetPassword(ctx context.Context, id, password string) error {
-	return a.modify(ctx, "accounts.set_password", id, map[string]any{"password": password, "logout_devices": true})
+	const op = "accounts.set_password"
+	viaMAS, mxid, err := a.lifecycleTarget(op, id)
+	if err != nil {
+		return err
+	}
+	if viaMAS {
+		if err := a.masAction(ctx, op, mxid, "/set-password", map[string]any{"password": password}); err != nil {
+			return err
+		}
+		return a.TerminateAccountSessions(ctx, mxid)
+	}
+	return a.modify(ctx, op, mxid, map[string]any{"password": password, "logout_devices": true})
 }
 
-// SetEnabled maps to Synapse's lock: a locked account cannot log in and its
-// clients are soft-logged-out, and unlocking restores it unchanged.
+// SetEnabled maps to the lock: a locked account cannot log in and its clients
+// are soft-logged-out; unlocking restores it unchanged. MAS syncs its lock
+// into Synapse.
 func (a *Adapter) SetEnabled(ctx context.Context, id string, enabled bool) error {
-	return a.modify(ctx, "accounts.set_enabled", id, map[string]any{"locked": !enabled})
+	const op = "accounts.set_enabled"
+	viaMAS, mxid, err := a.lifecycleTarget(op, id)
+	if err != nil {
+		return err
+	}
+	if viaMAS {
+		action := "/lock"
+		if enabled {
+			action = "/unlock"
+		}
+		return a.masAction(ctx, op, mxid, action, nil)
+	}
+	return a.modify(ctx, op, mxid, map[string]any{"locked": !enabled})
 }
 
 // modify applies fields through the create-or-modify endpoint after checking
 // the account exists, because the same PUT would otherwise create it.
-func (a *Adapter) modify(ctx context.Context, op, id string, fields map[string]any) error {
-	if err := a.lifecycleAllowed(op); err != nil {
-		return err
-	}
-	mxid, err := a.mxid(op, id)
-	if err != nil {
-		return err
-	}
+func (a *Adapter) modify(ctx context.Context, op, mxid string, fields map[string]any) error {
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
 	}
-	_, err = a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: fields}, nil)
+	_, err := a.call(ctx, request{op: op, resource: mxid, method: http.MethodPut, path: userPath(mxid), body: fields}, nil)
 	return err
 }
 
+// SetAdmin through MAS sets can_request_admin, which is what grants the
+// urn:synapse:admin scope; Synapse's own admin column is not consulted then.
 func (a *Adapter) SetAdmin(ctx context.Context, id string, admin bool) error {
 	const op = "accounts.set_admin"
-	if err := a.lifecycleAllowed(op); err != nil {
-		return err
-	}
-	mxid, err := a.mxid(op, id)
+	viaMAS, mxid, err := a.lifecycleTarget(op, id)
 	if err != nil {
 		return err
+	}
+	if viaMAS {
+		return a.masAction(ctx, op, mxid, "/set-admin", map[string]bool{"admin": admin})
 	}
 	if _, err := a.user(ctx, op, mxid); err != nil {
 		return err
@@ -464,15 +540,117 @@ func (a *Adapter) DeleteRoom(ctx context.Context, id string) error {
 	return err
 }
 
-// lifecycleAllowed refuses the account operations MAS owns while the panel
-// has no MAS client, so the declared capability set and behaviour agree.
-func (a *Adapter) lifecycleAllowed(op string) error {
+// lifecycle says where an account lifecycle operation goes: through MAS when
+// authentication is delegated and MAS credentials exist, nowhere when it is
+// delegated without them (the capability is undeclared), else to Synapse.
+func (a *Adapter) lifecycle(op string) (viaMAS bool, err error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.authMode == AuthModeMAS {
-		return adapter.NotSupportedError(op)
+	if a.authMode != AuthModeMAS {
+		return false, nil
 	}
-	return nil
+	if a.mas == nil {
+		return false, adapter.NotSupportedError(op)
+	}
+	if !a.passwords && (op == "accounts.create" || op == "accounts.set_password") {
+		return false, adapter.NotSupportedError(op)
+	}
+	return true, nil
+}
+
+func (a *Adapter) lifecycleTarget(op, id string) (viaMAS bool, mxid string, err error) {
+	if viaMAS, err = a.lifecycle(op); err != nil {
+		return false, "", err
+	}
+	mxid, err = a.mxid(op, id)
+	return viaMAS, mxid, err
+}
+
+func (a *Adapter) delegated() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.authMode == AuthModeMAS && a.mas != nil
+}
+
+// masUser resolves an account in MAS by localpart; a deactivated one counts
+// as missing, as on the Synapse side.
+func (a *Adapter) masUser(ctx context.Context, op, mxid string) (*masUser, error) {
+	localpart, _ := adapter.SplitMXID(mxid)
+	var out struct {
+		Data masUser `json:"data"`
+	}
+	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodGet, path: "/api/admin/v1/users/by-username/" + url.PathEscape(localpart)}, &out); err != nil {
+		return nil, err
+	}
+	if out.Data.Attributes.DeactivatedAt != nil {
+		return nil, &adapter.Error{Kind: adapter.NotFound, Op: op, Resource: mxid, Status: http.StatusOK, Err: errors.New("account is deactivated")}
+	}
+	return &out.Data, nil
+}
+
+// masAdmins lists the localparts MAS lets request admin, following the
+// admin API's pagination links.
+func (a *Adapter) masAdmins(ctx context.Context, op string) (map[string]bool, error) {
+	admins := map[string]bool{}
+	path := "/api/admin/v1/users?filter[admin]=true&page[first]=100"
+	for path != "" {
+		var page struct {
+			Data  []masUser `json:"data"`
+			Links struct {
+				Next string `json:"next"`
+			} `json:"links"`
+		}
+		if _, err := a.mas.call(ctx, request{op: op, method: http.MethodGet, path: path}, &page); err != nil {
+			return nil, err
+		}
+		for _, u := range page.Data {
+			admins[u.Attributes.Username] = true
+		}
+		path = page.Links.Next
+	}
+	return admins, nil
+}
+
+// masAction resolves the account in MAS and posts one of its user actions.
+func (a *Adapter) masAction(ctx context.Context, op, mxid, action string, body any) error {
+	record, err := a.masUser(ctx, op, mxid)
+	if err != nil {
+		return err
+	}
+	_, err = a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(record.ID) + action, body: body}, nil)
+	return err
+}
+
+// masCreateAccount registers through MAS, which provisions the account into
+// Synapse in the background, so the result is built from MAS's record. The
+// password check is skipped: a rejection would leave a passwordless account.
+func (a *Adapter) masCreateAccount(ctx context.Context, op, mxid string, req adapter.CreateAccount) (*adapter.Account, error) {
+	localpart, _ := adapter.SplitMXID(mxid)
+	body := map[string]any{"username": localpart}
+	if req.DisplayName != "" {
+		body["displayname"] = req.DisplayName
+	}
+	var created struct {
+		Data masUser `json:"data"`
+	}
+	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: "/api/admin/v1/users", body: body}, &created); err != nil {
+		return nil, err
+	}
+	// From here on a failure must not leave a live account without the
+	// password or admin bit that was asked for; the id stays taken either way.
+	password := map[string]any{"password": req.Password, "skip_password_check": true}
+	if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(created.Data.ID) + "/set-password", body: password}, nil); err != nil {
+		return nil, a.masAbandon(ctx, op, mxid, created.Data.ID, err)
+	}
+	if req.Admin {
+		if _, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(created.Data.ID) + "/set-admin", body: map[string]bool{"admin": true}}, nil); err != nil {
+			return nil, a.masAbandon(ctx, op, mxid, created.Data.ID, err)
+		}
+	}
+	return &adapter.Account{
+		ID: mxid, Localpart: localpart, Domain: a.cfg.Domain, DisplayName: req.DisplayName,
+		Enabled: true, Admin: req.Admin, Matrix: &adapter.MatrixAccountFacts{},
+	}, nil
 }
 
 // mxid accepts a full MXID or a bare localpart on the configured server_name.
@@ -624,6 +802,16 @@ func (r room) room() adapter.Room {
 	}
 }
 
+// masAbandon deactivates a half-created account and returns the cause; a
+// failed deactivation is reported alongside it rather than hidden.
+func (a *Adapter) masAbandon(ctx context.Context, op, mxid, ulid string, cause error) error {
+	_, err := a.mas.call(ctx, request{op: op, resource: mxid, method: http.MethodPost, path: masUserPath(ulid) + "/deactivate", body: map[string]bool{"skip_erase": true}}, nil)
+	if err != nil {
+		return fmt.Errorf("%w (and deactivating the half-created account failed: %v)", cause, err)
+	}
+	return cause
+}
+
 // timestamp reads a Synapse timestamp: listings report milliseconds while
 // the single-user query reports creation_ts in seconds, and 1e11 separates
 // the two ranges for any date between 1973 and 5138.
@@ -667,10 +855,14 @@ func (f *flag) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// A request is anonymous when the endpoint needs no token; under MAS Synapse
+// validates any token presented, so an unauthenticated probe step must not
+// carry one or a bad token fails at the wrong step.
 type request struct {
 	op, resource, method, path string
 	query                      url.Values
 	body                       any
+	anonymous                  bool
 }
 
 // call performs one request and maps a failure to *adapter.Error. The Matrix
@@ -689,43 +881,36 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 	if len(req.query) > 0 {
 		target += "?" + req.query.Encode()
 	}
-	var payload io.Reader
+	var payload []byte
 	if req.body != nil {
-		encoded, err := json.Marshal(req.body)
-		if err != nil {
+		if payload, err = json.Marshal(req.body); err != nil {
 			return 0, fmt.Errorf("failed to marshal request body: %w", err)
 		}
-		payload = bytes.NewReader(encoded)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, req.method, target, payload)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create request: %w", err)
+	header := http.Header{"Accept": {"application/json"}}
+	if !req.anonymous {
+		header.Set("Authorization", "Bearer "+a.cfg.Creds.Token)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+a.cfg.Creds.Token)
-	httpReq.Header.Set("Accept", "application/json")
 	if req.body != nil {
-		httpReq.Header.Set("Content-Type", "application/json")
+		header.Set("Content-Type", "application/json")
 	}
-
-	resp, err := a.httpClient.Do(httpReq)
+	status, respBody, err := transport(ctx, a.httpClient, req.method, target, header, payload)
 	if err != nil {
-		failure.Kind = adapter.Unreachable
-		return 0, fmt.Errorf("failed to connect to server: %w", err)
+		if status == 0 {
+			failure.Kind = adapter.Unreachable
+			return 0, fmt.Errorf("failed to connect to server: %w", err)
+		}
+		failure.Status = status
+		return status, fmt.Errorf("failed to read response: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	failure.Status = resp.StatusCode
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp.StatusCode, fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	failure.Status = status
+	if status >= 200 && status < 300 {
 		if out != nil && len(bytes.TrimSpace(respBody)) > 0 {
 			if err := json.Unmarshal(respBody, out); err != nil {
-				return resp.StatusCode, fmt.Errorf("unexpected response body: %w", err)
+				return status, fmt.Errorf("unexpected response body: %w", err)
 			}
 		}
-		return resp.StatusCode, nil
+		return status, nil
 	}
 
 	var detail struct {
@@ -735,7 +920,7 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 	}
 	_ = json.Unmarshal(respBody, &detail)
 	failure.Code = detail.Errcode
-	failure.Kind = classify(resp.StatusCode, detail.Errcode)
+	failure.Kind = classify(status, detail.Errcode)
 	if failure.Kind == adapter.RateLimited && detail.RetryAfterMS > 0 {
 		failure.RetryAfter = time.Duration(detail.RetryAfterMS) * time.Millisecond
 	}
@@ -744,9 +929,9 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 		message = snippet(string(respBody))
 	}
 	if message == "" {
-		message = http.StatusText(resp.StatusCode)
+		message = http.StatusText(status)
 	}
-	return resp.StatusCode, fmt.Errorf("%s %s: %s", req.method, req.path, message)
+	return status, fmt.Errorf("%s %s: %s", req.method, req.path, message)
 }
 
 func classify(status int, errcode string) adapter.Kind {

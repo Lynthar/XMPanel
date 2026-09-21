@@ -1,0 +1,40 @@
+# The whole MAS config but the secrets: one listener with the admin API and
+# the compatibility layer, the Synapse pairing on the compose network, the
+# panel's admin client, no password complexity and no login rate limit.
+http:
+  public_base: http://mas:8080/
+  listeners:
+    - name: web
+      resources:
+        - name: discovery
+        - name: human
+        - name: oauth
+        - name: compat
+        - name: graphql
+        - name: assets
+          path: /opt/mas/share/assets/
+        - name: adminapi
+      binds:
+        - address: "[::]:8080"
+database:
+  uri: postgresql://postgres@postgres:5432/mas
+matrix:
+  kind: synapse
+  homeserver: example.com
+  secret: smoke-mas-shared-secret
+  endpoint: http://synapse-mas:8008
+passwords:
+  enabled: true
+  minimum_complexity: 0
+rate_limiting:
+  login:
+    per_ip: { burst: 1000, per_second: 1000 }
+    per_account: { burst: 1000, per_second: 1000 }
+clients:
+  - client_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV
+    client_auth_method: client_secret_basic
+    client_secret: smoke-mas-client-secret
+policy:
+  data:
+    admin_clients:
+      - 01ARZ3NDEKTSV4RRFFQ69G5FAV

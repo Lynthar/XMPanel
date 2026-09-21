@@ -61,8 +61,12 @@ Prosody 那边需要先准备：装三个社区模块（`mod_http_admin_api`、`
 
 Synapse 那边只要一枚管理员账号的 access token（`register_new_matrix_user -a` 建的账号，
 或管理员登录得到的）。地址填客户端监听，`/_matrix` 与 `/_synapse/admin` 都要能从那里访问。
-把认证委派给 Matrix Authentication Service 的部署会被探测出来：面板届时只读账号、设备和房间，
-不建号、不锁定、不停用、不改密——这些要走 MAS，那个客户端还没写。
+把认证委派给 Matrix Authentication Service 的部署会被探测出来。此时管理员令牌由 MAS 签发
+（`mas-cli manage issue-compatibility-token <管理员> --yes-i-want-to-grant-synapse-admin-privileges`，
+再跑一次 provisioning 让 Synapse 认识这个会话的设备）；服务器条目带上 MAS 客户端（在 `clients:` 里以
+`client_secret_basic` 声明、并列入 `policy.data.admin_clients` 的 OAuth 2.0 客户端）之后，
+账号生命周期走 MAS 的 admin API；没有它，面板仍能列账号、设备和房间、注销设备、清除房间，
+但不建号、不锁定、不停用、不改密。
 
 ## 用法
 
@@ -110,7 +114,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 - **房间管理只有 ejabberd 和 Synapse 有。** Prosody 的上游 API 不暴露房间。
 - **XMPP 的分页是面板做的，不是服务器做的。** 两个 XMPP 适配器都是取全表再在内存里分页，
   账号特别多的服务器列表会慢。Synapse 由服务端分页。
-- **Matrix 只支持 Synapse，而且不完整。** 口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署仍能列出一切、注销设备、清除房间，但不建号、不锁定、不停用、不改密。
+- **Matrix 只支持 Synapse，而且不完整。** 口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署，账号生命周期要有上面说的 MAS 客户端。
   删账号是停用（Matrix 没有删除），id 永久占用；删房间是启动 Synapse 的后台清除，房间可能在列表里多留一会儿。
   不建房、没有全局设备列表，Synapse 专有的工具（彻底抹除、suspend、shadow ban、注册 token、举报、媒体）都还没有。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
