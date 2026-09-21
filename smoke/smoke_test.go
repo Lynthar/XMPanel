@@ -82,8 +82,14 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// TestRealServers builds the images itself unless XMPANEL_SMOKE_PREBUILT is
+// set, which CI does after building them through its layer cache.
 func TestRealServers(t *testing.T) {
-	compose(t, "up", "-d", "--build", "--wait")
+	args := []string{"up", "-d", "--wait"}
+	if os.Getenv("XMPANEL_SMOKE_PREBUILT") == "" {
+		args = append(args, "--build")
+	}
+	compose(t, args...)
 	for _, tg := range targets() {
 		t.Run(tg.name, func(t *testing.T) { run(t, tg) })
 	}

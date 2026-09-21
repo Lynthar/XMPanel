@@ -96,6 +96,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Audit dependencies
+        run: npm audit
+
       - name: Typecheck
         run: npx tsc --noEmit
 
@@ -120,12 +123,34 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The test starts smoke/docker-compose.yml itself (real Prosody 13 and
-      # ejabberd built from apt); the containers are kept so the log step can
+      - uses: docker/setup-buildx-action@v4
+
+      # Exposes the runtime token the gha cache backend needs.
+      - uses: crazy-max/ghaction-github-runtime@v4
+
+      # The server images are built from apt on purpose (no Docker Hub pull);
+      # the layer cache turns a repeat build into seconds.
+      - name: Build server images
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          files: smoke/docker-compose.yml
+          load: true
+          set: |
+            prosody.cache-from=type=gha,scope=smoke-prosody
+            prosody.cache-to=type=gha,scope=smoke-prosody,mode=max
+            ejabberd.cache-from=type=gha,scope=smoke-ejabberd
+            ejabberd.cache-to=type=gha,scope=smoke-ejabberd,mode=max
+            synapse.cache-from=type=gha,scope=smoke-synapse
+            synapse.cache-to=type=gha,scope=smoke-synapse,mode=max
+
+      # The test starts smoke/docker-compose.yml itself (real Prosody 13,
+      # ejabberd and Synapse); the containers are kept so the log step can
       # read them, the runner is discarded anyway.
       - name: Smoke against real servers
         env:
           XMPANEL_SMOKE_KEEP: "1"
+          XMPANEL_SMOKE_PREBUILT: "1"
         run: go test -v -count=1 -tags smoke ./smoke/...
 
       - name: Server logs on failure

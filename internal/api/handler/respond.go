@@ -76,10 +76,9 @@ func resourceMessage(op, account, session, room, other string) string {
 	return other
 }
 
-// writeAdapterError is the only exit for a failed adapter call. Failures the
-// caller could not have caused (5xx replies) are logged with the upstream
-// operation, status and error code; the client sees only the classified
-// message.
+// writeAdapterError is the only exit for a failed adapter call. A 5xx reply
+// is logged at Warn (a failing backend is operational, not a panel defect)
+// with operation, status and code; the client sees the classified message.
 func writeAdapterError(w http.ResponseWriter, r *http.Request, log *zap.Logger, cause error) {
 	failure, ok := adapter.AsError(cause)
 	if !ok {
@@ -91,7 +90,7 @@ func writeAdapterError(w http.ResponseWriter, r *http.Request, log *zap.Logger, 
 		w.Header().Set("Retry-After", strconv.Itoa(int(failure.RetryAfter/time.Second)))
 	}
 	if status >= http.StatusInternalServerError {
-		log.Error("upstream operation failed",
+		log.Warn("upstream operation failed",
 			zap.String("operation", failure.Op), zap.String("resource", failure.Resource),
 			zap.Int("upstream_status", failure.Status), zap.String("upstream_code", failure.Code),
 			zap.Error(cause))

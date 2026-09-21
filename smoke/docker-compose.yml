@@ -2,6 +2,7 @@
 # accounts, tokens and ports exist only for the test run.
 services:
   prosody:
+    image: smoke-prosody
     build: ./prosody
     ports:
       - "127.0.0.1:15222:5222"
@@ -15,6 +16,7 @@ services:
       retries: 30
 
   ejabberd:
+    image: smoke-ejabberd
     build: ./ejabberd
     ports:
       - "127.0.0.1:15223:5222"
@@ -26,6 +28,7 @@ services:
       retries: 60
 
   synapse:
+    image: smoke-synapse
     build: ./synapse
     ports:
       - "127.0.0.1:18008:8008"
