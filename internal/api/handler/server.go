@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/i18n"
@@ -19,7 +22,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// ServerHandler handles XMPP server management endpoints
+const serverColumns = `id, name, protocol, implementation, endpoint, domain, enabled, created_at, updated_at`
+
+// ServerHandler manages the registry of backends the panel talks to.
 type ServerHandler struct {
 	adapters *registry.Registry
 	db       *store.DB
@@ -28,64 +33,48 @@ type ServerHandler struct {
 	logger   *zap.Logger
 }
 
-// NewServerHandler creates a new server handler
 func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, adapters *registry.Registry, audit *AuditService, logger *zap.Logger) *ServerHandler {
-	return &ServerHandler{
-		adapters: adapters,
-		db:       db,
-		keyRing:  keyRing,
-		audit:    audit,
-		logger:   logger,
-	}
+	return &ServerHandler{adapters: adapters, db: db, keyRing: keyRing, audit: audit, logger: logger}
 }
 
-// List returns all XMPP servers
+func scanServer(row interface{ Scan(...interface{}) error }) (models.Server, error) {
+	var s models.Server
+	err := row.Scan(&s.ID, &s.Name, &s.Protocol, &s.Implementation, &s.Endpoint, &s.Domain,
+		&s.Enabled, &s.CreatedAt, &s.UpdatedAt)
+	return s, err
+}
+
 func (h *ServerHandler) List(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.db.Query(`
-		SELECT id, name, type, host, port, tls_enabled, enabled, created_at, updated_at
-		FROM xmpp_servers ORDER BY name
-	`)
+	rows, err := h.db.Query(`SELECT ` + serverColumns + ` FROM servers ORDER BY name`)
 	if err != nil {
 		writeInternalError(w, r, h.logger, "failed to query servers", err)
 		return
 	}
 	defer func() { _ = rows.Close() }()
 
-	servers := make([]models.XMPPServer, 0)
+	servers := make([]models.Server, 0)
 	for rows.Next() {
-		var server models.XMPPServer
-		err := rows.Scan(
-			&server.ID, &server.Name, &server.Type, &server.Host, &server.Port,
-			&server.TLSEnabled, &server.Enabled, &server.CreatedAt, &server.UpdatedAt,
-		)
+		server, err := scanServer(rows)
 		if err != nil {
-			h.logger.Error("failed to scan server", zap.Error(err))
-			continue
+			writeInternalError(w, r, h.logger, "failed to scan server", err)
+			return
 		}
 		servers = append(servers, server)
 	}
-
+	if err := rows.Err(); err != nil {
+		writeInternalError(w, r, h.logger, "failed to read servers", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, servers)
 }
 
-// Get returns a specific server
 func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	var server models.XMPPServer
-	err = h.db.QueryRow(`
-		SELECT id, name, type, host, port, tls_enabled, enabled, created_at, updated_at
-		FROM xmpp_servers WHERE id = $1
-	`, id).Scan(
-		&server.ID, &server.Name, &server.Type, &server.Host, &server.Port,
-		&server.TLSEnabled, &server.Enabled, &server.CreatedAt, &server.UpdatedAt,
-	)
-
+	server, err := scanServer(h.db.QueryRow(`SELECT `+serverColumns+` FROM servers WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
@@ -94,70 +83,95 @@ func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, h.logger, "failed to query server", err)
 		return
 	}
-
 	writeJSON(w, http.StatusOK, server)
 }
 
-// Create creates a new XMPP server
+// validEndpoint accepts an absolute http(s) URL with a host and no query.
+func validEndpoint(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return true
+}
+
+// credentialsOrError normalises a request's credentials: bearer is the only
+// kind so far and its token may not be empty.
+func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string) {
+	if creds == nil {
+		return adapter.Credentials{}, "Credentials are required"
+	}
+	if creds.Kind == "" {
+		creds.Kind = adapter.CredentialsBearer
+	}
+	if creds.Kind != adapter.CredentialsBearer {
+		return adapter.Credentials{}, "Unsupported credential kind"
+	}
+	if strings.TrimSpace(creds.Token) == "" {
+		return adapter.Credentials{}, "Credential token is required"
+	}
+	return *creds, ""
+}
+
 func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req models.CreateXMPPServerRequest
+	var req models.CreateServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-
-	// Validate
-	if req.Name == "" {
+	req.Name = strings.TrimSpace(req.Name)
+	req.Endpoint = strings.TrimSpace(req.Endpoint)
+	req.Domain = strings.TrimSpace(req.Domain)
+	switch {
+	case req.Name == "":
 		writeError(w, r, http.StatusBadRequest, "Name is required")
 		return
-	}
-	if req.Host == "" {
-		writeError(w, r, http.StatusBadRequest, "Host is required")
+	case !registry.Supports(req.Protocol, req.Implementation):
+		writeError(w, r, http.StatusBadRequest, i18n.MsgUnsupportedServerType)
+		return
+	case !validEndpoint(req.Endpoint):
+		writeError(w, r, http.StatusBadRequest, "Endpoint must be an http or https URL")
+		return
+	case req.Domain == "":
+		writeError(w, r, http.StatusBadRequest, "Domain is required")
 		return
 	}
-	if req.Port <= 0 || req.Port > 65535 {
-		writeError(w, r, http.StatusBadRequest, "Invalid port")
+	creds, problem := credentialsOrError(req.Credentials)
+	if problem != "" {
+		writeError(w, r, http.StatusBadRequest, problem)
 		return
 	}
-	if !registry.Supports(req.Type) {
-		writeError(w, r, http.StatusBadRequest, "Invalid server type")
+	encrypted, err := store.EncryptCredentials(h.keyRing, creds)
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to encrypt credentials", err)
 		return
 	}
 
-	// Encrypt API key
-	var encryptedAPIKey string
-	if h.keyRing != nil && req.APIKey != "" {
-		encrypted, err := h.keyRing.EncryptString(req.APIKey)
-		if err != nil {
-			writeInternalError(w, r, h.logger, "failed to encrypt API key", err)
+	var id int64
+	now := time.Now()
+	err = h.db.QueryRow(`
+		INSERT INTO servers (name, protocol, implementation, endpoint, domain, credentials_encrypted, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $7)
+		RETURNING id
+	`, req.Name, req.Protocol, req.Implementation, req.Endpoint, req.Domain, encrypted, now).Scan(&id)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, r, http.StatusConflict, "A server with this endpoint and domain already exists")
 			return
 		}
-		encryptedAPIKey = encrypted
-	}
-
-	// Insert server (PostgreSQL: use RETURNING since LastInsertId is unsupported)
-	var id int64
-	err := h.db.QueryRow(`
-		INSERT INTO xmpp_servers (name, type, host, port, api_key_encrypted, tls_enabled, enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8)
-		RETURNING id
-	`, req.Name, req.Type, req.Host, req.Port, encryptedAPIKey, req.TLSEnabled, time.Now(), time.Now()).Scan(&id)
-
-	if err != nil {
 		writeInternalError(w, r, h.logger, "failed to create server", err)
 		return
 	}
 
 	h.audit.LogEvent(r, models.AuditActionServerAdd, models.ResourceTypeServer, strconv.FormatInt(id, 10), "",
-		map[string]interface{}{"name": req.Name, "type": string(req.Type), "host": req.Host, "port": req.Port})
-
+		map[string]interface{}{"name": req.Name, "protocol": req.Protocol, "implementation": req.Implementation,
+			"endpoint": req.Endpoint, "domain": req.Domain})
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":      id,
-		"message": "Server created successfully",
+		"message": middleware.T(r.Context(), i18n.MsgServerCreated),
 	})
 }
 
-// Update updates an XMPP server
 func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -165,84 +179,87 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	var req models.UpdateXMPPServerRequest
+	var req models.UpdateServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// Build update query
-	updates := make(map[string]interface{})
+	var columns []string
+	var args []interface{}
+	set := func(column string, value interface{}) {
+		args = append(args, value)
+		columns = append(columns, column)
+	}
 	if req.Name != nil {
-		updates["name"] = *req.Name
-	}
-	if req.TLSEnabled != nil {
-		updates["tls_enabled"] = *req.TLSEnabled
-	}
-	if req.Enabled != nil {
-		updates["enabled"] = *req.Enabled
-	}
-	if req.APIKey != nil && h.keyRing != nil {
-		encrypted, err := h.keyRing.EncryptString(*req.APIKey)
-		if err != nil {
-			writeInternalError(w, r, h.logger, "failed to encrypt API key", err)
+		if strings.TrimSpace(*req.Name) == "" {
+			writeError(w, r, http.StatusBadRequest, "Name is required")
 			return
 		}
-		updates["api_key_encrypted"] = encrypted
+		set("name", strings.TrimSpace(*req.Name))
 	}
-
-	if len(updates) == 0 {
+	if req.Endpoint != nil {
+		if !validEndpoint(strings.TrimSpace(*req.Endpoint)) {
+			writeError(w, r, http.StatusBadRequest, "Endpoint must be an http or https URL")
+			return
+		}
+		set("endpoint", strings.TrimSpace(*req.Endpoint))
+	}
+	if req.Domain != nil {
+		if strings.TrimSpace(*req.Domain) == "" {
+			writeError(w, r, http.StatusBadRequest, "Domain is required")
+			return
+		}
+		set("domain", strings.TrimSpace(*req.Domain))
+	}
+	if req.Credentials != nil {
+		creds, problem := credentialsOrError(req.Credentials)
+		if problem != "" {
+			writeError(w, r, http.StatusBadRequest, problem)
+			return
+		}
+		encrypted, err := store.EncryptCredentials(h.keyRing, creds)
+		if err != nil {
+			writeInternalError(w, r, h.logger, "failed to encrypt credentials", err)
+			return
+		}
+		set("credentials_encrypted", encrypted)
+	}
+	if req.Enabled != nil {
+		set("enabled", *req.Enabled)
+	}
+	if len(columns) == 0 {
 		writeError(w, r, http.StatusBadRequest, "No fields to update")
 		return
 	}
-
-	updates["updated_at"] = time.Now()
-
-	// Execute update with PostgreSQL numbered placeholders
-	query := "UPDATE xmpp_servers SET "
-	args := make([]interface{}, 0)
-	paramNum := 1
-	first := true
-	for col, val := range updates {
-		if !first {
-			query += ", "
-		}
-		query += col + " = $" + strconv.Itoa(paramNum)
-		args = append(args, val)
-		paramNum++
-		first = false
+	updated := append([]string(nil), columns...)
+	set("updated_at", time.Now())
+	assignments := make([]string, len(columns))
+	for i, column := range columns {
+		assignments[i] = column + " = $" + strconv.Itoa(i+1)
 	}
-	query += " WHERE id = $" + strconv.Itoa(paramNum)
 	args = append(args, id)
 
-	result, err := h.db.Exec(query, args...)
+	result, err := h.db.Exec(`UPDATE servers SET `+strings.Join(assignments, ", ")+` WHERE id = $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, r, http.StatusConflict, "A server with this endpoint and domain already exists")
+			return
+		}
 		writeInternalError(w, r, h.logger, "failed to update server", err)
 		return
 	}
-
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
+	if affected, _ := result.RowsAffected(); affected == 0 {
 		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
-	}
-
-	updatedFields := make([]string, 0, len(updates))
-	for k := range updates {
-		if k != "updated_at" {
-			updatedFields = append(updatedFields, k)
-		}
 	}
 	h.adapters.Invalidate(id)
 
 	h.audit.LogEvent(r, models.AuditActionServerUpdate, models.ResourceTypeServer, idStr, "",
-		map[string]interface{}{"fields": updatedFields})
-
+		map[string]interface{}{"fields": updated})
 	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgServerUpdated)})
 }
 
-// Delete deletes an XMPP server
 func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
@@ -250,114 +267,100 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	result, err := h.db.Exec(`DELETE FROM xmpp_servers WHERE id = $1`, id)
+	result, err := h.db.Exec(`DELETE FROM servers WHERE id = $1`, id)
 	if err != nil {
 		writeInternalError(w, r, h.logger, "failed to delete server", err)
 		return
 	}
-
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
+	if affected, _ := result.RowsAffected(); affected == 0 {
 		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
 	}
-
 	h.adapters.Invalidate(id)
 
 	h.audit.LogEvent(r, models.AuditActionServerRemove, models.ResourceTypeServer, idStr, "", nil)
-
 	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgServerDeleted)})
 }
 
-// Stats returns server statistics
 func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	// Get server and create adapter
-	xmppAdapter, err := h.adapters.Get(r.Context(), id)
+	a, _, err := h.adapters.Get(r.Context(), id)
 	if err != nil {
-		writeServerLookupError(w, r, h.logger, err)
+		writeRegistryError(w, r, h.logger, err)
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), backendWriteTimeout)
 	defer cancel()
-
-	stats, err := xmppAdapter.GetStats(ctx)
+	stats, err := a.Stats(ctx)
 	if err != nil {
-		writeAdapterError(w, r, h.logger, "server.stats", err)
+		writeAdapterError(w, r, h.logger, err)
 		return
 	}
-
 	writeJSON(w, http.StatusOK, stats)
 }
 
-// Capabilities returns what features the configured server's adapter
-// supports. Frontend uses this to hide tabs / stat tiles that would
-// otherwise return 502.
+// Capabilities returns the probed server facts and the operations the UI may
+// offer; the registry answers from cache after the first probe.
 func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	xmppAdapter, err := h.adapters.Get(r.Context(), id)
+	a, info, err := h.adapters.Get(r.Context(), id)
 	if err != nil {
-		writeServerLookupError(w, r, h.logger, err)
+		writeRegistryError(w, r, h.logger, err)
 		return
 	}
-
-	writeJSON(w, http.StatusOK, xmppAdapter.Capabilities())
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"info":         info,
+		"capabilities": a.Capabilities(),
+	})
 }
 
-// Test tests the connection to an XMPP server
+// Test drops the cached adapter and probes again, so a corrected token or a
+// newly installed module shows up immediately.
 func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
 		return
 	}
-
-	xmppAdapter, err := h.adapters.Get(r.Context(), id)
-	if err != nil {
-		writeServerLookupError(w, r, h.logger, err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), backendWriteTimeout)
 	defer cancel()
-
-	err = xmppAdapter.Ping(ctx)
+	a, info, err := h.adapters.Reprobe(ctx, id)
 	if err != nil {
+		failure, ok := adapter.AsError(err)
+		if !ok {
+			writeRegistryError(w, r, h.logger, err)
+			return
+		}
+		_, message := upstreamStatus(failure)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
-			"error":   err.Error(),
+			"error":   middleware.T(r.Context(), message),
+			"detail":  failure.Error(),
 		})
 		return
 	}
-
-	// Get server info
-	info, err := xmppAdapter.GetServerInfo(ctx)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": "Connection successful",
-		})
-		return
-	}
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": "Connection successful",
-		"info":    info,
+		"success":      true,
+		"message":      middleware.T(r.Context(), i18n.MsgServerTestSuccess),
+		"info":         info,
+		"capabilities": a.Capabilities(),
 	})
+}
+
+// isUniqueViolation recognises PostgreSQL's 23505 without importing the
+// driver's error type into the handler layer.
+func isUniqueViolation(err error) bool {
+	var coded interface{ SQLState() string }
+	if errors.As(err, &coded) {
+		return coded.SQLState() == "23505"
+	}
+	return false
 }

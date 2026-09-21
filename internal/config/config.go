@@ -182,15 +182,13 @@ func (c *Config) Validate() error {
 		return errors.New("JWT secret must be at least 32 characters (256 bits) for security")
 	}
 
-	// Validate database encryption key
+	// Stored backend credentials are only as durable as this key, so a
+	// missing one is a startup error rather than a generated stand-in.
 	if c.Database.EncryptionKey == "" {
-		key, err := generateRandomSecret(32)
-		if err != nil {
-			return fmt.Errorf("failed to generate encryption key: %w", err)
-		}
-		c.Database.EncryptionKey = base64.StdEncoding.EncodeToString([]byte(key))
-		log.Printf("WARNING: No database encryption key configured. Generated random key. " +
-			"Encrypted data will be unreadable after restart. Set database.encryption_key in config for persistence.")
+		return errors.New("database.encryption_key is required (generate one with `make generate-key`)")
+	}
+	if key, err := base64.StdEncoding.DecodeString(c.Database.EncryptionKey); err != nil || len(key) != 32 {
+		return errors.New("database.encryption_key must be base64 of exactly 32 bytes")
 	}
 
 	// Validate CORS configuration - disallow credentials with wildcard origin

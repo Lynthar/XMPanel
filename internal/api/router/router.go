@@ -111,7 +111,7 @@ func (r *Router) route(method, path, permission string, h http.HandlerFunc) {
 }
 
 // New creates and configures the main router
-func New(cfg *config.Config, db *store.DB, logger *zap.Logger) *Router {
+func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger) *Router {
 	router := NewRouter()
 
 	// Initialize components
@@ -121,15 +121,6 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) *Router {
 		cfg.Security.Password.Argon2Memory,
 		cfg.Security.Password.Argon2Threads,
 	)
-
-	var keyRing *crypto.KeyRing
-	if cfg.Database.EncryptionKey != "" {
-		var err error
-		keyRing, err = crypto.NewKeyRing(cfg.Database.EncryptionKey)
-		if err != nil {
-			logger.Warn("failed to initialize encryption key ring", zap.Error(err))
-		}
-	}
 
 	// Initialize middlewares
 	authMiddleware := middleware.NewAuthMiddleware(jwtManager)
@@ -169,7 +160,7 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) *Router {
 	)
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
 	serverHandler := handler.NewServerHandler(db, keyRing, router.adapters, auditService, logger)
-	xmppHandler := handler.NewXMPPHandler(router.adapters, auditService, logger)
+	backendHandler := handler.NewBackendHandler(router.adapters, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.CookieSecure())
 	router.authMiddleware = authMiddleware
@@ -217,20 +208,25 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) *Router {
 	router.route("GET", "/api/v1/servers/{id}/capabilities", "servers:read", serverHandler.Capabilities)
 	router.route("POST", "/api/v1/servers/{id}/test", "servers:read", serverHandler.Test)
 
-	// XMPP operations
-	router.route("GET", "/api/v1/servers/{serverId}/users", "xmpp:read", xmppHandler.ListUsers)
-	router.route("GET", "/api/v1/servers/{serverId}/users/{username}", "xmpp:read", xmppHandler.GetUser)
-	router.route("POST", "/api/v1/servers/{serverId}/users", "xmpp:write", xmppHandler.CreateUser)
-	router.route("DELETE", "/api/v1/servers/{serverId}/users/{username}", "xmpp:write", xmppHandler.DeleteUser)
-	router.route("POST", "/api/v1/servers/{serverId}/users/{username}/kick", "xmpp:write", xmppHandler.KickUser)
+	// Backend objects: accounts, sessions and rooms behind a registered server.
+	// Account and session ids are URL-encoded JIDs or MXIDs in one path segment.
+	router.route("GET", "/api/v1/servers/{serverId}/accounts", "backend:read", backendHandler.ListAccounts)
+	router.route("POST", "/api/v1/servers/{serverId}/accounts", "backend:write", backendHandler.CreateAccount)
+	router.route("GET", "/api/v1/servers/{serverId}/accounts/{account}", "backend:read", backendHandler.GetAccount)
+	router.route("DELETE", "/api/v1/servers/{serverId}/accounts/{account}", "backend:write", backendHandler.DeleteAccount)
+	router.route("PUT", "/api/v1/servers/{serverId}/accounts/{account}/password", "backend:write", backendHandler.SetPassword)
+	router.route("PUT", "/api/v1/servers/{serverId}/accounts/{account}/enabled", "backend:write", backendHandler.SetEnabled)
+	router.route("PUT", "/api/v1/servers/{serverId}/accounts/{account}/admin", "backend:write", backendHandler.SetAdmin)
+	router.route("GET", "/api/v1/servers/{serverId}/accounts/{account}/sessions", "backend:read", backendHandler.ListAccountSessions)
+	router.route("DELETE", "/api/v1/servers/{serverId}/accounts/{account}/sessions", "backend:write", backendHandler.TerminateAccountSessions)
 
-	router.route("GET", "/api/v1/servers/{serverId}/sessions", "xmpp:read", xmppHandler.ListSessions)
-	router.route("DELETE", "/api/v1/servers/{serverId}/sessions/{jid}", "xmpp:write", xmppHandler.KickSession)
+	router.route("GET", "/api/v1/servers/{serverId}/sessions", "backend:read", backendHandler.ListSessions)
+	router.route("DELETE", "/api/v1/servers/{serverId}/sessions/{session}", "backend:write", backendHandler.TerminateSession)
 
-	router.route("GET", "/api/v1/servers/{serverId}/rooms", "xmpp:read", xmppHandler.ListRooms)
-	router.route("GET", "/api/v1/servers/{serverId}/rooms/{room}", "xmpp:read", xmppHandler.GetRoom)
-	router.route("POST", "/api/v1/servers/{serverId}/rooms", "xmpp:write", xmppHandler.CreateRoom)
-	router.route("DELETE", "/api/v1/servers/{serverId}/rooms/{room}", "xmpp:write", xmppHandler.DeleteRoom)
+	router.route("GET", "/api/v1/servers/{serverId}/rooms", "backend:read", backendHandler.ListRooms)
+	router.route("POST", "/api/v1/servers/{serverId}/rooms", "backend:write", backendHandler.CreateRoom)
+	router.route("GET", "/api/v1/servers/{serverId}/rooms/{room}", "backend:read", backendHandler.GetRoom)
+	router.route("DELETE", "/api/v1/servers/{serverId}/rooms/{room}", "backend:write", backendHandler.DeleteRoom)
 
 	// Audit logs require audit:read.
 	router.route("GET", "/api/v1/audit", "audit:read", auditHandler.List)

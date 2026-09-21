@@ -210,20 +210,65 @@ func Migrate(db *DB) error {
 			last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 
-		// XMPP Servers table
-		`CREATE TABLE IF NOT EXISTS xmpp_servers (
+		// Installs older than the multi-protocol schema keep their rows under
+		// the new name; the legacy columns are dropped once credentials are
+		// re-encoded by MigrateServerCredentials.
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = current_schema() AND table_name = 'xmpp_servers'
+			) AND NOT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = current_schema() AND table_name = 'servers'
+			) THEN
+				ALTER TABLE xmpp_servers RENAME TO servers;
+			END IF;
+		END $$`,
+
+		`CREATE TABLE IF NOT EXISTS servers (
 			id SERIAL PRIMARY KEY,
 			name VARCHAR(255) NOT NULL,
-			type VARCHAR(50) NOT NULL,
-			host VARCHAR(255) NOT NULL,
-			port INTEGER NOT NULL,
-			api_key_encrypted TEXT,
-			tls_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			protocol VARCHAR(20) NOT NULL,
+			implementation VARCHAR(50) NOT NULL,
+			endpoint TEXT NOT NULL,
+			domain VARCHAR(255) NOT NULL,
+			credentials_encrypted TEXT,
 			enabled BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(host, port)
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+		`ALTER TABLE servers ADD COLUMN IF NOT EXISTS protocol VARCHAR(20) NOT NULL DEFAULT 'xmpp'`,
+		`ALTER TABLE servers ADD COLUMN IF NOT EXISTS implementation VARCHAR(50)`,
+		`ALTER TABLE servers ADD COLUMN IF NOT EXISTS endpoint TEXT`,
+		`ALTER TABLE servers ADD COLUMN IF NOT EXISTS domain VARCHAR(255)`,
+		`ALTER TABLE servers ADD COLUMN IF NOT EXISTS credentials_encrypted TEXT`,
+
+		// Backfill from the legacy host/port/tls columns where they still exist.
+		`DO $$
+		BEGIN
+			IF EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema() AND table_name = 'servers' AND column_name = 'host'
+			) THEN
+				UPDATE servers SET
+					implementation = COALESCE(implementation, type),
+					domain = COALESCE(domain, host),
+					endpoint = COALESCE(endpoint,
+						(CASE WHEN tls_enabled THEN 'https' ELSE 'http' END) || '://' || host || ':' || port)
+				WHERE endpoint IS NULL OR domain IS NULL OR implementation IS NULL;
+				ALTER TABLE servers ALTER COLUMN type DROP NOT NULL;
+				ALTER TABLE servers ALTER COLUMN host DROP NOT NULL;
+				ALTER TABLE servers ALTER COLUMN port DROP NOT NULL;
+				ALTER TABLE servers ALTER COLUMN tls_enabled DROP NOT NULL;
+			END IF;
+		END $$`,
+		`ALTER TABLE servers ALTER COLUMN implementation SET NOT NULL`,
+		`ALTER TABLE servers ALTER COLUMN endpoint SET NOT NULL`,
+		`ALTER TABLE servers ALTER COLUMN domain SET NOT NULL`,
+		`ALTER TABLE servers DROP CONSTRAINT IF EXISTS xmpp_servers_host_port_key`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_servers_endpoint_domain ON servers(endpoint, domain)`,
 
 		// Audit Logs table (with chain hash for integrity)
 		// details is JSONB so callers can filter by structured fields via @>.

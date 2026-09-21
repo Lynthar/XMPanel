@@ -1,78 +1,33 @@
 package adapter
 
-import (
-	"context"
+import "context"
 
-	"github.com/xmpanel/xmpanel/internal/store/models"
-	"github.com/xmpanel/xmpanel/pkg/types"
-)
+// Adapter is the protocol-neutral surface every backend implements in full.
+// An operation the upstream cannot perform returns a *Error of Kind
+// NotSupported and must be absent from Capabilities().
+type Adapter interface {
+	// Probe reaches the server once: liveness, credentials, version, domains
+	// and the deployment facts that decide the dynamic part of Capabilities().
+	Probe(ctx context.Context) (*ServerInfo, error)
+	Capabilities() CapabilitySet
+	Stats(ctx context.Context) (*Stats, error)
+	Close() error
 
-// Re-export types for convenience
-type (
-	ServerInfo = types.ServerInfo
-	ModuleInfo = types.ModuleInfo
-)
+	ListAccounts(ctx context.Context, q ListQuery) (Page[Account], error)
+	GetAccount(ctx context.Context, id string) (*Account, error)
+	CreateAccount(ctx context.Context, req CreateAccount) (*Account, error)
+	DeleteAccount(ctx context.Context, id string) error
+	SetPassword(ctx context.Context, id, password string) error
+	SetEnabled(ctx context.Context, id string, enabled bool) error
+	SetAdmin(ctx context.Context, id string, admin bool) error
 
-// Capabilities advertises what an adapter can actually do against the
-// underlying server. Different XMPP servers (and different versions of the
-// same server) expose different admin endpoints — the panel uses these
-// flags to hide UI elements and stat tiles that would otherwise return 502.
-type Capabilities struct {
-	// Stats counters available via GetStats. Booleans rather than per-field
-	// flags so callers don't need to introspect the struct.
-	OnlineUsersCount     bool `json:"online_users_count"`
-	RegisteredUsersCount bool `json:"registered_users_count"`
-	ActiveSessionsCount  bool `json:"active_sessions_count"`
-	S2SConnectionsCount  bool `json:"s2s_connections_count"`
+	ListSessions(ctx context.Context, q ListQuery) (Page[Session], error)
+	ListAccountSessions(ctx context.Context, accountID string) ([]Session, error)
+	TerminateSession(ctx context.Context, accountID, sessionID string) error
+	TerminateAccountSessions(ctx context.Context, accountID string) error
 
-	// Live session listing & disconnection (GetOnlineSessions / KickSession / KickUser).
-	Sessions bool `json:"sessions"`
-
-	// MUC room listing & management.
-	Rooms bool `json:"rooms"`
-
-	// Module enable/disable.
-	Modules bool `json:"modules"`
-}
-
-// XMPPAdapter defines the interface for XMPP server adapters
-// Both Prosody and ejabberd adapters implement this interface
-type XMPPAdapter interface {
-	// Connection
-	Connect(ctx context.Context) error
-	Disconnect() error
-	Ping(ctx context.Context) error
-
-	// Server info
-	GetServerInfo(ctx context.Context) (*types.ServerInfo, error)
-	GetStats(ctx context.Context) (*models.ServerStats, error)
-
-	// User management
-	ListUsers(ctx context.Context, domain string) ([]models.XMPPUser, error)
-	GetUser(ctx context.Context, username, domain string) (*models.XMPPUser, error)
-	CreateUser(ctx context.Context, req models.CreateXMPPUserRequest) error
-	DeleteUser(ctx context.Context, username, domain string) error
-	ChangePassword(ctx context.Context, username, domain, newPassword string) error
-
-	// Session management
-	GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, error)
-	GetUserSessions(ctx context.Context, username, domain string) ([]models.XMPPSession, error)
-	KickSession(ctx context.Context, jid string) error
-	KickUser(ctx context.Context, username, domain string) error
-
-	// MUC (Multi-User Chat) management
-	ListRooms(ctx context.Context, mucDomain string) ([]models.XMPPRoom, error)
-	GetRoom(ctx context.Context, room, mucDomain string) (*models.XMPPRoom, error)
-	CreateRoom(ctx context.Context, req models.CreateXMPPRoomRequest) error
-	DeleteRoom(ctx context.Context, room, mucDomain string) error
-
-	// Module management (if supported)
-	ListModules(ctx context.Context) ([]types.ModuleInfo, error)
-	EnableModule(ctx context.Context, module string) error
-	DisableModule(ctx context.Context, module string) error
-
-	// Capabilities returns which features this adapter supports against
-	// the configured server. Cheap (no network call); the handler layer
-	// caches it per-server-record on the frontend.
-	Capabilities() Capabilities
+	ListRooms(ctx context.Context, q ListQuery) (Page[Room], error)
+	GetRoom(ctx context.Context, id string) (*Room, error)
+	CreateRoom(ctx context.Context, req CreateRoom) (*Room, error)
+	DeleteRoom(ctx context.Context, id string) error
 }

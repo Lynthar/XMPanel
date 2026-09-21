@@ -49,6 +49,14 @@ const actionColors: Record<string, string> = {
   'server.add': 'text-blue-400',
   'server.update': 'text-yellow-400',
   'server.remove': 'text-red-400',
+  'backend.account_create': 'text-blue-400',
+  'backend.account_delete': 'text-red-400',
+  'backend.account_password': 'text-yellow-400',
+  'backend.account_enabled': 'text-yellow-400',
+  'backend.account_admin': 'text-yellow-400',
+  'backend.session_terminate': 'text-orange-400',
+  'backend.room_create': 'text-blue-400',
+  'backend.room_delete': 'text-red-400',
   'xmpp.user_create': 'text-blue-400',
   'xmpp.user_delete': 'text-red-400',
   'xmpp.user_kick': 'text-orange-400',
@@ -59,7 +67,7 @@ const actionColors: Record<string, string> = {
 
 const ACTION_OPTIONS = Object.keys(actionColors)
 
-const RESOURCE_TYPE_OPTIONS = ['user', 'server', 'xmpp', 'room', 'setting']
+const RESOURCE_TYPE_OPTIONS = ['user', 'server', 'account', 'session', 'room', 'setting', 'xmpp']
 
 interface Filters {
   action: string

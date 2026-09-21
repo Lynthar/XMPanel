@@ -8,10 +8,11 @@
 -- Endpoints (all under /admin_panel/, host-scoped):
 --
 --   USER MANAGEMENT
---     GET    /admin_panel/users                    list registered users
+--     GET    /admin_panel/users                    list registered users ({username, jid, enabled})
 --     PUT    /admin_panel/users/{username}         create user (body: {password})
 --     DELETE /admin_panel/users/{username}         delete user + purge data
 --     PATCH  /admin_panel/users/{username}         change password (body: {password})
+--                                                  and/or enable or disable (body: {enabled})
 --
 --   SESSION MANAGEMENT
 --     GET    /admin_panel/sessions                 list active c2s
@@ -120,6 +121,15 @@ end
 -- USER endpoints
 -- ---------------------------------------------------------------------------
 
+-- usermanager.user_is_enabled / enable_user / disable_user exist from
+-- Prosody 13; on older cores every account reads as enabled and PATCH
+-- {enabled} answers 501.
+local function user_is_enabled(username)
+    if not usermanager.user_is_enabled then return true end
+    local enabled = usermanager.user_is_enabled(username, module.host)
+    return enabled ~= false
+end
+
 local function list_users(event)
     local response = event.response
     response.headers.content_type = "application/json"
@@ -128,6 +138,7 @@ local function list_users(event)
         out[#out + 1] = {
             username = username;
             jid      = jid_join(username, module.host);
+            enabled  = user_is_enabled(username);
         }
     end
     return json.encode(out)
@@ -168,19 +179,31 @@ local function delete_user(event, username)
     return 204
 end
 
-local function set_password(event, username)
+local function update_user(event, username)
     if not username or username == "" then return 400 end
     if not usermanager.user_exists(username, module.host) then
         return 404
     end
     local body = read_json_body(event.request)
-    if not body or type(body.password) ~= "string" or body.password == "" then
-        return 400
+    if not body then return 400 end
+    local has_password = type(body.password) == "string" and body.password ~= ""
+    local has_enabled = type(body.enabled) == "boolean"
+    if not has_password and not has_enabled then return 400 end
+    if has_password then
+        local ok, err = usermanager.set_password(username, body.password, module.host)
+        if not ok then
+            module:log("warn", "set_password failed for %s@%s: %s", username, module.host, tostring(err))
+            return 500
+        end
     end
-    local ok, err = usermanager.set_password(username, body.password, module.host)
-    if not ok then
-        module:log("warn", "set_password failed for %s@%s: %s", username, module.host, tostring(err))
-        return 500
+    if has_enabled then
+        local toggle = body.enabled and usermanager.enable_user or usermanager.disable_user
+        if not toggle then return 501 end
+        local ok, err = toggle(username, module.host)
+        if not ok then
+            module:log("warn", "enable/disable failed for %s@%s: %s", username, module.host, tostring(err))
+            return 500
+        end
     end
     return 204
 end
@@ -235,7 +258,7 @@ module:provides("http", {
         ["GET /users"]                    = require_auth(list_users);
         ["PUT /users/*"]                  = require_auth(create_user);
         ["DELETE /users/*"]               = require_auth(delete_user);
-        ["PATCH /users/*"]                = require_auth(set_password);
+        ["PATCH /users/*"]                = require_auth(update_user);
 
         ["GET /sessions"]                 = require_auth(list_sessions);
         ["DELETE /sessions/*"]            = require_auth(close_session);

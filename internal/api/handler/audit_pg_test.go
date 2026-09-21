@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/xmpanel/xmpanel/internal/config"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
+	"github.com/xmpanel/xmpanel/internal/store/storetest"
 
 	"go.uber.org/zap"
 )
@@ -23,23 +22,10 @@ import (
 // database to run them; otherwise they skip and `go test ./...` stays green.
 func newTestDB(t *testing.T) *store.DB {
 	t.Helper()
-
-	dsn := os.Getenv("XMPANEL_TEST_DSN")
-	if dsn == "" {
-		t.Skip("XMPANEL_TEST_DSN not set; skipping PostgreSQL integration test")
-	}
-
-	db, err := store.NewDB(config.DatabaseConfig{DSN: dsn, MaxOpenConns: 10, MaxIdleConns: 5})
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	if err := store.Migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	db := storetest.NewDB(t)
 	if _, err := db.Exec(`TRUNCATE audit_logs RESTART IDENTITY`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

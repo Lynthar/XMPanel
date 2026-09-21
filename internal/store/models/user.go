@@ -93,11 +93,13 @@ type LoginResponse struct {
 }
 
 // Permissions defines what each role can do
+// backend:danger covers irreversible or high-impact backend operations and
+// is held by admin and superadmin only.
 var Permissions = map[Role][]string{
 	RoleSuperAdmin: {"*"},
-	RoleAdmin:      {"users:read", "users:write", "servers:read", "servers:write", "xmpp:read", "xmpp:write", "audit:read"},
-	RoleOperator:   {"servers:read", "xmpp:read", "xmpp:write"},
-	RoleViewer:     {"servers:read", "xmpp:read"},
+	RoleAdmin:      {"users:read", "users:write", "servers:read", "servers:write", "backend:read", "backend:write", "backend:danger", "audit:read"},
+	RoleOperator:   {"servers:read", "backend:read", "backend:write"},
+	RoleViewer:     {"servers:read", "backend:read"},
 	RoleAuditor:    {"audit:read", "servers:read"},
 }
 

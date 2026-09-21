@@ -13,6 +13,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
 	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
 	"go.uber.org/zap"
@@ -23,7 +24,15 @@ func testRouter(t *testing.T) (*Router, *auth.JWTManager) {
 	cfg := config.DefaultConfig()
 	cfg.Security.JWT.Secret = strings.Repeat("route-test", 4)
 	cfg.Security.JWT.AccessTokenTTL = time.Hour
-	r := New(cfg, nil, zap.NewNop())
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := crypto.NewKeyRing(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(cfg, nil, ring, zap.NewNop())
 	t.Cleanup(r.Close)
 	return r, auth.NewJWTManager(cfg.Security.JWT)
 }
@@ -45,6 +54,28 @@ func allowedEndpoint(role models.Role, e endpoint) bool {
 		return role == models.RoleOperator || (role == models.RoleViewer && e.method == http.MethodGet)
 	}
 	return e.method == http.MethodGet || strings.HasSuffix(e.path, "/test")
+}
+
+// Every role's reach over the backend routes, spelled out so a permission
+// table change has to be mirrored here on purpose.
+func TestBackendPermissionsPerRole(t *testing.T) {
+	for role, want := range map[models.Role][]string{
+		models.RoleAdmin:    {"backend:read", "backend:write", "backend:danger"},
+		models.RoleOperator: {"backend:read", "backend:write"},
+		models.RoleViewer:   {"backend:read"},
+		models.RoleAuditor:  {},
+	} {
+		for _, permission := range []string{"backend:read", "backend:write", "backend:danger"} {
+			has := role.HasPermission(permission)
+			expected := false
+			for _, w := range want {
+				expected = expected || w == permission
+			}
+			if has != expected {
+				t.Errorf("%s has %s = %v, want %v", role, permission, has, expected)
+			}
+		}
+	}
 }
 
 func TestAuthenticatedRouteAccess(t *testing.T) {
@@ -169,9 +200,9 @@ func TestSessionRoutePreservesEscapedJID(t *testing.T) {
 	r.authMiddleware = application.authMiddleware
 	r.csrfMiddleware = application.csrfMiddleware
 	const jid = "alice@example.com/phone/one"
-	r.route("DELETE", "/api/v1/servers/{serverId}/sessions/{jid}", "xmpp:write", func(w http.ResponseWriter, req *http.Request) {
-		if req.PathValue("jid") != jid {
-			t.Errorf("JID = %q", req.PathValue("jid"))
+	r.route("DELETE", "/api/v1/servers/{serverId}/sessions/{session}", "backend:write", func(w http.ResponseWriter, req *http.Request) {
+		if req.PathValue("session") != jid {
+			t.Errorf("session = %q", req.PathValue("session"))
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})

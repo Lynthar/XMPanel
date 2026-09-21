@@ -112,42 +112,36 @@ export const usersApi = {
   delete: (id: number) => api.delete(`/users/${id}`),
 }
 
-export const serverTypes = {
-  prosody: 'Prosody',
-  ejabberd: 'ejabberd',
+// Copies of Go tables. A Go test keeps each one in step with its constants:
+// implementations with adapter.Implementation, Capability with
+// adapter.AllCapabilities, the interfaces below with the json tags.
+export type Protocol = 'xmpp' | 'matrix'
+
+export const implementations = {
+  prosody: { protocol: 'xmpp' as Protocol },
+  ejabberd: { protocol: 'xmpp' as Protocol },
 } as const
 
-export type ServerType = keyof typeof serverTypes
+export type Implementation = keyof typeof implementations
 
-// Servers API
-export const serversApi = {
-  list: () => api.get('/servers'),
+export const protocols: Protocol[] = ['xmpp']
 
-  get: (id: number) => api.get(`/servers/${id}`),
-
-  create: (data: {
-    name: string
-    type: ServerType
-    host: string
-    port: number
-    api_key: string
-    tls_enabled: boolean
-  }) => api.post('/servers', data),
-
-  update: (id: number, data: { name?: string; api_key?: string; tls_enabled?: boolean; enabled?: boolean }) =>
-    api.put(`/servers/${id}`, data),
-
-  delete: (id: number) => api.delete(`/servers/${id}`),
-
-  stats: (id: number) => api.get(`/servers/${id}/stats`),
-
-  capabilities: (id: number) => api.get(`/servers/${id}/capabilities`),
-
-  test: (id: number) => api.post(`/servers/${id}/test`),
+/** Implementations that belong to a protocol, in declaration order. */
+export function implementationsFor(protocol: Protocol): Implementation[] {
+  return (Object.keys(implementations) as Implementation[]).filter((impl) => implementations[impl].protocol === protocol)
 }
 
-// Wire shapes of models.User and models.XMPPServer; a Go test keeps the
-// field lists in step with the json tags.
+export type Capability =
+  | 'accounts.list' | 'accounts.search' | 'accounts.create' | 'accounts.delete'
+  | 'accounts.set_password' | 'accounts.set_enabled' | 'accounts.set_admin'
+  | 'sessions.list_all' | 'sessions.list_by_account' | 'sessions.terminate'
+  | 'rooms.list' | 'rooms.get' | 'rooms.create' | 'rooms.delete'
+
+export interface Credentials {
+  kind?: string
+  token?: string
+}
+
 export interface User {
   id: number
   username: string
@@ -161,75 +155,200 @@ export interface User {
   updated_at: string
 }
 
-export interface XMPPServer {
+export interface Server {
   id: number
   name: string
-  type: ServerType
-  host: string
-  port: number
-  tls_enabled: boolean
+  protocol: Protocol
+  implementation: Implementation
+  endpoint: string
+  domain: string
   enabled: boolean
   created_at: string
   updated_at: string
 }
 
-export interface XMPPSession {
-  jid: string
-  resource: string
-  ip_address: string
-  priority: number
-  status: string
-  started_at: string
+export interface CreateServerRequest {
+  name: string
+  protocol: Protocol
+  implementation: Implementation
+  endpoint: string
+  domain: string
+  credentials: Credentials
+}
+
+export interface ServerInfo {
+  protocol: Protocol
+  implementation: Implementation
+  version: string
+  domains: string[]
+  auth_mode?: string
 }
 
 export interface ServerCapabilities {
-  online_users_count: boolean
-  registered_users_count: boolean
-  active_sessions_count: boolean
-  s2s_connections_count: boolean
-  sessions: boolean
-  rooms: boolean
-  modules: boolean
+  info: ServerInfo
+  capabilities: Capability[]
 }
 
-// XMPP API
-export const xmppApi = {
-  // Users
-  listUsers: (serverId: number, domain: string) =>
-    api.get(`/servers/${serverId}/users`, { params: { domain } }),
+export interface Stats {
+  version: string
+  uptime_seconds: number | null
+  registered_users: number | null
+  online_users: number | null
+  active_sessions: number | null
+  rooms: number | null
+  s2s_connections: number | null
+}
 
-  getUser: (serverId: number, username: string, domain: string) =>
-    api.get(`/servers/${serverId}/users/${username}`, { params: { domain } }),
+export interface XMPPAccountFacts {
+  roles?: string[]
+}
 
-  createUser: (serverId: number, data: { username: string; domain: string; password: string }) =>
-    api.post(`/servers/${serverId}/users`, data),
+export interface Account {
+  id: string
+  localpart: string
+  domain: string
+  display_name?: string
+  enabled: boolean
+  admin: boolean
+  created_at?: string
+  last_seen?: string
+  xmpp?: XMPPAccountFacts
+}
 
-  deleteUser: (serverId: number, username: string, domain: string) =>
-    api.delete(`/servers/${serverId}/users/${username}`, { params: { domain } }),
+export interface CreateAccountRequest {
+  localpart: string
+  domain?: string
+  password: string
+  display_name?: string
+  admin?: boolean
+}
 
-  kickUser: (serverId: number, username: string, domain: string) =>
-    api.post(`/servers/${serverId}/users/${username}/kick`, null, { params: { domain } }),
+export interface XMPPSessionFacts {
+  priority: number
+  status?: string
+}
 
-  // Sessions
-  listSessions: (serverId: number) => api.get(`/servers/${serverId}/sessions`),
+export interface Session {
+  id: string
+  account_id: string
+  name?: string
+  ip?: string
+  user_agent?: string
+  started_at?: string
+  last_seen?: string
+  live: boolean
+  xmpp?: XMPPSessionFacts
+}
 
-  kickSession: (serverId: number, jid: string) =>
-    api.delete(`/servers/${serverId}/sessions/${encodeURIComponent(jid)}`),
+export interface XMPPRoomFacts {
+  description?: string
+  persistent: boolean
+  members_only: boolean
+  moderated: boolean
+}
 
-  // Rooms
-  listRooms: (serverId: number, mucDomain: string) =>
-    api.get(`/servers/${serverId}/rooms`, { params: { muc_domain: mucDomain } }),
+export interface Room {
+  id: string
+  name?: string
+  alias?: string
+  members: number
+  public: boolean
+  xmpp?: XMPPRoomFacts
+}
 
-  getRoom: (serverId: number, room: string, mucDomain: string) =>
-    api.get(`/servers/${serverId}/rooms/${room}`, { params: { muc_domain: mucDomain } }),
+export interface CreateRoomRequest {
+  name: string
+  domain?: string
+  description?: string
+  public: boolean
+  persistent: boolean
+  members_only: boolean
+}
 
-  createRoom: (
-    serverId: number,
-    data: { name: string; domain: string; description?: string; public?: boolean; persistent?: boolean; members_only?: boolean }
-  ) => api.post(`/servers/${serverId}/rooms`, data),
+export interface Page<T> {
+  items: T[]
+  next?: string
+  total?: number
+}
 
-  deleteRoom: (serverId: number, room: string, mucDomain: string) =>
-    api.delete(`/servers/${serverId}/rooms/${room}`, { params: { muc_domain: mucDomain } }),
+export interface ListParams {
+  search?: string
+  domain?: string
+  limit?: number
+  cursor?: string
+}
+
+// Servers API
+export const serversApi = {
+  list: () => api.get('/servers'),
+
+  get: (id: number) => api.get(`/servers/${id}`),
+
+  create: (data: CreateServerRequest) => api.post('/servers', data),
+
+  update: (
+    id: number,
+    data: { name?: string; endpoint?: string; domain?: string; credentials?: Credentials; enabled?: boolean }
+  ) => api.put(`/servers/${id}`, data),
+
+  delete: (id: number) => api.delete(`/servers/${id}`),
+
+  stats: (id: number) => api.get(`/servers/${id}/stats`),
+
+  capabilities: (id: number) => api.get(`/servers/${id}/capabilities`),
+
+  test: (id: number) => api.post(`/servers/${id}/test`),
+}
+
+// Backend objects behind a registered server. Account and session ids are
+// JIDs or MXIDs, so they travel URL-encoded as one path segment.
+const seg = encodeURIComponent
+
+export const backendApi = {
+  listAccounts: (serverId: number, params?: ListParams) =>
+    api.get(`/servers/${serverId}/accounts`, { params }),
+
+  getAccount: (serverId: number, account: string) =>
+    api.get(`/servers/${serverId}/accounts/${seg(account)}`),
+
+  createAccount: (serverId: number, data: CreateAccountRequest) =>
+    api.post(`/servers/${serverId}/accounts`, data),
+
+  deleteAccount: (serverId: number, account: string) =>
+    api.delete(`/servers/${serverId}/accounts/${seg(account)}`),
+
+  setPassword: (serverId: number, account: string, password: string) =>
+    api.put(`/servers/${serverId}/accounts/${seg(account)}/password`, { password }),
+
+  setEnabled: (serverId: number, account: string, enabled: boolean) =>
+    api.put(`/servers/${serverId}/accounts/${seg(account)}/enabled`, { enabled }),
+
+  setAdmin: (serverId: number, account: string, admin: boolean) =>
+    api.put(`/servers/${serverId}/accounts/${seg(account)}/admin`, { admin }),
+
+  listAccountSessions: (serverId: number, account: string) =>
+    api.get(`/servers/${serverId}/accounts/${seg(account)}/sessions`),
+
+  terminateAccountSessions: (serverId: number, account: string) =>
+    api.delete(`/servers/${serverId}/accounts/${seg(account)}/sessions`),
+
+  listSessions: (serverId: number, params?: ListParams) =>
+    api.get(`/servers/${serverId}/sessions`, { params }),
+
+  terminateSession: (serverId: number, session: string, account: string) =>
+    api.delete(`/servers/${serverId}/sessions/${seg(session)}`, { params: { account } }),
+
+  listRooms: (serverId: number, params?: ListParams) =>
+    api.get(`/servers/${serverId}/rooms`, { params }),
+
+  getRoom: (serverId: number, room: string) =>
+    api.get(`/servers/${serverId}/rooms/${seg(room)}`),
+
+  createRoom: (serverId: number, data: CreateRoomRequest) =>
+    api.post(`/servers/${serverId}/rooms`, data),
+
+  deleteRoom: (serverId: number, room: string) =>
+    api.delete(`/servers/${serverId}/rooms/${seg(room)}`),
 }
 
 // Audit API
@@ -267,6 +386,11 @@ export function listErrorMessage(error: unknown, t: (key: string) => string): st
   if (status === 403) return t('errors.forbidden')
   if (status === 401) return t('errors.unauthorized')
   return t('errors.generic')
+}
+
+/** The backend's translated error message, if the response carried one. */
+export function errorMessage(error: unknown): string | undefined {
+  return (error as { response?: { data?: { error?: string } } } | null)?.response?.data?.error
 }
 
 export default api

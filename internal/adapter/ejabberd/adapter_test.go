@@ -6,164 +6,290 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
-	"github.com/xmpanel/xmpanel/internal/store/models"
+	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/adapter/adaptertest"
 )
 
-// Fixtures are the upstream result_example values (mod_admin_extra.erl,
-// mod_muc_admin.erl) as mod_http_api emits them on API v1 and later: a named
-// scalar arrives bare, a list of named tuples as objects keyed by field name.
-var upstreamReplies = map[string]string{
-	"connected_users_number": `2`,
-	"incoming_s2s_number":    `3`,
-	"stats":                  `6`,
-	"connected_users_info": `[{"jid":"user1@myserver.com/tka","connection":"c2s",
-		"ip":"127.0.0.1","port":42656,"priority":8,"node":"ejabberd@localhost",
-		"uptime":231,"status":"dnd","resource":"tka","statustext":""}]`,
-	"muc_online_rooms":          `["room1@conference.example.com","room2@conference.example.com"]`,
-	"get_room_options":          `[{"name":"members_only","value":"true"},{"name":"public","value":"true"}]`,
-	"get_room_occupants_number": `7`,
+const (
+	fakeDomain  = "example.com"
+	fakeService = "conference.example.com"
+	fakeToken   = "ejabberd-oauth-token"
+)
+
+// fakeEjabberd answers mod_http_api commands with the API v1+ encoding
+// (bare scalars, objects for named tuples) and the status codes
+// format_command_result maps: 409 for conflict, 404 for not_found, 500 for
+// any other command error, each with {"status","code","message"}.
+type fakeEjabberd struct {
+	mu       sync.Mutex
+	fail     int
+	users    map[string]bool
+	sessions map[string]adapter.Session
+	rooms    map[string]map[string]string
+	calls    map[string]map[string]string
 }
 
-// newFixtureAdapter serves upstreamReplies over HTTP and records the JSON
-// arguments each command was called with.
-func newFixtureAdapter(t *testing.T) (*Adapter, map[string]map[string]string) {
-	t.Helper()
-	calls := make(map[string]map[string]string)
+func newFakeEjabberd() *fakeEjabberd { return &fakeEjabberd{} }
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		command := strings.TrimPrefix(r.URL.Path, "/api/")
+func (f *fakeEjabberd) Reset() adaptertest.Population {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users = map[string]bool{"alice": true, "bob": true}
+	f.sessions = map[string]adapter.Session{}
+	f.rooms = map[string]map[string]string{
+		"room1@" + fakeService: {"title": "Room One", "public": "true", "persistent": "true", "members_only": "false"},
+		"room2@" + fakeService: {"title": "", "public": "false", "persistent": "false", "members_only": "true"},
+	}
+	f.calls = map[string]map[string]string{}
+	pop := adaptertest.Population{
+		Accounts: []string{"alice@example.com", "bob@example.com"},
+		Rooms:    []string{"room1@" + fakeService, "room2@" + fakeService},
+	}
+	for _, s := range []adapter.Session{
+		{ID: "alice@example.com/tka", AccountID: "alice@example.com"},
+		{ID: "bob@example.com/phone", AccountID: "bob@example.com"},
+		{ID: "bob@example.com/laptop", AccountID: "bob@example.com"},
+	} {
+		f.sessions[s.ID] = s
+		pop.Sessions = append(pop.Sessions, s)
+	}
+	return pop
+}
 
-		// Commands without arguments send no body; a bad body shows up as a
-		// nil entry in calls when the test reads it back.
-		var args map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&args)
-		calls[command] = args
+func (f *fakeEjabberd) FailWith(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = status
+}
 
-		body, ok := upstreamReplies[command]
-		if !ok {
-			t.Errorf("unexpected command %q", command)
-			w.WriteHeader(http.StatusNotFound)
+func commandError(w http.ResponseWriter, status, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "code": code, "message": message})
+}
+
+func (f *fakeEjabberd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != 0 {
+		w.WriteHeader(f.fail)
+		return
+	}
+	if r.Header.Get("Authorization") != "Bearer "+fakeToken {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	command := strings.TrimPrefix(r.URL.Path, "/api/")
+	args := map[string]string{}
+	_ = json.NewDecoder(r.Body).Decode(&args)
+	f.calls[command] = args
+	reply := func(v interface{}) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(v)
+	}
+	jid := args["user"] + "@" + args["host"]
+	roomID := args["name"] + "@" + args["service"]
+
+	switch command {
+	case "status":
+		reply("The node ejabberd@localhost is started with status: started\nejabberd 24.02 is running in that node")
+	case "registered_vhosts":
+		reply([]string{fakeDomain})
+	case "connected_users_number":
+		reply(len(f.sessions))
+	case "incoming_s2s_number":
+		reply(3)
+	case "stats":
+		switch args["name"] {
+		case "registeredusers":
+			reply(len(f.users))
+		case "uptimeseconds":
+			reply(4242)
+		default:
+			commandError(w, http.StatusInternalServerError, 0, "Unknown stat")
+		}
+	case "registered_users":
+		out := []string{}
+		for u := range f.users {
+			out = append(out, u)
+		}
+		reply(out)
+	case "check_account":
+		if f.users[args["user"]] {
+			reply(0)
+		} else {
+			reply(1)
+		}
+	case "register":
+		if f.users[args["user"]] {
+			commandError(w, http.StatusConflict, 10090, "User "+jid+" already registered")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := w.Write([]byte(body)); err != nil {
-			t.Errorf("write %s reply: %v", command, err)
+		f.users[args["user"]] = true
+		reply("User " + jid + " successfully registered")
+	case "unregister":
+		delete(f.users, args["user"])
+		reply("Success")
+	case "change_password":
+		if !f.users[args["user"]] {
+			commandError(w, http.StatusNotFound, 10007, "unknown_user")
+			return
 		}
-	}))
-	t.Cleanup(srv.Close)
-
-	a := NewAdapter(&models.XMPPServer{}, "test-key")
-	a.baseURL = srv.URL + "/api"
-	return a, calls
-}
-
-func TestGetOnlineSessions_ReadsJIDField(t *testing.T) {
-	a, _ := newFixtureAdapter(t)
-
-	sessions, err := a.GetOnlineSessions(context.Background())
-	if err != nil {
-		t.Fatalf("GetOnlineSessions: %v", err)
-	}
-	if len(sessions) != 1 {
-		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
-	}
-
-	got := sessions[0]
-	// There is no "user" or "server" key upstream; building the JID from
-	// those produced "@/tka" for every session.
-	if got.JID != "user1@myserver.com/tka" {
-		t.Errorf("JID = %q, want %q", got.JID, "user1@myserver.com/tka")
-	}
-	if got.Resource != "tka" {
-		t.Errorf("Resource = %q, want %q", got.Resource, "tka")
-	}
-	if got.IPAddress != "127.0.0.1" {
-		t.Errorf("IPAddress = %q, want %q", got.IPAddress, "127.0.0.1")
-	}
-	if got.Priority != 8 {
-		t.Errorf("Priority = %d, want 8", got.Priority)
-	}
-	if got.Status != "dnd" {
-		t.Errorf("Status = %q, want %q", got.Status, "dnd")
-	}
-}
-
-func TestListRooms_SplitsJIDAndFetchesDetails(t *testing.T) {
-	a, calls := newFixtureAdapter(t)
-
-	rooms, err := a.ListRooms(context.Background(), "conference.example.com")
-	if err != nil {
-		t.Fatalf("ListRooms: %v", err)
-	}
-	if len(rooms) != 2 {
-		t.Fatalf("len(rooms) = %d, want 2", len(rooms))
-	}
-
-	// muc_online_rooms already returns room@service; the old code appended
-	// the domain a second time.
-	if rooms[0].JID != "room1@conference.example.com" {
-		t.Errorf("JID = %q, want %q", rooms[0].JID, "room1@conference.example.com")
-	}
-	if rooms[0].Name != "room1" {
-		t.Errorf("Name = %q, want %q", rooms[0].Name, "room1")
-	}
-	if !rooms[0].MembersOnly || !rooms[0].Public {
-		t.Errorf("options not applied: members_only=%v public=%v", rooms[0].MembersOnly, rooms[0].Public)
-	}
-	if rooms[0].Occupants != 7 {
-		t.Errorf("Occupants = %d, want 7 (the listing never asked before)", rooms[0].Occupants)
-	}
-
-	// get_room_options takes the bare room name plus the service, so a
-	// doubled name silently matched nothing.
-	if got := calls["get_room_options"]["name"]; got != "room2" {
-		t.Errorf("get_room_options name = %q, want the bare room name", got)
-	}
-	if got := calls["get_room_options"]["service"]; got != "conference.example.com" {
-		t.Errorf("get_room_options service = %q", got)
-	}
-}
-
-func TestGetStats_ParsesBareIntegers(t *testing.T) {
-	a, calls := newFixtureAdapter(t)
-
-	stats, err := a.GetStats(context.Background())
-	if err != nil {
-		t.Fatalf("GetStats: %v", err)
-	}
-
-	if stats.OnlineUsers != 2 {
-		t.Errorf("OnlineUsers = %d, want 2", stats.OnlineUsers)
-	}
-	// `stats` returns {stat, integer}, which v1+ unwraps to a bare number
-	// exactly like the two counters around it; the object parse read 0.
-	if stats.RegisteredUsers != 6 {
-		t.Errorf("RegisteredUsers = %d, want 6", stats.RegisteredUsers)
-	}
-	if stats.S2SConnections != 3 {
-		t.Errorf("S2SConnections = %d, want 3", stats.S2SConnections)
-	}
-	if got := calls["stats"]["name"]; got != "registeredusers" {
-		t.Errorf("stats name = %q, want registeredusers", got)
+		reply(0)
+	case "connected_users_info":
+		out := []map[string]interface{}{}
+		for _, s := range f.sessions {
+			_, resource, _ := strings.Cut(s.ID, "/")
+			out = append(out, map[string]interface{}{
+				"jid": s.ID, "connection": "c2s", "ip": "127.0.0.1", "port": 42656, "priority": 8,
+				"node": "ejabberd@localhost", "uptime": 231, "status": "dnd", "resource": resource, "statustext": "",
+			})
+		}
+		reply(out)
+	case "user_sessions_info":
+		out := []map[string]interface{}{}
+		for _, s := range f.sessions {
+			if s.AccountID != jid {
+				continue
+			}
+			_, resource, _ := strings.Cut(s.ID, "/")
+			out = append(out, map[string]interface{}{
+				"connection": "c2s", "ip": "127.0.0.1", "port": 42656, "priority": 8,
+				"node": "ejabberd@localhost", "uptime": 231, "status": "dnd", "resource": resource, "statustext": "",
+			})
+		}
+		reply(out)
+	case "kick_session":
+		id := jid + "/" + args["resource"]
+		if _, ok := f.sessions[id]; !ok {
+			commandError(w, http.StatusInternalServerError, 0, "Session not found")
+			return
+		}
+		delete(f.sessions, id)
+		reply(0)
+	case "kick_user":
+		n := 0
+		for id, s := range f.sessions {
+			if s.AccountID == jid {
+				delete(f.sessions, id)
+				n++
+			}
+		}
+		reply(n)
+	case "muc_online_rooms":
+		out := []string{}
+		for id := range f.rooms {
+			if args["service"] == "global" || strings.HasSuffix(id, "@"+args["service"]) {
+				out = append(out, id)
+			}
+		}
+		reply(out)
+	case "get_room_options":
+		room, ok := f.rooms[roomID]
+		if !ok {
+			commandError(w, http.StatusInternalServerError, 0, "Room not found")
+			return
+		}
+		out := []map[string]string{}
+		for k, v := range room {
+			out = append(out, map[string]string{"name": k, "value": v})
+		}
+		reply(out)
+	case "get_room_occupants_number":
+		if _, ok := f.rooms[roomID]; !ok {
+			commandError(w, http.StatusInternalServerError, 0, "Room not found")
+			return
+		}
+		reply(7)
+	case "create_room":
+		if _, ok := f.rooms[roomID]; ok {
+			commandError(w, http.StatusInternalServerError, 0, "Room already exists")
+			return
+		}
+		f.rooms[roomID] = map[string]string{}
+		reply(0)
+	case "change_room_option":
+		room, ok := f.rooms[roomID]
+		if !ok {
+			commandError(w, http.StatusInternalServerError, 0, "Room not found")
+			return
+		}
+		room[args["option"]] = args["value"]
+		reply(0)
+	case "destroy_room":
+		if _, ok := f.rooms[roomID]; !ok {
+			commandError(w, http.StatusInternalServerError, 0, "Room not found")
+			return
+		}
+		delete(f.rooms, roomID)
+		reply(0)
+	default:
+		commandError(w, http.StatusNotFound, 32, "Command not found")
 	}
 }
 
-func TestGetRoom_UsesBareNameAndOccupants(t *testing.T) {
-	a, calls := newFixtureAdapter(t)
+func newAdapter(endpoint string) adapter.Adapter {
+	return New(adapter.ServerConfig{
+		Protocol: adapter.ProtocolXMPP, Impl: adapter.ImplEjabberd,
+		Endpoint: endpoint, Domain: fakeDomain,
+		Creds: adapter.Credentials{Kind: adapter.CredentialsBearer, Token: fakeToken},
+	})
+}
 
-	room, err := a.GetRoom(context.Background(), "room1", "conference.example.com")
+func TestContract(t *testing.T) {
+	adaptertest.Run(t, adaptertest.Config{
+		Protocol: adapter.ProtocolXMPP,
+		Impl:     adapter.ImplEjabberd,
+		Domain:   fakeDomain,
+		Upstream: newFakeEjabberd(),
+		New:      newAdapter,
+		Expected: capabilities,
+	})
+}
+
+// Upstream argument names are part of the contract with mod_admin_extra and
+// mod_muc_admin: get_room_options keeps "name", kick_user sends no reason.
+func TestCommandArguments(t *testing.T) {
+	fake := newFakeEjabberd()
+	fake.Reset()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	a := newAdapter(srv.URL)
+	ctx := context.Background()
+
+	room, err := a.GetRoom(ctx, "room1@"+fakeService)
 	if err != nil {
-		t.Fatalf("GetRoom: %v", err)
+		t.Fatal(err)
 	}
-	if room.JID != "room1@conference.example.com" {
-		t.Errorf("JID = %q", room.JID)
+	if room.Name != "Room One" || room.Members != 7 || !room.Public || room.XMPP == nil || !room.XMPP.Persistent {
+		t.Fatalf("room = %+v", room)
 	}
-	if room.Occupants != 7 {
-		t.Errorf("Occupants = %d, want 7", room.Occupants)
+	if got := fake.calls["get_room_options"]; got["name"] != "room1" || got["service"] != fakeService {
+		t.Fatalf("get_room_options args = %v", got)
 	}
-	if got := calls["get_room_occupants_number"]["name"]; got != "room1" {
-		t.Errorf("occupants name = %q, want room1", got)
+	if err := a.TerminateAccountSessions(ctx, "bob@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.calls["kick_user"]; got["user"] != "bob" || got["host"] != fakeDomain || got["reason"] != "" {
+		t.Fatalf("kick_user args = %v", got)
+	}
+	info, err := a.Probe(ctx)
+	if err != nil || info.Version != "24.02" {
+		t.Fatalf("version from status text = %+v, %v", info, err)
+	}
+	stats, err := a.Stats(ctx)
+	if err != nil || stats.UptimeSeconds == nil || *stats.UptimeSeconds != 4242 || stats.S2SConnections == nil || *stats.S2SConnections != 3 {
+		t.Fatalf("stats = %+v, %v", stats, err)
+	}
+	page, err := a.ListRooms(ctx, adapter.ListQuery{})
+	if err != nil || fake.calls["muc_online_rooms"]["service"] != "global" || len(page.Items) != 2 {
+		t.Fatalf("rooms across services: %+v %v %v", page, fake.calls["muc_online_rooms"], err)
 	}
 }

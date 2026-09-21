@@ -59,39 +59,8 @@ func (m *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 		}
 
 		// Add claims to context
-		ctx := context.WithValue(r.Context(), contextKeyClaims, claims)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), claims)))
 	})
-}
-
-// RequireRole checks if the authenticated user has the required role
-func RequireRole(roles ...models.Role) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims := GetClaims(r.Context())
-			if claims == nil {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			userRole := models.Role(claims.Role)
-			hasRole := false
-
-			for _, role := range roles {
-				if userRole == role || userRole == models.RoleSuperAdmin {
-					hasRole = true
-					break
-				}
-			}
-
-			if !hasRole {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 // RequirePermission checks if the authenticated user has the required permission
@@ -113,6 +82,12 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// WithClaims returns ctx carrying claims, as Authenticate does after a
+// successful token check; tests use it to run handlers as a given user.
+func WithClaims(ctx context.Context, claims *auth.Claims) context.Context {
+	return context.WithValue(ctx, contextKeyClaims, claims)
 }
 
 // GetClaims retrieves the JWT claims from the context

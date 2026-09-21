@@ -33,7 +33,18 @@ const (
 	AuditActionServerUpdate AuditAction = "server.update"
 	AuditActionServerRemove AuditAction = "server.remove"
 
-	// XMPP operations
+	// Managed backend operations
+	AuditActionAccountCreate    AuditAction = "backend.account_create"
+	AuditActionAccountDelete    AuditAction = "backend.account_delete"
+	AuditActionAccountPassword  AuditAction = "backend.account_password"
+	AuditActionAccountEnabled   AuditAction = "backend.account_enabled"
+	AuditActionAccountAdmin     AuditAction = "backend.account_admin"
+	AuditActionSessionTerminate AuditAction = "backend.session_terminate"
+	AuditActionRoomCreate       AuditAction = "backend.room_create"
+	AuditActionRoomDelete       AuditAction = "backend.room_delete"
+
+	// Retired actions still present in stored rows, which are hash inputs and
+	// are never rewritten; nothing writes them any more.
 	AuditActionXMPPUserCreate AuditAction = "xmpp.user_create"
 	AuditActionXMPPUserDelete AuditAction = "xmpp.user_delete"
 	AuditActionXMPPUserKick   AuditAction = "xmpp.user_kick"
@@ -50,9 +61,11 @@ type ResourceType string
 const (
 	ResourceTypeUser    ResourceType = "user"
 	ResourceTypeServer  ResourceType = "server"
-	ResourceTypeXMPP    ResourceType = "xmpp"
+	ResourceTypeAccount ResourceType = "account"
+	ResourceTypeSession ResourceType = "session"
 	ResourceTypeRoom    ResourceType = "room"
 	ResourceTypeSetting ResourceType = "setting"
+	ResourceTypeXMPP    ResourceType = "xmpp" // retired; stored rows only
 )
 
 // AuditLog represents an audit log entry.

@@ -44,7 +44,7 @@ func TestOnlyRespondWritesStatusLines(t *testing.T) {
 // the handlers run on nil stores; database-dependent branches are checked by hand.
 func TestErrorResponseShape(t *testing.T) {
 	logger := zap.NewNop()
-	xmppH := NewXMPPHandler(nil, nil, logger)
+	backendH := NewBackendHandler(nil, nil, logger)
 	serverH := NewServerHandler(nil, nil, nil, nil, logger)
 	userH := NewUserHandler(nil, nil, nil, nil, nil, logger)
 	auditH := NewAuditHandler(nil, logger)
@@ -61,14 +61,20 @@ func TestErrorResponseShape(t *testing.T) {
 		status  int
 		want    string
 	}{
-		{"xmpp: bad server id", xmppH.ListUsers, "GET", "/", map[string]string{"serverId": "x"}, "", "", 400, "Invalid server ID"},
-		{"xmpp: missing domain", xmppH.ListUsers, "GET", "/", map[string]string{"serverId": "1"}, "", "", 400, "Domain parameter is required"},
-		{"xmpp: bad body", xmppH.CreateUser, "POST", "/", map[string]string{"serverId": "1"}, "{", "", 400, "Invalid request body"},
-		{"xmpp: short password", xmppH.CreateUser, "POST", "/", map[string]string{"serverId": "1"}, `{"username":"a","domain":"d","password":"short"}`, "", 400, "Password must be at least 8 characters"},
-		{"xmpp: missing muc domain", xmppH.ListRooms, "GET", "/", map[string]string{"serverId": "1"}, "", "", 400, "MUC domain parameter is required"},
+		{"backend: bad server id", backendH.ListAccounts, "GET", "/", map[string]string{"serverId": "x"}, "", "", 400, "Invalid server ID"},
+		{"backend: bad body", backendH.CreateAccount, "POST", "/", map[string]string{"serverId": "1"}, "{", "", 400, "Invalid request body"},
+		{"backend: missing localpart", backendH.CreateAccount, "POST", "/", map[string]string{"serverId": "1"}, `{"password":"long-enough"}`, "", 400, "Localpart is required"},
+		{"backend: short password", backendH.CreateAccount, "POST", "/", map[string]string{"serverId": "1"}, `{"localpart":"a","password":"short"}`, "", 400, "Password must be at least 8 characters"},
+		{"backend: enabled without value", backendH.SetEnabled, "PUT", "/", map[string]string{"serverId": "1", "account": "a@d"}, `{}`, "", 400, "Invalid request body"},
+		{"backend: room without name", backendH.CreateRoom, "POST", "/", map[string]string{"serverId": "1"}, `{"domain":"muc.d"}`, "", 400, "Room name is required"},
 		{"server: bad id", serverH.Get, "GET", "/", map[string]string{"id": "abc"}, "", "", 400, "Invalid server ID"},
-		{"server: bad port", serverH.Create, "POST", "/", nil, `{"name":"n","host":"h","port":70000}`, "", 400, "Invalid port"},
-		{"server: bad type", serverH.Create, "POST", "/", nil, `{"name":"n","host":"h","port":5280,"type":"nope"}`, "", 400, "Invalid server type"},
+		{"server: unsupported implementation", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"xmpp","implementation":"nope","endpoint":"http://h","domain":"d"}`, "", 400, "Unsupported server protocol or implementation"},
+		{"server: unsupported implementation, zh", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"matrix","implementation":"prosody","endpoint":"http://h","domain":"d"}`, "zh", 400, "不支持的服务器协议或实现"},
+		{"server: bad endpoint", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"xmpp","implementation":"prosody","endpoint":"h:5280","domain":"d"}`, "", 400, "Endpoint must be an http or https URL"},
+		{"server: missing domain", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"xmpp","implementation":"prosody","endpoint":"http://h"}`, "", 400, "Domain is required"},
+		{"server: missing credentials", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"xmpp","implementation":"prosody","endpoint":"http://h","domain":"d"}`, "", 400, "Credentials are required"},
+		{"server: empty token", serverH.Create, "POST", "/", nil, `{"name":"n","protocol":"xmpp","implementation":"prosody","endpoint":"http://h","domain":"d","credentials":{"token":" "}}`, "", 400, "Credential token is required"},
+		{"server: update nothing", serverH.Update, "PUT", "/", map[string]string{"id": "1"}, `{}`, "", 400, "No fields to update"},
 		{"user: bad id", userH.Get, "GET", "/", map[string]string{"id": "abc"}, "", "", 400, "Invalid user ID"},
 		{"user: create without claims", userH.Create, "POST", "/", nil, "{}", "", 401, "Unauthorized"},
 		{"user: update without claims", userH.Update, "PUT", "/", map[string]string{"id": "1"}, "{}", "", 401, "Unauthorized"},

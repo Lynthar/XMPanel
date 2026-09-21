@@ -2,41 +2,28 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { serversApi, serverTypes, type ServerType, type XMPPServer } from '@/lib/api'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
-import {
-  Server,
-  Plus,
-  MoreVertical,
-  Trash2,
-  RefreshCw,
-  ExternalLink,
-  X,
-} from 'lucide-react'
+import { Server as ServerIcon, Plus, MoreVertical, Trash2, RefreshCw, ExternalLink } from 'lucide-react'
 import clsx from 'clsx'
-
-interface CreateServerForm {
-  name: string
-  type: ServerType
-  host: string
-  port: number
-  api_key: string
-  tls_enabled: boolean
-}
+import {
+  serversApi, errorMessage, implementationsFor, protocols,
+  type CreateServerRequest, type Implementation, type Protocol, type Server,
+} from '@/lib/api'
+import ConfirmDialog from '@/components/ConfirmDialog'
+import Modal from '@/components/Modal'
+import Field from '@/components/Field'
 
 export default function Servers() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [showAddModal, setShowAddModal] = useState(false)
-  const [selectedServer, setSelectedServer] = useState<number | null>(null)
+  const [menuFor, setMenuFor] = useState<number | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Server | null>(null)
 
   const { data: servers, isLoading } = useQuery({
     queryKey: ['servers'],
-    queryFn: async () => {
-      const response = await serversApi.list()
-      return response.data as XMPPServer[]
-    },
+    queryFn: async () => (await serversApi.list()).data as Server[],
   })
 
   const deleteMutation = useMutation({
@@ -44,30 +31,23 @@ export default function Servers() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['servers'] })
       toast.success(t('servers.deleteSuccess'))
-      setSelectedServer(null)
     },
-    onError: () => {
-      toast.error(t('servers.deleteFailed'))
-    },
+    onError: (error) => toast.error(errorMessage(error) ?? t('servers.deleteFailed')),
+    onSettled: () => setDeleteTarget(null),
   })
 
   const testMutation = useMutation({
     mutationFn: (id: number) => serversApi.test(id),
-    onSuccess: (response) => {
-      if (response.data.success) {
-        toast.success(t('servers.testSuccess'))
-      } else {
-        toast.error(`${t('servers.testFailed')}: ${response.data.error}`)
-      }
+    onSuccess: (response, id) => {
+      queryClient.invalidateQueries({ queryKey: ['server-caps', id] })
+      if (response.data.success) toast.success(t('servers.testSuccess'))
+      else toast.error(`${t('servers.testFailed')}: ${response.data.error}`)
     },
-    onError: () => {
-      toast.error(t('servers.testError'))
-    },
+    onError: () => toast.error(t('servers.testError')),
   })
 
   return (
     <div className="space-y-6">
-      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">{t('servers.title')}</h1>
@@ -79,19 +59,16 @@ export default function Servers() {
         </button>
       </div>
 
-      {/* Servers grid */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
         </div>
       ) : servers?.length === 0 ? (
         <div className="card text-center py-12">
-          <Server className="w-16 h-16 text-gray-600 mx-auto mb-4" />
+          <ServerIcon className="w-16 h-16 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">{t('servers.noServersTitle')}</h3>
           <p className="text-gray-400 mb-6">{t('servers.noServersDesc')}</p>
-          <button onClick={() => setShowAddModal(true)} className="btn btn-primary">
-            {t('servers.addServer')}
-          </button>
+          <button onClick={() => setShowAddModal(true)} className="btn btn-primary">{t('servers.addServer')}</button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -100,15 +77,14 @@ export default function Servers() {
               key={server.id}
               server={server}
               onTest={() => testMutation.mutate(server.id)}
-              onDelete={() => deleteMutation.mutate(server.id)}
-              isSelected={selectedServer === server.id}
-              onSelect={() => setSelectedServer(selectedServer === server.id ? null : server.id)}
+              onDelete={() => setDeleteTarget(server)}
+              menuOpen={menuFor === server.id}
+              onToggleMenu={() => setMenuFor(menuFor === server.id ? null : server.id)}
             />
           ))}
         </div>
       )}
 
-      {/* Add server modal */}
       {showAddModal && (
         <AddServerModal
           onClose={() => setShowAddModal(false)}
@@ -118,69 +94,59 @@ export default function Servers() {
           }}
         />
       )}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={t('servers.deleteServer')}
+        message={t('servers.deleteWarning', { name: deleteTarget?.name ?? '' })}
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
+        variant="danger"
+        loading={deleteMutation.isPending}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }
 
-interface ServerCardProps {
-  server: XMPPServer
+function ServerCard({
+  server, onTest, onDelete, menuOpen, onToggleMenu,
+}: {
+  server: Server
   onTest: () => void
   onDelete: () => void
-  isSelected: boolean
-  onSelect: () => void
-}
-
-function ServerCard({ server, onTest, onDelete, isSelected, onSelect }: ServerCardProps) {
+  menuOpen: boolean
+  onToggleMenu: () => void
+}) {
   const { t } = useTranslation()
   return (
-    <div className={clsx('card relative', isSelected && 'ring-2 ring-primary-500')}>
+    <div className={clsx('card relative', menuOpen && 'ring-2 ring-primary-500')}>
       <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div
-            className={clsx(
-              'p-2 rounded-lg',
-              server.enabled ? 'bg-green-900/30' : 'bg-gray-700'
-            )}
-          >
-            <Server
-              className={clsx(
-                'w-5 h-5',
-                server.enabled ? 'text-green-400' : 'text-gray-400'
-              )}
-            />
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={clsx('p-2 rounded-lg', server.enabled ? 'bg-green-900/30' : 'bg-gray-700')}>
+            <ServerIcon className={clsx('w-5 h-5', server.enabled ? 'text-green-400' : 'text-gray-400')} />
           </div>
-          <div>
-            <h3 className="font-medium text-white">{server.name}</h3>
-            <span className="badge badge-gray text-xs capitalize">{server.type}</span>
+          <div className="min-w-0">
+            <h3 className="font-medium text-white truncate">{server.name}</h3>
+            <span className="badge badge-gray text-xs">{t(`servers.protocols.${server.protocol}`)}</span>
+            <span className="badge badge-blue text-xs ml-1">{t(`servers.implementations.${server.implementation}`)}</span>
           </div>
         </div>
         <div className="relative">
-          <button
-            onClick={onSelect}
-            className="p-1 text-gray-400 hover:text-white rounded"
-          >
+          <button onClick={onToggleMenu} className="p-1 text-gray-400 hover:text-white rounded" aria-label={t('common.actions')}>
             <MoreVertical className="w-5 h-5" />
           </button>
-          {isSelected && (
-            <div className="absolute right-0 top-8 w-40 bg-gray-700 rounded-lg shadow-xl border border-gray-600 py-1 z-10">
-              <Link
-                to={`/servers/${server.id}`}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600"
-              >
+          {menuOpen && (
+            <div className="absolute right-0 top-8 w-44 bg-gray-700 rounded-lg shadow-xl border border-gray-600 py-1 z-10">
+              <Link to={`/servers/${server.id}`} className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600">
                 <ExternalLink className="w-4 h-4" />
                 {t('servers.viewDetails')}
               </Link>
-              <button
-                onClick={onTest}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600 w-full"
-              >
+              <button onClick={onTest} className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-600 w-full">
                 <RefreshCw className="w-4 h-4" />
                 {t('servers.testConnection')}
               </button>
-              <button
-                onClick={onDelete}
-                className="flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-600 w-full"
-              >
+              <button onClick={onDelete} className="flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-600 w-full">
                 <Trash2 className="w-4 h-4" />
                 {t('common.delete')}
               </button>
@@ -190,33 +156,24 @@ function ServerCard({ server, onTest, onDelete, isSelected, onSelect }: ServerCa
       </div>
 
       <div className="space-y-2 text-sm">
-        <div className="flex justify-between">
-          <span className="text-gray-400">{t('servers.hostname')}</span>
-          <span className="text-gray-200">{server.host}</span>
+        <div className="flex justify-between gap-4">
+          <span className="text-gray-400">{t('servers.domain')}</span>
+          <span className="text-gray-200 truncate">{server.domain}</span>
         </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">{t('servers.port')}</span>
-          <span className="text-gray-200">{server.port}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-400">{t('servers.tls')}</span>
-          <span className={server.tls_enabled ? 'text-green-400' : 'text-gray-500'}>
-            {server.tls_enabled ? t('servers.tlsEnabled') : t('servers.tlsDisabled')}
-          </span>
+        <div className="flex justify-between gap-4">
+          <span className="text-gray-400">{t('servers.endpoint')}</span>
+          <span className="text-gray-200 truncate font-mono text-xs">{server.endpoint}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-gray-400">{t('common.status')}</span>
           <span className={clsx('badge', server.enabled ? 'badge-green' : 'badge-gray')}>
-            {server.enabled ? t('servers.active') : t('servers.tlsDisabled')}
+            {server.enabled ? t('servers.active') : t('servers.disabled')}
           </span>
         </div>
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-700">
-        <Link
-          to={`/servers/${server.id}`}
-          className="btn btn-secondary w-full text-center text-sm"
-        >
+        <Link to={`/servers/${server.id}`} className="btn btn-secondary w-full text-center text-sm">
           {t('servers.manageServer')}
         </Link>
       </div>
@@ -224,122 +181,83 @@ function ServerCard({ server, onTest, onDelete, isSelected, onSelect }: ServerCa
   )
 }
 
-interface AddServerModalProps {
-  onClose: () => void
-  onSuccess: () => void
+interface ServerForm {
+  name: string
+  protocol: Protocol
+  implementation: Implementation
+  endpoint: string
+  domain: string
+  token: string
 }
 
-function AddServerModal({ onClose, onSuccess }: AddServerModalProps) {
+function AddServerModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const { t } = useTranslation()
-  const [loading, setLoading] = useState(false)
-  const { register, handleSubmit, formState: { errors } } = useForm<CreateServerForm>({
-    defaultValues: {
-      type: 'prosody',
-      port: 5280,
-      tls_enabled: true,
-    },
+  const { register, handleSubmit, watch, setValue, formState: { errors, isSubmitting } } = useForm<ServerForm>({
+    defaultValues: { protocol: 'xmpp', implementation: 'prosody', endpoint: 'http://127.0.0.1:5280' },
   })
+  const protocol = watch('protocol')
+  const implementation = watch('implementation')
+  const options = implementationsFor(protocol)
+  if (!options.includes(implementation) && options.length > 0) setValue('implementation', options[0])
 
-  const onSubmit = async (data: CreateServerForm) => {
-    setLoading(true)
+  const onSubmit = async (form: ServerForm) => {
+    const body: CreateServerRequest = {
+      name: form.name,
+      protocol: form.protocol,
+      implementation: form.implementation,
+      endpoint: form.endpoint,
+      domain: form.domain,
+      credentials: { kind: 'bearer', token: form.token },
+    }
     try {
-      await serversApi.create(data)
+      await serversApi.create(body)
       toast.success(t('servers.addSuccess'))
       onSuccess()
-    } catch (error: unknown) {
-      const err = error as { response?: { data?: { error?: string } } }
-      toast.error(err.response?.data?.error || t('servers.addFailed'))
-    } finally {
-      setLoading(false)
+    } catch (error) {
+      toast.error(errorMessage(error) ?? t('servers.addFailed'))
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="w-full max-w-lg bg-gray-800 rounded-xl border border-gray-700 shadow-xl">
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-semibold text-white">{t('servers.addServerTitle')}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit(onSubmit)} className="p-4 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">{t('common.name')}</label>
-            <input
-              type="text"
-              className="input"
-              placeholder={t('servers.namePlaceholder')}
-              {...register('name', { required: t('validation.required') })}
-            />
-            {errors.name && <p className="mt-1 text-sm text-red-400">{errors.name.message}</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">{t('common.type')}</label>
-            <select className="input" {...register('type')}>
-              {Object.entries(serverTypes).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
+    <Modal title={t('servers.addServerTitle')} onClose={onClose} width="max-w-lg">
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Field label={t('common.name')} error={errors.name?.message}>
+          <input type="text" className="input" placeholder={t('servers.namePlaceholder')} autoFocus {...register('name', { required: t('validation.required') })} />
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={t('servers.protocol')}>
+            <select className="input" {...register('protocol')}>
+              {protocols.map((p) => <option key={p} value={p}>{t(`servers.protocols.${p}`)}</option>)}
             </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">{t('servers.hostname')}</label>
-              <input
-                type="text"
-                className="input"
-                placeholder={t('servers.hostPlaceholder')}
-                {...register('host', { required: t('validation.required') })}
-              />
-              {errors.host && <p className="mt-1 text-sm text-red-400">{errors.host.message}</p>}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">{t('servers.port')}</label>
-              <input
-                type="number"
-                className="input"
-                {...register('port', { required: t('validation.required'), valueAsNumber: true })}
-              />
-              {errors.port && <p className="mt-1 text-sm text-red-400">{errors.port.message}</p>}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">{t('servers.apiKey')}</label>
-            <input
-              type="password"
-              className="input"
-              placeholder={t('servers.apiKeyPlaceholder')}
-              {...register('api_key', { required: t('validation.required') })}
-            />
-            {errors.api_key && <p className="mt-1 text-sm text-red-400">{errors.api_key.message}</p>}
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="tls_enabled"
-              className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-primary-600 focus:ring-primary-500"
-              {...register('tls_enabled')}
-            />
-            <label htmlFor="tls_enabled" className="text-sm text-gray-300">
-              {t('servers.enableTls')}
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
-            <button type="button" onClick={onClose} className="btn btn-secondary">
-              {t('common.cancel')}
-            </button>
-            <button type="submit" disabled={loading} className="btn btn-primary">
-              {loading ? '...' : t('servers.addServer')}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          </Field>
+          <Field label={t('servers.implementation')}>
+            <select className="input" {...register('implementation')}>
+              {options.map((impl) => <option key={impl} value={impl}>{t(`servers.implementations.${impl}`)}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label={t('servers.endpoint')} error={errors.endpoint?.message}>
+          <input
+            type="url"
+            className="input font-mono text-sm"
+            placeholder="http://127.0.0.1:5280"
+            {...register('endpoint', { required: t('validation.required'), pattern: { value: /^https?:\/\/\S+$/, message: t('servers.endpointHint') } })}
+          />
+          <p className="mt-1 text-xs text-gray-500">{t(`servers.endpointHelp.${implementation}`)}</p>
+        </Field>
+        <Field label={t(`servers.domainLabel.${protocol}`)} error={errors.domain?.message}>
+          <input type="text" className="input" placeholder="example.com" {...register('domain', { required: t('validation.required') })} />
+          <p className="mt-1 text-xs text-gray-500">{t(`servers.domainHelp.${protocol}`)}</p>
+        </Field>
+        <Field label={t('servers.token')} error={errors.token?.message}>
+          <input type="password" className="input" placeholder={t('servers.tokenPlaceholder')} {...register('token', { required: t('validation.required') })} />
+          <p className="mt-1 text-xs text-gray-500">{t(`servers.tokenHelp.${implementation}`)}</p>
+        </Field>
+        <div className="flex justify-end gap-3 pt-4 border-t border-gray-700">
+          <button type="button" onClick={onClose} className="btn btn-secondary">{t('common.cancel')}</button>
+          <button type="submit" disabled={isSubmitting} className="btn btn-primary">{isSubmitting ? '...' : t('servers.addServer')}</button>
+        </div>
+      </form>
+    </Modal>
   )
 }

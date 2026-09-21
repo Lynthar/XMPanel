@@ -1,6 +1,9 @@
 package adapter
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type Kind int
 
@@ -37,4 +40,18 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error {
 	return e.Err
+}
+
+// NotSupportedError is the shape every unimplemented operation returns.
+func NotSupportedError(op string) error {
+	return &Error{Kind: NotSupported, Op: op, Err: errors.New("operation not supported by this server")}
+}
+
+// AsError returns the *Error in err's chain, if any.
+func AsError(err error) (*Error, bool) {
+	var failure *Error
+	if errors.As(err, &failure) {
+		return failure, true
+	}
+	return nil, false
 }

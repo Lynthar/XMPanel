@@ -21,7 +21,7 @@ export default [
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
       ecmaVersion: 2020,
-      globals: { ...globals.browser, ...globals.node },
+      globals: { ...globals.browser, ...globals.node, ...globals.vitest },
     },
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },
     rules: {

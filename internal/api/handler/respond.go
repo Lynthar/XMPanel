@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
@@ -35,60 +38,76 @@ func writeInternalError(w http.ResponseWriter, r *http.Request, log *zap.Logger,
 	writeError(w, r, http.StatusInternalServerError, i18n.MsgInternalError)
 }
 
-var adapterResponses = map[string]struct {
-	failed, notFound, conflict string
-}{
-	"server.stats":           {failed: "Failed to get server statistics"},
-	"accounts.list":          {failed: "Failed to list users"},
-	"accounts.get":           {failed: "Failed to get user", notFound: i18n.MsgUserNotFound},
-	"accounts.create":        {failed: "Failed to create user", conflict: "User already exists"},
-	"accounts.delete":        {failed: "Failed to delete user", notFound: i18n.MsgUserNotFound},
-	"sessions.list":          {failed: "Failed to list sessions"},
-	"sessions.terminate":     {failed: "Failed to kick session"},
-	"sessions.terminate_all": {failed: "Failed to kick user"},
-	"rooms.list":             {failed: "Failed to list rooms"},
-	"rooms.get":              {failed: "Failed to get room", notFound: "Room not found"},
-	"rooms.create":           {failed: "Failed to create room", conflict: "Room already exists"},
-	"rooms.delete":           {failed: "Failed to delete room", notFound: "Room not found"},
+// upstreamStatus maps an adapter failure to the panel's reply. Upstream
+// credential problems answer 502, never 401 or 403: the SPA would otherwise
+// treat them as its own session expiring and try to refresh the panel JWT.
+func upstreamStatus(failure *adapter.Error) (int, string) {
+	switch failure.Kind {
+	case adapter.NotFound:
+		return http.StatusNotFound, resourceMessage(failure.Op, i18n.MsgAccountNotFound, i18n.MsgSessionNotFound, i18n.MsgRoomNotFound, i18n.MsgUpstreamNotFound)
+	case adapter.Conflict:
+		return http.StatusConflict, resourceMessage(failure.Op, i18n.MsgAccountExists, i18n.MsgUpstreamConflict, i18n.MsgRoomExists, i18n.MsgUpstreamConflict)
+	case adapter.Invalid:
+		return http.StatusBadRequest, i18n.MsgUpstreamInvalid
+	case adapter.NotSupported:
+		return http.StatusNotImplemented, i18n.MsgUpstreamNotSupported
+	case adapter.RateLimited:
+		return http.StatusServiceUnavailable, i18n.MsgUpstreamRateLimited
+	case adapter.Unauthorized, adapter.Forbidden:
+		return http.StatusBadGateway, i18n.MsgUpstreamCredentials
+	case adapter.Unreachable:
+		return http.StatusGatewayTimeout, i18n.MsgUpstreamUnreachable
+	default:
+		return http.StatusBadGateway, i18n.MsgUpstreamFailed
+	}
 }
 
-// XMPP routes expose resource failures only where their response contract
-// defines them; all other upstream failures remain 502, including credentials
-// and unsupported operations, so clients never refresh the panel's JWT for them.
-func writeAdapterError(w http.ResponseWriter, r *http.Request, log *zap.Logger, op string, cause error) {
-	response := adapterResponses[op]
-	status, message := http.StatusBadGateway, response.failed
-	if message == "" {
-		message = i18n.MsgInternalError
+// resourceMessage picks the message for the resource class named by the
+// operation prefix: accounts.*, sessions.*, rooms.* or anything else.
+func resourceMessage(op, account, session, room, other string) string {
+	switch {
+	case strings.HasPrefix(op, "accounts."):
+		return account
+	case strings.HasPrefix(op, "sessions."):
+		return session
+	case strings.HasPrefix(op, "rooms."):
+		return room
 	}
-	fields := []zap.Field{zap.String("operation", op), zap.Error(cause)}
-	var failure *adapter.Error
-	if errors.As(cause, &failure) {
-		fields = append(fields, zap.String("upstream_operation", failure.Op),
-			zap.String("resource", failure.Resource), zap.Int("upstream_status", failure.Status),
-			zap.String("upstream_code", failure.Code))
-		switch failure.Kind {
-		case adapter.NotFound:
-			if response.notFound != "" {
-				status, message = http.StatusNotFound, response.notFound
-			}
-		case adapter.Conflict:
-			if response.conflict != "" {
-				status, message = http.StatusConflict, response.conflict
-			}
-		}
+	return other
+}
+
+// writeAdapterError is the only exit for a failed adapter call. Failures the
+// caller could not have caused (5xx replies) are logged with the upstream
+// operation, status and error code; the client sees only the classified
+// message.
+func writeAdapterError(w http.ResponseWriter, r *http.Request, log *zap.Logger, cause error) {
+	failure, ok := adapter.AsError(cause)
+	if !ok {
+		writeInternalError(w, r, log, "adapter call failed", cause)
+		return
 	}
-	if status == http.StatusBadGateway {
-		log.Error(message, fields...)
+	status, message := upstreamStatus(failure)
+	if failure.Kind == adapter.RateLimited && failure.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(failure.RetryAfter/time.Second)))
+	}
+	if status >= http.StatusInternalServerError {
+		log.Error("upstream operation failed",
+			zap.String("operation", failure.Op), zap.String("resource", failure.Resource),
+			zap.Int("upstream_status", failure.Status), zap.String("upstream_code", failure.Code),
+			zap.Error(cause))
 	}
 	writeError(w, r, status, message)
 }
 
-// writeServerLookupError answers a failed registry lookup: an unknown server id
-// is the caller's 404, anything else is ours.
-func writeServerLookupError(w http.ResponseWriter, r *http.Request, log *zap.Logger, err error) {
+// writeRegistryError answers a failed registry lookup: an unknown server id
+// is the caller's 404, a probe failure is the upstream's, anything else is ours.
+func writeRegistryError(w http.ResponseWriter, r *http.Request, log *zap.Logger, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
+		return
+	}
+	if _, ok := adapter.AsError(err); ok {
+		writeAdapterError(w, r, log, err)
 		return
 	}
 	writeInternalError(w, r, log, "failed to get adapter", err)

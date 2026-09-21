@@ -49,6 +49,13 @@ func main() {
 	if err := store.Migrate(db); err != nil {
 		logger.Fatal("failed to run migrations", zap.Error(err))
 	}
+	keyRing, err := crypto.NewKeyRing(cfg.Database.EncryptionKey)
+	if err != nil {
+		logger.Fatal("invalid database.encryption_key", zap.Error(err))
+	}
+	if err := store.MigrateServerCredentials(db, keyRing); err != nil {
+		logger.Fatal("failed to migrate server credentials", zap.Error(err))
+	}
 
 	// Create password hasher
 	hasher := crypto.NewArgon2Hasher(
@@ -77,7 +84,7 @@ func main() {
 	}
 
 	// Initialize router
-	r := router.New(cfg, db, logger)
+	r := router.New(cfg, db, keyRing, logger)
 	defer r.Close()
 
 	// Configure server

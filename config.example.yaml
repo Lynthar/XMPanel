@@ -12,11 +12,11 @@ server:
 database:
   # XMPanel is PostgreSQL-only.
   dsn: "host=localhost port=5432 user=xmpanel password=xmpanel dbname=xmpanel sslmode=disable"
-  # Base64 32-byte key used by KeyRing (AES-256-GCM) for encrypted columns
-  # like xmpp_servers.api_key_encrypted. Generate with `make generate-key`
-  # or `openssl rand -base64 32`. If left empty, a random key is generated
-  # at startup and printed as a warning — encrypted rows become unreadable
-  # across restarts. ALWAYS SET THIS IN PRODUCTION.
+  # Base64 32-byte key used by KeyRing (AES-256-GCM) for the stored server
+  # credentials (servers.credentials_encrypted). Generate with
+  # `make generate-key` or `openssl rand -base64 32`. Required: the panel
+  # refuses to start without it, because credentials encrypted under a key
+  # that is later lost cannot be recovered.
   encryption_key: ""
   max_open_conns: 25
   max_idle_conns: 5

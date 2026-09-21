@@ -15,38 +15,38 @@ import (
 )
 
 const (
-	healthDBTimeout   = 2 * time.Second
-	healthXMPPTimeout = 2 * time.Second
+	healthDBTimeout      = 2 * time.Second
+	healthBackendTimeout = 2 * time.Second
 )
 
-type xmppSummary struct {
+type backendSummary struct {
 	OK     int `json:"ok"`
 	Failed int `json:"failed"`
 }
 
 type healthResponse struct {
-	Status   string       `json:"status"` // "ok" | "degraded" | "error"
-	Database bool         `json:"database"`
-	XMPP     *xmppSummary `json:"xmpp,omitempty"`
+	Status   string          `json:"status"` // "ok" | "degraded" | "error"
+	Database bool            `json:"database"`
+	Backends *backendSummary `json:"backends,omitempty"`
 }
 
 // newHealthHandler returns the public liveness probe handler. It pings the
-// PostgreSQL connection and every enabled XMPP server to summarize
+// PostgreSQL connection and probes every enabled backend to summarize
 // reachability for monitoring tools.
 //
 // Response shape is intentionally minimal: only aggregate ok/failed counts
-// for XMPP, never per-server names, IDs, IPs, or latencies. /health is a
+// for backends, never per-server names, IDs, IPs, or latencies. /health is a
 // public endpoint and detailed disclosure would help fingerprint the
 // deployment.
 //
 // HTTP status:
-//   - 200 + status=ok        database reachable, all XMPP servers responded.
-//   - 200 + status=degraded  database reachable but some XMPP servers failed.
+//   - 200 + status=ok        database reachable, all backends responded.
+//   - 200 + status=degraded  database reachable but some backends failed.
 //     The panel itself is healthy, so systemd liveness
 //     should not restart on this.
 //   - 503 + status=error     database unreachable; panel is broken.
 //
-// Each probe has a 2s timeout. XMPP probes run concurrently so worst-case
+// Each probe has a 2s timeout. Backend probes run concurrently so worst-case
 // total latency is ~2s regardless of server count.
 func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -67,12 +67,12 @@ func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Log
 			return
 		}
 
-		// 2. List enabled XMPP server IDs. A query failure here doesn't fail
+		// 2. List enabled server IDs. A query failure here doesn't fail
 		// the whole probe — DB ping already showed connectivity, this is just
 		// missing a non-critical breakdown.
-		ids, err := listEnabledXMPPServerIDs(db)
+		ids, err := listEnabledServerIDs(db)
 		if err != nil {
-			logger.Warn("health check: failed to list XMPP servers", zap.Error(err))
+			logger.Warn("health check: failed to list servers", zap.Error(err))
 			_ = json.NewEncoder(w).Encode(healthResponse{
 				Status:   "ok",
 				Database: true,
@@ -81,7 +81,7 @@ func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Log
 		}
 
 		if len(ids) == 0 {
-			// No XMPP servers configured — valid state, omit the xmpp block.
+			// No servers configured — valid state, omit the backends block.
 			_ = json.NewEncoder(w).Encode(healthResponse{
 				Status:   "ok",
 				Database: true,
@@ -89,7 +89,7 @@ func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Log
 			return
 		}
 
-		summary := pingXMPPServers(r.Context(), adapters, ids)
+		summary := probeServers(r.Context(), adapters, ids)
 		status := "ok"
 		if summary.Failed > 0 {
 			status = "degraded"
@@ -97,15 +97,15 @@ func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Log
 		_ = json.NewEncoder(w).Encode(healthResponse{
 			Status:   status,
 			Database: true,
-			XMPP:     &summary,
+			Backends: &summary,
 		})
 	}
 }
 
-// listEnabledXMPPServerIDs returns just the IDs of servers with enabled=true.
+// listEnabledServerIDs returns just the IDs of servers with enabled=true.
 // The registry loads the full row only when constructing a client.
-func listEnabledXMPPServerIDs(db *store.DB) ([]int64, error) {
-	rows, err := db.Query(`SELECT id FROM xmpp_servers WHERE enabled = TRUE`)
+func listEnabledServerIDs(db *store.DB) ([]int64, error) {
+	rows, err := db.Query(`SELECT id FROM servers WHERE enabled = TRUE`)
 	if err != nil {
 		return nil, err
 	}
@@ -121,24 +121,25 @@ func listEnabledXMPPServerIDs(db *store.DB) ([]int64, error) {
 	return ids, rows.Err()
 }
 
-// pingXMPPServers probes each server concurrently with a per-probe timeout.
+// probeServers probes each server concurrently with a per-probe timeout.
 // Returns aggregate counts only — the caller surfaces ok/failed in the public
-// response, never per-server detail.
-func pingXMPPServers(ctx context.Context, adapters *registry.Registry, ids []int64) xmppSummary {
+// response, never per-server detail. A server whose last probe failed is
+// answered from the registry's cache until its retry window passes.
+func probeServers(ctx context.Context, adapters *registry.Registry, ids []int64) backendSummary {
 	var ok, failed int64
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Add(1)
 		go func(serverID int64) {
 			defer wg.Done()
-			pingCtx, cancel := context.WithTimeout(ctx, healthXMPPTimeout)
+			probeCtx, cancel := context.WithTimeout(ctx, healthBackendTimeout)
 			defer cancel()
-			a, err := adapters.Get(pingCtx, serverID)
+			a, _, err := adapters.Get(probeCtx, serverID)
 			if err != nil {
 				atomic.AddInt64(&failed, 1)
 				return
 			}
-			if err := a.Ping(pingCtx); err != nil {
+			if _, err := a.Probe(probeCtx); err != nil {
 				atomic.AddInt64(&failed, 1)
 				return
 			}
@@ -146,5 +147,5 @@ func pingXMPPServers(ctx context.Context, adapters *registry.Registry, ids []int
 		}(id)
 	}
 	wg.Wait()
-	return xmppSummary{OK: int(ok), Failed: int(failed)}
+	return backendSummary{OK: int(ok), Failed: int(failed)}
 }

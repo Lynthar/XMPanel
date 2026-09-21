@@ -1,4 +1,4 @@
-.PHONY: all build run dev test clean frontend backend deps
+.PHONY: all build run dev dev-frontend test test-go test-web test-coverage smoke clean frontend backend deps generate-key lint fmt help
 
 # Variables
 BINARY_NAME=xmpanel
@@ -11,6 +11,9 @@ GOBUILD=$(GOCMD) build
 GOTEST=$(GOCMD) test
 GOMOD=$(GOCMD) mod
 GORUN=$(GOCMD) run
+# Go packages of this repository; ./... would also pick up Go files that ship
+# inside web/node_modules.
+GOPKGS=./cmd/... ./internal/...
 
 all: deps build
 
@@ -46,13 +49,22 @@ dev:
 	cd $(WEB_DIR) && npm run dev
 
 # Run tests
-test:
-	$(GOTEST) -v ./...
+test: test-go test-web
+
+test-go:
+	$(GOTEST) -v $(GOPKGS)
+
+test-web:
+	cd $(WEB_DIR) && npm test
 
 # Run tests with coverage
 test-coverage:
-	$(GOTEST) -v -coverprofile=coverage.out ./...
+	$(GOTEST) -v -coverprofile=coverage.out $(GOPKGS)
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
+
+# Run the smoke tests against real servers started by docker compose
+smoke:
+	$(GOTEST) -v -tags smoke -count=1 ./smoke/...
 
 # Clean build artifacts
 clean:
@@ -67,12 +79,12 @@ generate-key:
 
 # Lint
 lint:
-	golangci-lint run ./...
+	golangci-lint run $(GOPKGS)
 	cd $(WEB_DIR) && npm run lint
 
 # Format code
 fmt:
-	$(GOCMD) fmt ./...
+	$(GOCMD) fmt $(GOPKGS)
 	cd $(WEB_DIR) && npm run format
 
 # Help
@@ -86,7 +98,8 @@ help:
 	@echo "  run          - Run backend"
 	@echo "  dev-frontend - Run frontend dev server"
 	@echo "  dev          - Run both in development mode"
-	@echo "  test         - Run tests"
+	@echo "  test         - Run Go and frontend tests"
+	@echo "  smoke        - Run smoke tests against docker compose servers"
 	@echo "  clean        - Clean build artifacts"
 	@echo "  lint         - Run linters"
 	@echo "  fmt          - Format code"

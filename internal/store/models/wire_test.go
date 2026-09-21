@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/xmpanel/xmpanel/internal/adapter"
 )
 
 // The Go constants and struct tags in this package are the source of truth;
@@ -193,13 +195,34 @@ func jsonFields(v interface{}) []string {
 }
 
 func TestWireTypesMatchFrontend(t *testing.T) {
-	sameSet(t, "models.XMPPSession json", jsonFields(XMPPSession{}), "lib/api.ts XMPPSession", tsFields(t, "XMPPSession"))
 	sameSet(t, "models.User json", jsonFields(User{}), "lib/api.ts User", tsFields(t, "User"))
-	sameSet(t, "models.XMPPServer json", jsonFields(XMPPServer{}), "lib/api.ts XMPPServer", tsFields(t, "XMPPServer"))
+	sameSet(t, "models.Server json", jsonFields(Server{}), "lib/api.ts Server", tsFields(t, "Server"))
+	sameSet(t, "adapter.Account json", jsonFields(adapter.Account{}), "lib/api.ts Account", tsFields(t, "Account"))
+	sameSet(t, "adapter.XMPPAccountFacts json", jsonFields(adapter.XMPPAccountFacts{}), "lib/api.ts XMPPAccountFacts", tsFields(t, "XMPPAccountFacts"))
+	sameSet(t, "adapter.Session json", jsonFields(adapter.Session{}), "lib/api.ts Session", tsFields(t, "Session"))
+	sameSet(t, "adapter.XMPPSessionFacts json", jsonFields(adapter.XMPPSessionFacts{}), "lib/api.ts XMPPSessionFacts", tsFields(t, "XMPPSessionFacts"))
+	sameSet(t, "adapter.Room json", jsonFields(adapter.Room{}), "lib/api.ts Room", tsFields(t, "Room"))
+	sameSet(t, "adapter.XMPPRoomFacts json", jsonFields(adapter.XMPPRoomFacts{}), "lib/api.ts XMPPRoomFacts", tsFields(t, "XMPPRoomFacts"))
+	sameSet(t, "adapter.Stats json", jsonFields(adapter.Stats{}), "lib/api.ts Stats", tsFields(t, "Stats"))
+	sameSet(t, "adapter.ServerInfo json", jsonFields(adapter.ServerInfo{}), "lib/api.ts ServerInfo", tsFields(t, "ServerInfo"))
+	sameSet(t, "adapter.CreateAccount json", jsonFields(adapter.CreateAccount{}), "lib/api.ts CreateAccountRequest", tsFields(t, "CreateAccountRequest"))
+	sameSet(t, "adapter.CreateRoom json", jsonFields(adapter.CreateRoom{}), "lib/api.ts CreateRoomRequest", tsFields(t, "CreateRoomRequest"))
+	sameSet(t, "models.CreateServerRequest json", jsonFields(CreateServerRequest{}), "lib/api.ts CreateServerRequest", tsFields(t, "CreateServerRequest"))
 }
 
-func TestServerTypesMatchFrontend(t *testing.T) {
-	values := constValues(t, "xmpp.go", "ServerType")
-	labels := block(t, readWeb(t, "lib/api.ts"), "export const serverTypes", "}")
-	sameSet(t, "ServerType", values, "lib/api.ts serverTypes", matches(`(?m)^\s+(\w+):`, labels))
+// The implementation table and the capability list are the only protocol
+// facts the frontend hard-codes; both are copies of Go constants.
+func TestImplementationsAndCapabilitiesMatchFrontend(t *testing.T) {
+	impls := constValues(t, "../../adapter/types.go", "Implementation")
+	labels := block(t, readWeb(t, "lib/api.ts"), "export const implementations", "}")
+	sameSet(t, "adapter.Implementation", impls, "lib/api.ts implementations", matches(`(?m)^\s+'?([\w-]+)'?:`, labels))
+
+	caps := make([]string, 0, len(adapter.AllCapabilities))
+	for _, c := range adapter.AllCapabilities {
+		caps = append(caps, string(c))
+	}
+	sameSet(t, "adapter.AllCapabilities", caps, "lib/api.ts Capability", matches(`'([a-z_.]+)'`, block(t, readWeb(t, "lib/api.ts"), "export type Capability =", "\n")))
+	for _, file := range []string{"en.json", "zh.json"} {
+		sameSet(t, "adapter.Implementation", impls, file+" servers.implementations", localeKeys(t, file, "servers", "implementations"))
+	}
 }

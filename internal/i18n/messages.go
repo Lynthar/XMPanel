@@ -58,16 +58,28 @@ const (
 	MsgServerTestSuccess = "server.test_success"
 	MsgServerTestFailed  = "server.test_failed"
 
-	// XMPP messages
-	MsgXMPPUserCreated    = "xmpp.user.created"
-	MsgXMPPUserDeleted    = "xmpp.user.deleted"
-	MsgXMPPUserKicked     = "xmpp.user.kicked"
-	MsgXMPPUserNotFound   = "xmpp.user.not_found"
-	MsgXMPPRoomCreated    = "xmpp.room.created"
-	MsgXMPPRoomDeleted    = "xmpp.room.deleted"
-	MsgXMPPRoomNotFound   = "xmpp.room.not_found"
-	MsgXMPPSessionKicked  = "xmpp.session.kicked"
-	MsgXMPPOperationError = "xmpp.operation_error"
+	// Backend (managed server) messages
+	MsgAccountCreated        = "backend.account.created"
+	MsgAccountDeleted        = "backend.account.deleted"
+	MsgAccountUpdated        = "backend.account.updated"
+	MsgAccountNotFound       = "backend.account.not_found"
+	MsgAccountExists         = "backend.account.exists"
+	MsgRoomCreated           = "backend.room.created"
+	MsgRoomDeleted           = "backend.room.deleted"
+	MsgRoomNotFound          = "backend.room.not_found"
+	MsgRoomExists            = "backend.room.exists"
+	MsgSessionTerminated     = "backend.session.terminated"
+	MsgSessionsTerminated    = "backend.sessions.terminated"
+	MsgSessionNotFound       = "backend.session.not_found"
+	MsgUpstreamNotFound      = "backend.upstream.not_found"
+	MsgUpstreamConflict      = "backend.upstream.conflict"
+	MsgUpstreamInvalid       = "backend.upstream.invalid"
+	MsgUpstreamRateLimited   = "backend.upstream.rate_limited"
+	MsgUpstreamNotSupported  = "backend.upstream.not_supported"
+	MsgUpstreamCredentials   = "backend.upstream.credentials"
+	MsgUpstreamUnreachable   = "backend.upstream.unreachable"
+	MsgUpstreamFailed        = "backend.upstream.failed"
+	MsgUnsupportedServerType = "server.unsupported_type"
 
 	// Common messages
 	MsgInternalError     = "error.internal"
@@ -134,16 +146,28 @@ var messages = map[Locale]map[string]string{
 		MsgServerTestSuccess: "Connection test successful",
 		MsgServerTestFailed:  "Connection test failed",
 
-		// XMPP
-		MsgXMPPUserCreated:    "XMPP user created successfully",
-		MsgXMPPUserDeleted:    "XMPP user deleted successfully",
-		MsgXMPPUserKicked:     "User kicked from server",
-		MsgXMPPUserNotFound:   "XMPP user not found",
-		MsgXMPPRoomCreated:    "Chat room created successfully",
-		MsgXMPPRoomDeleted:    "Chat room deleted successfully",
-		MsgXMPPRoomNotFound:   "Chat room not found",
-		MsgXMPPSessionKicked:  "Session terminated",
-		MsgXMPPOperationError: "XMPP operation failed",
+		// Backend
+		MsgAccountCreated:        "Account created",
+		MsgAccountDeleted:        "Account deleted",
+		MsgAccountUpdated:        "Account updated",
+		MsgAccountNotFound:       "Account not found",
+		MsgAccountExists:         "Account already exists",
+		MsgRoomCreated:           "Room created",
+		MsgRoomDeleted:           "Room deleted",
+		MsgRoomNotFound:          "Room not found",
+		MsgRoomExists:            "Room already exists",
+		MsgSessionTerminated:     "Session terminated",
+		MsgSessionsTerminated:    "All sessions terminated",
+		MsgSessionNotFound:       "Session not found",
+		MsgUpstreamNotFound:      "Not found on the server",
+		MsgUpstreamConflict:      "Already exists on the server",
+		MsgUpstreamInvalid:       "The server rejected the request",
+		MsgUpstreamRateLimited:   "The server is rate limiting requests",
+		MsgUpstreamNotSupported:  "This server does not support the operation",
+		MsgUpstreamCredentials:   "The server rejected the stored credentials",
+		MsgUpstreamUnreachable:   "The server could not be reached",
+		MsgUpstreamFailed:        "The server failed to complete the operation",
+		MsgUnsupportedServerType: "Unsupported server protocol or implementation",
 
 		// Common errors
 		MsgInternalError:     "Internal server error",
@@ -208,15 +232,27 @@ var messages = map[Locale]map[string]string{
 		MsgServerTestFailed:  "连接测试失败",
 
 		// XMPP
-		MsgXMPPUserCreated:    "XMPP用户创建成功",
-		MsgXMPPUserDeleted:    "XMPP用户删除成功",
-		MsgXMPPUserKicked:     "用户已被踢出服务器",
-		MsgXMPPUserNotFound:   "XMPP用户不存在",
-		MsgXMPPRoomCreated:    "聊天室创建成功",
-		MsgXMPPRoomDeleted:    "聊天室删除成功",
-		MsgXMPPRoomNotFound:   "聊天室不存在",
-		MsgXMPPSessionKicked:  "会话已终止",
-		MsgXMPPOperationError: "XMPP操作失败",
+		MsgAccountCreated:        "账号已创建",
+		MsgAccountDeleted:        "账号已删除",
+		MsgAccountUpdated:        "账号已更新",
+		MsgAccountNotFound:       "账号不存在",
+		MsgAccountExists:         "账号已存在",
+		MsgRoomCreated:           "房间已创建",
+		MsgRoomDeleted:           "房间已删除",
+		MsgRoomNotFound:          "房间不存在",
+		MsgRoomExists:            "房间已存在",
+		MsgSessionTerminated:     "会话已终止",
+		MsgSessionsTerminated:    "全部会话已终止",
+		MsgSessionNotFound:       "会话不存在",
+		MsgUpstreamNotFound:      "服务器上不存在该对象",
+		MsgUpstreamConflict:      "服务器上已存在该对象",
+		MsgUpstreamInvalid:       "服务器拒绝了该请求",
+		MsgUpstreamRateLimited:   "服务器正在限流",
+		MsgUpstreamNotSupported:  "该服务器不支持此操作",
+		MsgUpstreamCredentials:   "服务器拒绝了保存的凭据",
+		MsgUpstreamUnreachable:   "无法连接到服务器",
+		MsgUpstreamFailed:        "服务器未能完成该操作",
+		MsgUnsupportedServerType: "不支持的服务器协议或实现",
 
 		// Common errors
 		MsgInternalError:     "服务器内部错误",
