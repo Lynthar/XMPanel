@@ -287,35 +287,48 @@ func (a *Adapter) GetRoom(ctx context.Context, id string) (*adapter.Room, error)
 	if err != nil {
 		return nil, err
 	}
-	room := &adapter.Room{ID: id, Name: name, XMPP: &adapter.XMPPRoomFacts{}}
-	var options []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
+	options, err := roomOptions(resp)
+	if err != nil {
+		return nil, a.parseError("rooms.get", err)
 	}
-	if json.Unmarshal(resp, &options) == nil {
-		for _, opt := range options {
-			switch opt.Name {
-			case "title":
-				if opt.Value != "" {
-					room.Name = opt.Value
-				}
-			case "description":
-				room.XMPP.Description = opt.Value
-			case "public":
-				room.Public = opt.Value == "true"
-			case "persistent":
-				room.XMPP.Persistent = opt.Value == "true"
-			case "members_only":
-				room.XMPP.MembersOnly = opt.Value == "true"
-			case "moderated":
-				room.XMPP.Moderated = opt.Value == "true"
-			}
-		}
+	// A missing room answers 200 with no options at all rather than an error.
+	if len(options) == 0 {
+		return nil, &adapter.Error{Kind: adapter.NotFound, Op: "rooms.get", Resource: id, Err: errors.New("room not found")}
+	}
+	room := &adapter.Room{ID: id, Name: name, Public: options["public"] == "true", XMPP: &adapter.XMPPRoomFacts{
+		Description: options["description"],
+		Persistent:  options["persistent"] == "true",
+		MembersOnly: options["members_only"] == "true",
+		Moderated:   options["moderated"] == "true",
+	}}
+	if title := options["title"]; title != "" {
+		room.Name = title
 	}
 	if count, err := a.intCommand(ctx, "rooms.get", "get_room_occupants_number", map[string]string{"name": name, "service": service}); err == nil {
 		room.Members = count
 	}
 	return room, nil
+}
+
+// roomOptions accepts both encodings of get_room_options: a list of
+// {name, value} pairs (API v1+) or one object keyed by option name (v0).
+func roomOptions(body []byte) (map[string]string, error) {
+	var pairs []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(body, &pairs) == nil {
+		options := make(map[string]string, len(pairs))
+		for _, p := range pairs {
+			options[p.Name] = p.Value
+		}
+		return options, nil
+	}
+	var options map[string]string
+	if err := json.Unmarshal(body, &options); err != nil {
+		return nil, fmt.Errorf("unexpected get_room_options shape: %w", err)
+	}
+	return options, nil
 }
 
 func (a *Adapter) CreateRoom(ctx context.Context, req adapter.CreateRoom) (*adapter.Room, error) {
@@ -389,14 +402,25 @@ func (a *Adapter) splitAccount(id string) (localpart, domain string) {
 	return localpart, domain
 }
 
+// intCommand reads a single-integer result. Depending on the API version the
+// unversioned /api URL selects, mod_http_api sends it bare (v1+) or wrapped
+// in a one-key object such as {"stat": 3} (v0, the default on 23.x), so both
+// shapes are accepted.
 func (a *Adapter) intCommand(ctx context.Context, op, command string, args map[string]string) (int, error) {
 	resp, err := a.doRequest(ctx, op, command, args)
 	if err != nil {
 		return 0, err
 	}
 	var value int
-	if err := json.Unmarshal(resp, &value); err != nil {
-		return 0, a.parseError(op, err)
+	if json.Unmarshal(resp, &value) == nil {
+		return value, nil
+	}
+	var wrapped map[string]int
+	if err := json.Unmarshal(resp, &wrapped); err != nil || len(wrapped) != 1 {
+		return 0, a.parseError(op, fmt.Errorf("not an integer result: %s", strings.TrimSpace(string(resp))))
+	}
+	for _, v := range wrapped {
+		value = v
 	}
 	return value, nil
 }
@@ -417,16 +441,17 @@ func (a *Adapter) doRequest(ctx context.Context, op, command string, args map[st
 		}
 	}()
 
-	var bodyReader io.Reader
-	if args != nil {
-		jsonBody, err := json.Marshal(args)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		bodyReader = bytes.NewReader(jsonBody)
+	// mod_http_api answers 400 to a POST without a JSON body even for
+	// commands that take no arguments, so an empty object is always sent.
+	if args == nil {
+		args = map[string]string{}
+	}
+	jsonBody, err := json.Marshal(args)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/"+command, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/"+command, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

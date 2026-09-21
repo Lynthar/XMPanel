@@ -14,9 +14,9 @@ Self-hosted web admin panel for XMPP servers (Prosody, ejabberd), with RBAC, MFA
 English | [简体中文](README.zh-CN.md)
 
 > **Under construction.** No release yet — you build it from source. The Prosody
-> side has been deployed and used against a real server; the ejabberd adapter is
-> written but hasn't been verified against one. Watch the repository if that's
-> interesting, but don't expect a packaged product.
+> side has been deployed and used against a real server; both adapters are
+> exercised against real servers in CI (`smoke/`). Watch the repository if
+> that's interesting, but don't expect a packaged product.
 
 It sits outside the servers, with each one registered separately and driven
 through a protocol-neutral adapter, so it can manage several at once. It
@@ -114,18 +114,16 @@ Set the JWT secret before you put real data in; the encryption key is checked at
 
 ## Limitations
 
-- **The ejabberd adapter is unverified.** It's written against the documented
-  API but hasn't been run against a real ejabberd server, so its stated
-  capabilities are intent, not confirmed behaviour.
-- **Room management only exists on the ejabberd side** — which is the
-  unverified one. Prosody's upstream API doesn't expose rooms.
+- **Room management only exists on the ejabberd side.** Prosody's upstream
+  API doesn't expose rooms.
 - **Listings are paged in the panel, not by the server.** Both XMPP adapters
   fetch the full account or session list and page it in memory, so very large
   servers are slow to list.
 - **No Matrix backend yet.** The adapter interface and the data model are
   protocol-neutral, but only Prosody and ejabberd are implemented.
 - **PostgreSQL only.** No SQLite, no MySQL.
-- **No Dockerfile and no compose file.** Source build and a systemd unit.
+- **No container image for the panel itself.** Source build and a systemd
+  unit; the compose file under `smoke/` only starts test servers.
 - **Refreshing in several browser tabs at once trips the token reuse detector**
   and signs that user out everywhere.
 

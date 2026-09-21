@@ -1,0 +1,26 @@
+# Real servers for `make smoke`. Nothing here is a deployment artefact: the
+# accounts, tokens and ports exist only for the test run.
+services:
+  prosody:
+    build: ./prosody
+    ports:
+      - "127.0.0.1:15222:5222"
+      - "127.0.0.1:15280:5280"
+    volumes:
+      - ../prosody/mod_admin_panel.lua:/etc/prosody/modules/mod_admin_panel.lua:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /var/lib/prosody/admin-token.txt"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  ejabberd:
+    build: ./ejabberd
+    ports:
+      - "127.0.0.1:15223:5222"
+      - "127.0.0.1:15281:5280"
+    healthcheck:
+      test: ["CMD-SHELL", "runuser -u ejabberd -- ejabberdctl check_account admin example.com"]
+      interval: 3s
+      timeout: 5s
+      retries: 60

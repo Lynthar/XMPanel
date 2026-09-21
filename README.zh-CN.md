@@ -14,7 +14,7 @@ XMPP 服务器（Prosody、ejabberd）的自托管 Web 管理面板：账号与�
 [English](README.md) | 简体中文
 
 > **施工中。** 还没有发过版，只能从源码构建。Prosody 这一侧已经在真实服务器上部署使用过；
-> ejabberd 适配器代码写好了，但**没有对着真实的 ejabberd 验证过**。觉得有意思可以先关注，
+> 两个适配器都在 CI 里对着真实服务器跑 smoke（`smoke/`）。觉得有意思可以先关注，
 > 但别指望拿到一个打包好的产品。
 
 它挂在服务器外面，每台单独登记、各自走一个协议中立的适配器，所以可以同时管好几台。
@@ -102,15 +102,12 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ## 能力边界
 
-- **ejabberd 适配器未经验证。** 它是照着文档写的，但没在真实的 ejabberd 上跑过，
-  所以它声明的能力只能算「打算这么做」，不是「确认能做」。
-- **房间管理只存在于 ejabberd 那一侧**——也就是未验证的那一侧。Prosody 的上游 API
-  不暴露房间。
+- **房间管理只存在于 ejabberd 那一侧。** Prosody 的上游 API 不暴露房间。
 - **分页是面板做的，不是服务器做的。** 两个 XMPP 适配器都是取全表再在内存里分页，
   账号特别多的服务器列表会慢。
 - **还没有 Matrix 后端。** 适配器接口和数据模型是协议中立的，但目前只实现了 Prosody 和 ejabberd。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
-- **没有 Dockerfile 也没有 compose。** 源码构建加 systemd。
+- **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
 - **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。
 
 ## 安全

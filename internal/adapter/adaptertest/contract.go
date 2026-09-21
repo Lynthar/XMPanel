@@ -85,20 +85,7 @@ func Run(t *testing.T, c Config) {
 
 	t.Run("capability consistency", func(t *testing.T) {
 		a, pop := fresh(t)
-		for _, cap := range adapter.AllCapabilities {
-			if cap == adapter.CapAccountsSearch {
-				continue // server-side search is indistinguishable from local filtering from outside
-			}
-			err := invoke(ctx, a, cap, pop)
-			failure, _ := adapter.AsError(err)
-			unsupported := failure != nil && failure.Kind == adapter.NotSupported
-			if a.Capabilities().Has(cap) && unsupported {
-				t.Errorf("%s is declared but answered NotSupported", cap)
-			}
-			if !a.Capabilities().Has(cap) && !unsupported {
-				t.Errorf("%s is not declared but did not answer NotSupported: %v", cap, err)
-			}
-		}
+		CheckConsistency(t, ctx, a, pop)
 	})
 
 	t.Run("stats", func(t *testing.T) {
@@ -360,6 +347,28 @@ func pageScenario(t *testing.T, total int, list func(adapter.ListQuery) ([]strin
 	}
 	if _, _, _, err := list(adapter.ListQuery{Limit: 1, Cursor: "not-a-cursor"}); !isKind(err, adapter.Invalid) {
 		t.Errorf("bad cursor: %v", err)
+	}
+}
+
+// CheckConsistency invokes every capability's operation and fails when a
+// declared one answers NotSupported or an undeclared one answers anything
+// else. Search is skipped: server-side search cannot be told from local
+// filtering from outside.
+func CheckConsistency(t *testing.T, ctx context.Context, a adapter.Adapter, pop Population) {
+	t.Helper()
+	for _, cap := range adapter.AllCapabilities {
+		if cap == adapter.CapAccountsSearch {
+			continue
+		}
+		err := invoke(ctx, a, cap, pop)
+		failure, _ := adapter.AsError(err)
+		unsupported := failure != nil && failure.Kind == adapter.NotSupported
+		if a.Capabilities().Has(cap) && unsupported {
+			t.Errorf("%s is declared but answered NotSupported", cap)
+		}
+		if !a.Capabilities().Has(cap) && !unsupported {
+			t.Errorf("%s is not declared but did not answer NotSupported: %v", cap, err)
+		}
 	}
 }
 

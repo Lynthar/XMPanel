@@ -19,10 +19,12 @@ const (
 	fakeToken   = "ejabberd-oauth-token"
 )
 
-// fakeEjabberd answers mod_http_api commands with the API v1+ encoding
-// (bare scalars, objects for named tuples) and the status codes
-// format_command_result maps: 409 for conflict, 404 for not_found, 500 for
-// any other command error, each with {"status","code","message"}.
+// fakeEjabberd answers mod_http_api commands the way ejabberd 23.10 did in
+// the smoke run: a POST must carry a JSON body, a named integer result comes
+// wrapped as {"name": N} while a rescode is bare, get_room_options is one
+// object and answers {} for a missing room, and command errors carry
+// {"status","code","message"} with 409 for conflict, 404 for not_found and
+// 500 for the rest.
 type fakeEjabberd struct {
 	mu       sync.Mutex
 	fail     int
@@ -88,7 +90,10 @@ func (f *fakeEjabberd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	command := strings.TrimPrefix(r.URL.Path, "/api/")
 	args := map[string]string{}
-	_ = json.NewDecoder(r.Body).Decode(&args)
+	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 	f.calls[command] = args
 	reply := func(v interface{}) {
 		w.Header().Set("Content-Type", "application/json")
@@ -103,15 +108,15 @@ func (f *fakeEjabberd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "registered_vhosts":
 		reply([]string{fakeDomain})
 	case "connected_users_number":
-		reply(len(f.sessions))
+		reply(map[string]int{"num_sessions": len(f.sessions)})
 	case "incoming_s2s_number":
-		reply(3)
+		reply(map[string]int{"s2s_incoming": 3})
 	case "stats":
 		switch args["name"] {
 		case "registeredusers":
-			reply(len(f.users))
+			reply(map[string]int{"stat": len(f.users)})
 		case "uptimeseconds":
-			reply(4242)
+			reply(map[string]int{"stat": 4242})
 		default:
 			commandError(w, http.StatusInternalServerError, 0, "Unknown stat")
 		}
@@ -194,26 +199,18 @@ func (f *fakeEjabberd) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "get_room_options":
 		room, ok := f.rooms[roomID]
 		if !ok {
-			commandError(w, http.StatusInternalServerError, 0, "Room not found")
+			reply(map[string]string{})
 			return
 		}
-		out := []map[string]string{}
-		for k, v := range room {
-			out = append(out, map[string]string{"name": k, "value": v})
-		}
-		reply(out)
+		reply(room)
 	case "get_room_occupants_number":
-		if _, ok := f.rooms[roomID]; !ok {
-			commandError(w, http.StatusInternalServerError, 0, "Room not found")
-			return
-		}
-		reply(7)
+		reply(map[string]int{"occupants": 7})
 	case "create_room":
 		if _, ok := f.rooms[roomID]; ok {
 			commandError(w, http.StatusInternalServerError, 0, "Room already exists")
 			return
 		}
-		f.rooms[roomID] = map[string]string{}
+		f.rooms[roomID] = map[string]string{"title": "", "public": "false", "persistent": "false", "members_only": "false", "moderated": "true"}
 		reply(0)
 	case "change_room_option":
 		room, ok := f.rooms[roomID]
@@ -252,6 +249,18 @@ func TestContract(t *testing.T) {
 		New:      newAdapter,
 		Expected: capabilities,
 	})
+}
+
+// roomOptions must also read the API v1+ list-of-pairs encoding, which the
+// unversioned URL selects on newer releases.
+func TestRoomOptionsAcceptPairs(t *testing.T) {
+	options, err := roomOptions([]byte(`[{"name":"public","value":"true"},{"name":"title","value":"T"}]`))
+	if err != nil || options["public"] != "true" || options["title"] != "T" {
+		t.Fatalf("pairs = %v, %v", options, err)
+	}
+	if _, err := roomOptions([]byte(`"nope"`)); err == nil {
+		t.Fatal("a string is not an options encoding")
+	}
 }
 
 // Upstream argument names are part of the contract with mod_admin_extra and

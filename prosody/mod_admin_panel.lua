@@ -32,6 +32,7 @@ local jid_lib = require "util.jid"
 local jid_join = jid_lib.join
 local jid_bare = jid_lib.bare
 local json = require "util.json"
+local array = require "util.array"
 local usermanager = require "core.usermanager"
 
 local tokens = module:depends("tokenauth")
@@ -130,10 +131,11 @@ local function user_is_enabled(username)
     return enabled ~= false
 end
 
+-- Listings are util.array so an empty result encodes as [] rather than {}.
 local function list_users(event)
     local response = event.response
     response.headers.content_type = "application/json"
-    local out = {}
+    local out = array()
     for username in usermanager.users(module.host) do
         out[#out + 1] = {
             username = username;
@@ -215,7 +217,7 @@ end
 local function list_sessions(event)
     local response = event.response
     response.headers.content_type = "application/json"
-    local out = {}
+    local out = array()
     for _, session in pairs(prosody.full_sessions) do
         if session.host == module.host then
             out[#out + 1] = session_to_json(session)

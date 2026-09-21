@@ -277,6 +277,7 @@ func (a *Adapter) fetchAccounts(ctx context.Context, op string) ([]adapter.Accou
 	if err != nil {
 		return nil, err
 	}
+	resp = emptyObjectAsList(resp)
 	var raw []struct {
 		Username string `json:"username"`
 		JID      string `json:"jid"`
@@ -306,6 +307,7 @@ func (a *Adapter) fetchSessions(ctx context.Context, op string) ([]adapter.Sessi
 	if err != nil {
 		return nil, err
 	}
+	resp = emptyObjectAsList(resp)
 	var raw []struct {
 		JID         string `json:"jid"`
 		BareJID     string `json:"bare_jid"`
@@ -337,6 +339,16 @@ func (a *Adapter) fetchSessions(ctx context.Context, op string) ([]adapter.Sessi
 		}
 	}
 	return sessions, nil
+}
+
+// emptyObjectAsList treats {} as []: Lua cannot tell an empty array from an
+// empty object, and mod_admin_panel builds before 2026-09-21 encoded empty
+// listings as {}.
+func emptyObjectAsList(body []byte) []byte {
+	if strings.TrimSpace(string(body)) == "{}" {
+		return []byte("[]")
+	}
+	return body
 }
 
 // localpart accepts a bare JID on this VirtualHost, or a bare localpart.

@@ -107,3 +107,27 @@ jobs:
 
       - name: Build
         run: npx vite build
+
+  smoke:
+    name: Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The test starts smoke/docker-compose.yml itself (real Prosody 13 and
+      # ejabberd built from apt); the containers are kept so the log step can
+      # read them, the runner is discarded anyway.
+      - name: Smoke against real servers
+        env:
+          XMPANEL_SMOKE_KEEP: "1"
+        run: go test -v -count=1 -tags smoke ./smoke/...
+
+      - name: Server logs on failure
+        if: failure()
+        run: docker compose -f smoke/docker-compose.yml logs

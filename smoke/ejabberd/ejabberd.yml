@@ -1,0 +1,99 @@
+# Smoke configuration: one host, plaintext c2s, mod_http_api on 5280 with
+# OAuth bearer tokens for admin@example.com. Mnesia storage, nothing persists.
+hosts:
+  - example.com
+
+loglevel: info
+
+listen:
+  - port: 5222
+    ip: "::"
+    module: ejabberd_c2s
+    max_stanza_size: 262144
+    shaper: c2s_shaper
+    access: c2s
+    starttls_required: false
+  - port: 5280
+    ip: "::"
+    module: ejabberd_http
+    request_handlers:
+      /api: mod_http_api
+      /oauth: ejabberd_oauth
+
+acl:
+  admin:
+    user:
+      - admin@example.com
+  local:
+    user_regexp: ""
+  loopback:
+    ip:
+      - 127.0.0.0/8
+      - ::1/128
+
+access_rules:
+  local:
+    allow: local
+  c2s:
+    deny: blocked
+    allow: all
+  configure:
+    allow: admin
+  muc_create:
+    allow: local
+  register:
+    allow: all
+  trusted_network:
+    allow: loopback
+
+api_permissions:
+  "admin over http":
+    who:
+      access:
+        allow:
+          - acl: admin
+      oauth:
+        scope: "ejabberd:admin"
+        access:
+          allow:
+            - acl: admin
+    what:
+      - "*"
+
+oauth_access: all
+oauth_expire: 86400
+
+shaper:
+  normal: 1000
+  fast: 50000
+
+shaper_rules:
+  max_user_sessions: 10
+  c2s_shaper:
+    none: admin
+    normal: all
+
+auth_method: internal
+auth_password_format: scram
+
+modules:
+  mod_adhoc: {}
+  mod_admin_extra: {}
+  mod_disco: {}
+  mod_last: {}
+  mod_muc:
+    host: "conference.@HOST@"
+    access:
+      - allow
+    access_admin:
+      - allow: admin
+    access_create: muc_create
+    access_persistent: muc_create
+    default_room_options:
+      persistent: true
+  mod_muc_admin: {}
+  mod_ping: {}
+  mod_private: {}
+  mod_roster: {}
+  mod_version:
+    show_os: false
