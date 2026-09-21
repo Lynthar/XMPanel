@@ -118,7 +118,7 @@ func (m *masClient) send(ctx context.Context, req request, token string, out any
 		return status, nil
 	}
 	failure.Kind = classifyMAS(status)
-	return status, fmt.Errorf("MAS %s %s: %s", req.method, req.path, masMessage(respBody, status))
+	return status, fmt.Errorf("MAS %s %s: %s", req.method, req.shown(), masMessage(respBody, status))
 }
 
 // accessToken returns the cached token, or fetches one and reports it as

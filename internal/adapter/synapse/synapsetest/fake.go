@@ -28,14 +28,43 @@ const (
 )
 
 type user struct {
-	password    string
-	displayName string
-	admin       bool
-	deactivated bool
-	locked      bool
-	creationTS  int64 // seconds
-	ulid        string
-	masAdmin    bool // MAS's can_request_admin; Synapse's admin column is separate
+	password     string
+	displayName  string
+	admin        bool
+	deactivated  bool
+	locked       bool
+	suspended    bool
+	shadowBanned bool
+	erased       bool
+	creationTS   int64 // seconds
+	ulid         string
+	masAdmin     bool // MAS's can_request_admin; Synapse's admin column is separate
+}
+
+type media struct {
+	id, mediaType, name, owner string
+	size                       int64
+	createdTS                  int64
+	quarantined                bool
+}
+
+type regToken struct {
+	token       string
+	usesAllowed *int
+	pending     int
+	completed   int
+	expiryTime  *int64
+	ulid        string // MAS
+	revoked     bool   // MAS
+	createdAt   string // MAS
+}
+
+type report struct {
+	id                                           int64
+	receivedTS                                   int64
+	roomID, name, alias, eventID, userID, sender string
+	reason                                       string
+	score                                        int
 }
 
 type device struct {
@@ -47,6 +76,7 @@ type room struct {
 	name, alias, version, creator string
 	joined, local                 int
 	public                        bool
+	blocked                       bool
 }
 
 // Fake is safe for concurrent use; Requests records every request that got
@@ -65,6 +95,11 @@ type Fake struct {
 	users           map[string]*user
 	devices         map[string][]device
 	rooms           map[string]*room
+	media           map[string]*media
+	tokens          map[string]*regToken
+	reports         []report
+	notices         map[string][]string // notices sent, by recipient
+	noNotices       bool                // server_notices not configured
 	deletes         int
 	sequence        int
 	mux             *http.ServeMux
@@ -84,19 +119,35 @@ func New(domain, token string) *Fake {
 	f.mux.HandleFunc("GET /_synapse/admin/v2/users/{id}", f.getUser)
 	f.mux.HandleFunc("PUT /_synapse/admin/v2/users/{id}", f.putUser)
 	f.mux.HandleFunc("POST /_synapse/admin/v1/deactivate/{id}", f.deactivate)
-	f.mux.HandleFunc("PUT /_synapse/admin/v1/users/{id}/admin", f.setAdmin)
 	f.mux.HandleFunc("GET /_synapse/admin/v2/users/{id}/devices", f.listDevices)
 	f.mux.HandleFunc("DELETE /_synapse/admin/v2/users/{id}/devices/{device}", f.deleteDevice)
 	f.mux.HandleFunc("POST /_synapse/admin/v2/users/{id}/delete_devices", f.deleteDevices)
 	f.mux.HandleFunc("GET /_synapse/admin/v1/rooms", f.listRooms)
 	f.mux.HandleFunc("GET /_synapse/admin/v1/rooms/{id}", f.getRoom)
 	f.mux.HandleFunc("DELETE /_synapse/admin/v2/rooms/{id}", f.deleteRoom)
+	f.mux.HandleFunc("PUT /_synapse/admin/v1/suspend/{id}", f.suspend)
+	f.mux.HandleFunc("POST /_synapse/admin/v1/users/{id}/shadow_ban", f.shadowBan)
+	f.mux.HandleFunc("DELETE /_synapse/admin/v1/users/{id}/shadow_ban", f.shadowBan)
+	f.mux.HandleFunc("PUT /_synapse/admin/v1/users/{id}/admin", f.setAdmin)
+	f.mux.HandleFunc("GET /_synapse/admin/v1/registration_tokens", f.listTokens)
+	f.mux.HandleFunc("POST /_synapse/admin/v1/registration_tokens/new", f.createToken)
+	f.mux.HandleFunc("DELETE /_synapse/admin/v1/registration_tokens/{token}", f.deleteToken)
+	f.mux.HandleFunc("GET /_synapse/admin/v1/event_reports", f.listReports)
+	f.mux.HandleFunc("GET /_synapse/admin/v1/users/{id}/media", f.listMedia)
+	f.mux.HandleFunc("POST /_synapse/admin/v1/user/{id}/media/quarantine", f.quarantineMedia)
+	f.mux.HandleFunc("DELETE /_synapse/admin/v1/media/{server}/{media}", f.deleteMedia)
+	f.mux.HandleFunc("PUT /_synapse/admin/v1/rooms/{id}/block", f.blockRoom)
+	f.mux.HandleFunc("POST /_synapse/admin/v1/send_server_notice", f.serverNotice)
+	f.mux.HandleFunc("GET /_synapse/admin/v1/federation/destinations", f.listDestinations)
 	f.mux.HandleFunc("POST /oauth2/token", f.masToken)
 	f.mux.HandleFunc("GET /api/admin/v1/site-config", f.masSiteConfig)
 	f.mux.HandleFunc("GET /api/admin/v1/users/by-username/{username}", f.masUserByUsername)
 	f.mux.HandleFunc("GET /api/admin/v1/users", f.masListUsers)
 	f.mux.HandleFunc("POST /api/admin/v1/users", f.masCreateUser)
 	f.mux.HandleFunc("POST /api/admin/v1/users/{id}/{action}", f.masUserAction)
+	f.mux.HandleFunc("GET /api/admin/v1/user-registration-tokens", f.masListTokens)
+	f.mux.HandleFunc("POST /api/admin/v1/user-registration-tokens", f.masCreateToken)
+	f.mux.HandleFunc("POST /api/admin/v1/user-registration-tokens/{id}/{action}", f.masTokenAction)
 	f.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
 	})
@@ -104,8 +155,9 @@ func New(domain, token string) *Fake {
 	return f
 }
 
-// Reset repopulates the fake: the admin plus two accounts, three devices
-// and two rooms.
+// Reset repopulates the fake: the admin plus two accounts, three devices,
+// two rooms, two media items of alice's, one registration token and one
+// event report.
 func (f *Fake) Reset() adaptertest.Population {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -129,6 +181,13 @@ func (f *Fake) Reset() adaptertest.Population {
 		"!room1:" + f.domain: {name: "Room One", alias: "#one:" + f.domain, version: "10", creator: alice, joined: 2, local: 2, public: true},
 		"!room2:" + f.domain: {version: "9", creator: bob, joined: 1, local: 1},
 	}
+	f.media = map[string]*media{
+		"MEDIA1": {id: "MEDIA1", mediaType: "image/png", name: "one.png", owner: admin, size: 67, createdTS: 1732919539393},
+		"MEDIA2": {id: "MEDIA2", mediaType: "application/octet-stream", owner: admin, size: 1337, createdTS: 1732919540000},
+	}
+	f.tokens = map[string]*regToken{"seed-token": {token: "seed-token", completed: 1, ulid: f.nextULID(), createdAt: "2026-01-01T00:00:00Z"}}
+	f.reports = []report{{id: 2, receivedTS: 1570897107409, roomID: "!room1:" + f.domain, name: "Room One", alias: "#one:" + f.domain, eventID: "$event1", userID: bob, sender: alice, reason: "spam", score: -100}}
+	f.notices = map[string][]string{}
 	f.Requests = nil
 	return adaptertest.Population{
 		Accounts: []string{admin, alice, bob},
@@ -138,7 +197,39 @@ func (f *Fake) Reset() adaptertest.Population {
 			{ID: "DEV3", AccountID: bob},
 		},
 		Rooms: []string{"!room1:" + f.domain, "!room2:" + f.domain},
+		Media: []string{"MEDIA1", "MEDIA2"},
 	}
+}
+
+// ServerNotices switches the server_notices configuration; off, the notice
+// endpoint answers Synapse's 400.
+func (f *Fake) ServerNotices(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noNotices = !enabled
+}
+
+// Notices returns the notice bodies sent to an account.
+func (f *Fake) Notices(mxid string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.notices[mxid]...)
+}
+
+// Erased reports whether an account was deactivated with erase.
+func (f *Fake) Erased(mxid string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.users[mxid]
+	return ok && u.erased
+}
+
+// Blocked reports whether a room id is blocked, known or not.
+func (f *Fake) Blocked(roomID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rooms[roomID]
+	return ok && r.blocked
 }
 
 func (f *Fake) FailWith(status int) {
@@ -320,8 +411,8 @@ func (f *Fake) userJSON(id string, u *user) map[string]any {
 		"admin":         u.admin,
 		"deactivated":   u.deactivated,
 		"locked":        u.locked,
-		"shadow_banned": false,
-		"erased":        false,
+		"shadow_banned": u.shadowBanned,
+		"erased":        u.erased,
 		"is_guest":      false,
 		"user_type":     nil,
 		"avatar_url":    nil,
@@ -337,7 +428,7 @@ func (f *Fake) getUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := f.userJSON(id, u)
-	entry["suspended"] = false
+	entry["suspended"] = u.suspended
 	entry["last_seen_ts"] = nil
 	entry["threepids"] = []any{}
 	entry["external_ids"] = []any{}
@@ -407,10 +498,364 @@ func (f *Fake) deactivate(w http.ResponseWriter, r *http.Request) {
 		matrixError(w, http.StatusNotFound, "M_NOT_FOUND", "User not found")
 		return
 	}
+	var body struct {
+		Erase bool `json:"erase"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
 	u.deactivated = true
 	u.locked = false
+	u.erased = u.erased || body.Erase
 	delete(f.devices, id)
 	reply(w, http.StatusOK, map[string]string{"id_server_unbind_result": "success"})
+}
+
+func (f *Fake) suspend(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !f.local(id) {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Can only suspend local users")
+		return
+	}
+	u, ok := f.users[id]
+	if !ok {
+		matrixError(w, http.StatusNotFound, "M_NOT_FOUND", "User not found")
+		return
+	}
+	var body struct {
+		Suspend *bool `json:"suspend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Suspend == nil {
+		matrixError(w, http.StatusBadRequest, "M_BAD_JSON", "'suspend' parameter is required")
+		return
+	}
+	u.suspended = *body.Suspend
+	reply(w, http.StatusOK, map[string]any{"user_id": id, "suspend": u.suspended})
+}
+
+func (f *Fake) shadowBan(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !f.local(id) {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Only local users can be shadow-banned")
+		return
+	}
+	u, ok := f.users[id]
+	if !ok {
+		// Synapse's servlet skips the lookup; the store's update raises this.
+		matrixError(w, http.StatusNotFound, "M_UNKNOWN", "No row found (users)")
+		return
+	}
+	u.shadowBanned = r.Method == http.MethodPost
+	reply(w, http.StatusOK, map[string]any{})
+}
+
+func (f *Fake) tokenJSON(t *regToken) map[string]any {
+	return map[string]any{
+		"token": t.token, "uses_allowed": t.usesAllowed, "pending": t.pending, "completed": t.completed, "expiry_time": t.expiryTime,
+	}
+}
+
+// Synapse does not register the registration token servlets under MAS.
+func (f *Fake) tokensServed(w http.ResponseWriter) bool {
+	if f.mas {
+		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
+		return false
+	}
+	return true
+}
+
+func (f *Fake) listTokens(w http.ResponseWriter, _ *http.Request) {
+	if !f.tokensServed(w) {
+		return
+	}
+	ids := make([]string, 0, len(f.tokens))
+	for id, t := range f.tokens {
+		if !t.revoked {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, f.tokenJSON(f.tokens[id]))
+	}
+	reply(w, http.StatusOK, map[string]any{"registration_tokens": out})
+}
+
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,64}$`)
+
+func (f *Fake) createToken(w http.ResponseWriter, r *http.Request) {
+	if !f.tokensServed(w) {
+		return
+	}
+	var body struct {
+		Token       *string `json:"token"`
+		UsesAllowed *int    `json:"uses_allowed"`
+		ExpiryTime  *int64  `json:"expiry_time"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		matrixError(w, http.StatusBadRequest, "M_NOT_JSON", "Content not JSON.")
+		return
+	}
+	token := "gen-" + strconv.Itoa(len(f.tokens)+1)
+	if body.Token != nil {
+		if !tokenPattern.MatchString(*body.Token) {
+			matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "token must consist of characters matched by the regex [A-Za-z0-9-_]")
+			return
+		}
+		if _, exists := f.tokens[*body.Token]; exists {
+			matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "Token already exists: "+*body.Token)
+			return
+		}
+		token = *body.Token
+	}
+	t := &regToken{token: token, usesAllowed: body.UsesAllowed, expiryTime: body.ExpiryTime, ulid: f.nextULID(), createdAt: "2026-01-02T00:00:00Z"}
+	f.tokens[token] = t
+	reply(w, http.StatusOK, f.tokenJSON(t))
+}
+
+func (f *Fake) deleteToken(w http.ResponseWriter, r *http.Request) {
+	if !f.tokensServed(w) {
+		return
+	}
+	token := r.PathValue("token")
+	if _, ok := f.tokens[token]; !ok {
+		matrixError(w, http.StatusNotFound, "M_NOT_FOUND", "No such registration token: "+token)
+		return
+	}
+	delete(f.tokens, token)
+	reply(w, http.StatusOK, map[string]any{})
+}
+
+func (f *Fake) listReports(w http.ResponseWriter, r *http.Request) {
+	from, limit, ok := paging(w, r.URL.Query())
+	if !ok {
+		return
+	}
+	total := len(f.reports)
+	end := min(from+limit, total)
+	from = min(from, total)
+	out := make([]map[string]any, 0)
+	for _, rp := range f.reports[from:end] {
+		out = append(out, map[string]any{
+			"id": rp.id, "received_ts": rp.receivedTS, "room_id": rp.roomID, "name": rp.name, "canonical_alias": rp.alias,
+			"event_id": rp.eventID, "user_id": rp.userID, "sender": rp.sender, "reason": rp.reason, "score": rp.score,
+		})
+	}
+	resp := map[string]any{"event_reports": out, "total": total}
+	if end < total {
+		resp["next_token"] = end
+	}
+	reply(w, http.StatusOK, resp)
+}
+
+func (f *Fake) listMedia(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !f.requireUser(w, id) {
+		return
+	}
+	from, limit, ok := paging(w, r.URL.Query())
+	if !ok {
+		return
+	}
+	ids := make([]string, 0)
+	for mid, md := range f.media {
+		if md.owner == id {
+			ids = append(ids, mid)
+		}
+	}
+	sort.Strings(ids)
+	total := len(ids)
+	end := min(from+limit, total)
+	from = min(from, total)
+	out := make([]map[string]any, 0)
+	for _, mid := range ids[from:end] {
+		md := f.media[mid]
+		entry := map[string]any{
+			"media_id": md.id, "media_type": md.mediaType, "media_length": md.size, "upload_name": nilIfEmpty(md.name),
+			"created_ts": md.createdTS, "last_access_ts": nil, "quarantined_by": nil, "safe_from_quarantine": false,
+		}
+		if md.quarantined {
+			entry["quarantined_by"] = f.mxid(AdminLocalpart)
+		}
+		out = append(out, entry)
+	}
+	resp := map[string]any{"media": out, "total": total}
+	if end < total {
+		resp["next_token"] = end
+	}
+	reply(w, http.StatusOK, resp)
+}
+
+func (f *Fake) quarantineMedia(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !f.local(id) {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Can only quarantine local users' media")
+		return
+	}
+	n := 0
+	for _, md := range f.media {
+		if md.owner == id && !md.quarantined {
+			md.quarantined = true
+			n++
+		}
+	}
+	reply(w, http.StatusOK, map[string]int{"num_quarantined": n})
+}
+
+func (f *Fake) deleteMedia(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("server") != f.domain {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Can only delete local media")
+		return
+	}
+	mid := r.PathValue("media")
+	if _, ok := f.media[mid]; !ok {
+		matrixError(w, http.StatusNotFound, "M_NOT_FOUND", "Unknown media")
+		return
+	}
+	delete(f.media, mid)
+	reply(w, http.StatusOK, map[string]any{"deleted_media": []string{mid}, "total": 1})
+}
+
+// blockRoom accepts unknown rooms, as Synapse does, but only records the
+// flag on ones it has.
+func (f *Fake) blockRoom(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Block *bool `json:"block"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Block == nil {
+		matrixError(w, http.StatusBadRequest, "M_BAD_JSON", "Param 'block' must be a boolean")
+		return
+	}
+	if rm, ok := f.rooms[r.PathValue("id")]; ok {
+		rm.blocked = *body.Block
+	}
+	reply(w, http.StatusOK, map[string]bool{"block": *body.Block})
+}
+
+func (f *Fake) serverNotice(w http.ResponseWriter, r *http.Request) {
+	if f.noNotices {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Server notices are not enabled on this server")
+		return
+	}
+	var body struct {
+		UserID  string `json:"user_id"`
+		Content struct {
+			Body string `json:"body"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UserID == "" {
+		matrixError(w, http.StatusBadRequest, "M_BAD_JSON", "'user_id' is required")
+		return
+	}
+	if !f.local(body.UserID) {
+		matrixError(w, http.StatusBadRequest, "M_UNKNOWN", "Server notices can only be sent to local users")
+		return
+	}
+	if _, ok := f.users[body.UserID]; !ok {
+		matrixError(w, http.StatusNotFound, "M_NOT_FOUND", "User not found")
+		return
+	}
+	f.notices[body.UserID] = append(f.notices[body.UserID], body.Content.Body)
+	reply(w, http.StatusOK, map[string]string{"event_id": "$notice" + strconv.Itoa(len(f.notices[body.UserID]))})
+}
+
+func (f *Fake) listDestinations(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := paging(w, r.URL.Query()); !ok {
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{
+		"destinations": []map[string]any{
+			{"destination": "matrix.org", "retry_last_ts": 0, "retry_interval": 0, "failure_ts": nil, "last_successful_stream_ordering": 42},
+			{"destination": "down.example", "retry_last_ts": 1557332397936, "retry_interval": 3000000, "failure_ts": 1557329397936, "last_successful_stream_ordering": nil},
+		},
+		"total": 2,
+	})
+}
+
+func (f *Fake) masTokenJSON(t *regToken) map[string]any {
+	attrs := map[string]any{
+		"token": t.token, "valid": !t.revoked, "usage_limit": t.usesAllowed, "times_used": t.completed,
+		"created_at": t.createdAt, "last_used_at": nil, "expires_at": nil, "revoked_at": nil,
+	}
+	if t.usesAllowed != nil && t.completed >= *t.usesAllowed {
+		attrs["valid"] = false
+	}
+	if t.expiryTime != nil {
+		attrs["expires_at"] = time.UnixMilli(*t.expiryTime).UTC().Format(time.RFC3339)
+	}
+	if t.revoked {
+		attrs["revoked_at"] = "2026-01-03T00:00:00Z"
+	}
+	self := "/api/admin/v1/user-registration-tokens/" + t.ulid
+	return map[string]any{"type": "user-registration_token", "id": t.ulid, "attributes": attrs, "links": map[string]string{"self": self}}
+}
+
+func (f *Fake) masListTokens(w http.ResponseWriter, r *http.Request) {
+	ids := make([]string, 0, len(f.tokens))
+	for id := range f.tokens {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	data := make([]any, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, f.masTokenJSON(f.tokens[id]))
+	}
+	reply(w, http.StatusOK, map[string]any{"meta": map[string]int{"count": len(data)}, "data": data, "links": map[string]any{"self": r.URL.RequestURI(), "next": nil}})
+}
+
+func (f *Fake) masCreateToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token      *string `json:"token"`
+		UsageLimit *int    `json:"usage_limit"`
+		ExpiresAt  *string `json:"expires_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		masError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+	token := "mas-" + strconv.Itoa(len(f.tokens)+1)
+	if body.Token != nil {
+		if _, exists := f.tokens[*body.Token]; exists {
+			masError(w, http.StatusConflict, "Token already exists")
+			return
+		}
+		token = *body.Token
+	}
+	t := &regToken{token: token, usesAllowed: body.UsageLimit, ulid: f.nextULID(), createdAt: "2026-01-02T00:00:00Z"}
+	if body.ExpiresAt != nil {
+		if at, err := time.Parse(time.RFC3339, *body.ExpiresAt); err == nil {
+			ms := at.UnixMilli()
+			t.expiryTime = &ms
+		}
+	}
+	f.tokens[token] = t
+	reply(w, http.StatusCreated, map[string]any{"data": f.masTokenJSON(t), "links": map[string]string{"self": "/api/admin/v1/user-registration-tokens/" + t.ulid}})
+}
+
+func (f *Fake) masTokenAction(w http.ResponseWriter, r *http.Request) {
+	var target *regToken
+	for _, t := range f.tokens {
+		if t.ulid == r.PathValue("id") {
+			target = t
+		}
+	}
+	if target == nil {
+		masError(w, http.StatusNotFound, "Registration token not found")
+		return
+	}
+	switch r.PathValue("action") {
+	case "revoke":
+		if target.revoked {
+			masError(w, http.StatusBadRequest, "Token is already revoked")
+			return
+		}
+		target.revoked = true
+	case "unrevoke":
+		target.revoked = false
+	default:
+		masError(w, http.StatusNotFound, "Not found")
+		return
+	}
+	reply(w, http.StatusOK, map[string]any{"data": f.masTokenJSON(target), "links": map[string]string{"self": "/api/admin/v1/user-registration-tokens/" + target.ulid}})
 }
 
 func (f *Fake) setAdmin(w http.ResponseWriter, r *http.Request) {
@@ -813,8 +1258,10 @@ func (f *Fake) masUserAction(w http.ResponseWriter, r *http.Request) {
 	case "unlock":
 		u.locked = false
 	case "deactivate":
+		skipErase, _ := body["skip_erase"].(bool)
 		u.deactivated = true
 		u.locked = false
+		u.erased = u.erased || !skipErase
 		delete(f.devices, id)
 	case "reactivate":
 		u.deactivated = false

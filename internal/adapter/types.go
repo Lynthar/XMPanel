@@ -1,6 +1,9 @@
 package adapter
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Protocol string
 
@@ -139,6 +142,84 @@ type CreateRoom struct {
 	Public      bool   `json:"public"`
 	Persistent  bool   `json:"persistent"`
 	MembersOnly bool   `json:"members_only"`
+}
+
+// RegistrationToken is one token that lets a user register. UsesAllowed nil
+// means unlimited; Pending counts registrations in progress, which only
+// Synapse reports; Revoked is a MAS state that keeps the row visible.
+type RegistrationToken struct {
+	Token       string     `json:"token"`
+	UsesAllowed *int       `json:"uses_allowed"`
+	Used        int        `json:"used"`
+	Pending     int        `json:"pending"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	Valid       bool       `json:"valid"`
+	Revoked     bool       `json:"revoked"`
+}
+
+type CreateRegistrationToken struct {
+	Token       string     `json:"token,omitempty"` // empty = generated upstream
+	UsesAllowed *int       `json:"uses_allowed,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+}
+
+// MaskToken keeps the first characters of a registration token so a log or
+// audit row identifies it without disclosing what a stranger could register
+// with; very short tokens are hidden entirely.
+func MaskToken(token string) string {
+	const keep = 4
+	if len(token) <= keep {
+		return strings.Repeat("*", len(token))
+	}
+	return token[:keep] + strings.Repeat("*", len(token)-keep)
+}
+
+// EventReport is a user's report of an event, as moderation sees it.
+type EventReport struct {
+	ID         string    `json:"id"`
+	ReceivedAt time.Time `json:"received_at"`
+	RoomID     string    `json:"room_id"`
+	RoomName   string    `json:"room_name,omitempty"`
+	RoomAlias  string    `json:"room_alias,omitempty"`
+	EventID    string    `json:"event_id"`
+	Reporter   string    `json:"reporter"`
+	Sender     string    `json:"sender"`
+	Reason     string    `json:"reason,omitempty"`
+	Score      int       `json:"score"`
+}
+
+// Media is one item in the local media repository.
+type Media struct {
+	ID          string     `json:"id"`
+	Type        string     `json:"type,omitempty"`
+	Size        int64      `json:"size"`
+	Name        string     `json:"name,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+	LastAccess  *time.Time `json:"last_access,omitempty"`
+	Quarantined bool       `json:"quarantined"`
+	Protected   bool       `json:"protected"`
+}
+
+// PurgeRoom carries the shutdown options: members are kicked and, with
+// NewRoomUser set, moved to a replacement room carrying Message.
+type PurgeRoom struct {
+	Block       bool   `json:"block"`
+	Purge       bool   `json:"purge"`
+	ForcePurge  bool   `json:"force_purge"`
+	NewRoomUser string `json:"new_room_user,omitempty"`
+	NewRoomName string `json:"new_room_name,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+// FederationDestination is a remote server this one has tried to reach.
+// Healthy means the last attempt succeeded and no backoff is in progress.
+type FederationDestination struct {
+	Destination     string     `json:"destination"`
+	Healthy         bool       `json:"healthy"`
+	LastFailureAt   *time.Time `json:"last_failure_at,omitempty"`
+	FailingSince    *time.Time `json:"failing_since,omitempty"`
+	RetryIntervalMS int64      `json:"retry_interval_ms"`
 }
 
 // Stats counters are pointers: nil means the backend cannot report that

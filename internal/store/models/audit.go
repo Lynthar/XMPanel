@@ -43,6 +43,18 @@ const (
 	AuditActionRoomCreate       AuditAction = "backend.room_create"
 	AuditActionRoomDelete       AuditAction = "backend.room_delete"
 
+	// Matrix moderation; details carry server_id and the dangerous flags.
+	AuditActionMatrixDeactivate      AuditAction = "matrix.deactivate"
+	AuditActionMatrixSuspend         AuditAction = "matrix.suspend"
+	AuditActionMatrixShadowBan       AuditAction = "matrix.shadow_ban"
+	AuditActionMatrixRegTokenCreate  AuditAction = "matrix.regtoken_create"
+	AuditActionMatrixRegTokenDelete  AuditAction = "matrix.regtoken_delete"
+	AuditActionMatrixMediaQuarantine AuditAction = "matrix.media_quarantine"
+	AuditActionMatrixMediaDelete     AuditAction = "matrix.media_delete"
+	AuditActionMatrixRoomBlock       AuditAction = "matrix.room_block"
+	AuditActionMatrixRoomPurge       AuditAction = "matrix.room_purge"
+	AuditActionMatrixNotice          AuditAction = "matrix.notice"
+
 	// Retired actions still present in stored rows, which are hash inputs and
 	// are never rewritten; nothing writes them any more.
 	AuditActionXMPPUserCreate AuditAction = "xmpp.user_create"
@@ -64,6 +76,8 @@ const (
 	ResourceTypeAccount ResourceType = "account"
 	ResourceTypeSession ResourceType = "session"
 	ResourceTypeRoom    ResourceType = "room"
+	ResourceTypeToken   ResourceType = "token"
+	ResourceTypeMedia   ResourceType = "media"
 	ResourceTypeSetting ResourceType = "setting"
 	ResourceTypeXMPP    ResourceType = "xmpp" // retired; stored rows only
 )

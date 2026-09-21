@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import toast from 'react-hot-toast'
-import { ArrowLeft, Users, MessageSquare, Activity, RefreshCw, AlertTriangle, Clock, Globe } from 'lucide-react'
+import { ArrowLeft, Users, MessageSquare, Activity, RefreshCw, AlertTriangle, Clock, Globe, Wrench } from 'lucide-react'
 import clsx from 'clsx'
 import {
   serversApi, errorMessage,
@@ -12,13 +12,16 @@ import {
 import Accounts from './Accounts'
 import Sessions from './Sessions'
 import Rooms from './Rooms'
+import MatrixTools from './MatrixTools'
 
-type Tab = 'accounts' | 'sessions' | 'rooms'
+type Tab = 'accounts' | 'sessions' | 'rooms' | 'tools'
 
-const tabCapability: Record<Tab, Capability> = {
-  accounts: 'accounts.list',
-  sessions: 'sessions.list_all',
-  rooms: 'rooms.list',
+// The tools tab appears when any of its server-wide capabilities is declared.
+const tabCapability: Record<Tab, Capability[]> = {
+  accounts: ['accounts.list'],
+  sessions: ['sessions.list_all'],
+  rooms: ['rooms.list'],
+  tools: ['matrix.registration_tokens', 'matrix.reports', 'matrix.federation', 'matrix.server_notice'],
 }
 
 /** Server page shell: header, the counters the backend can report, and one tab per declared capability. */
@@ -65,7 +68,7 @@ export default function ServerDetail() {
   })
 
   // A tab whose capability the server lacks falls back to the first offered one.
-  const tabs = (['accounts', 'sessions', 'rooms'] as Tab[]).filter((tab) => has(tabCapability[tab]))
+  const tabs = (['accounts', 'sessions', 'rooms', 'tools'] as Tab[]).filter((tab) => tabCapability[tab].some(has))
   useEffect(() => {
     if (caps && !tabs.includes(activeTab) && tabs.length > 0) setActiveTab(tabs[0])
   }, [caps, tabs, activeTab])
@@ -82,7 +85,7 @@ export default function ServerDetail() {
   }
 
   const protocol = server.protocol
-  const tabIcons = { accounts: Users, sessions: Activity, rooms: MessageSquare }
+  const tabIcons = { accounts: Users, sessions: Activity, rooms: MessageSquare, tools: Wrench }
 
   return (
     <div className="space-y-6">
@@ -144,7 +147,7 @@ export default function ServerDetail() {
                     )}
                   >
                     <Icon className="w-4 h-4" />
-                    {tab === 'sessions' ? t(`backend.sessions.${protocol}.tab`) : t(`backend.${tab}.tab`)}
+                    {tab === 'sessions' ? t(`backend.sessions.${protocol}.tab`) : tab === 'tools' ? t('backend.matrix.tab') : t(`backend.${tab}.tab`)}
                   </button>
                 )
               })}
@@ -156,6 +159,7 @@ export default function ServerDetail() {
             {caps && activeTab === 'accounts' && has('accounts.list') && <Accounts server={server} caps={caps} />}
             {caps && activeTab === 'sessions' && has('sessions.list_all') && <Sessions server={server} caps={caps} />}
             {caps && activeTab === 'rooms' && has('rooms.list') && <Rooms server={server} caps={caps} />}
+            {caps && activeTab === 'tools' && <MatrixTools server={server} caps={caps} />}
           </div>
         </>
       )}

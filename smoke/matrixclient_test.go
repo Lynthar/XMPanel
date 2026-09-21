@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,6 +72,67 @@ func (c *matrixClient) createRoom(name string, public bool) (string, error) {
 	}
 	err := c.do(http.MethodPost, "/_matrix/client/v3/createRoom", body, &out)
 	return out.RoomID, err
+}
+
+// report files an abuse report for an event, which lands in the admin's
+// report listing.
+func (c *matrixClient) report(roomID, eventID, reason string) error {
+	return c.do(http.MethodPost, "/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/report/"+url.PathEscape(eventID), map[string]any{"reason": reason, "score": -100}, nil)
+}
+
+// send posts a text message and returns its event id.
+func (c *matrixClient) send(roomID, body string) (string, error) {
+	var out struct {
+		EventID string `json:"event_id"`
+	}
+	txn := strconv.FormatInt(time.Now().UnixNano(), 36)
+	err := c.do(http.MethodPut, "/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/send/m.room.message/"+txn, map[string]any{"msgtype": "m.text", "body": body}, &out)
+	return out.EventID, err
+}
+
+// upload puts a small file into the media repository and returns its local id.
+func (c *matrixClient) upload(name string, data []byte) (string, error) {
+	req, err := http.NewRequest(http.MethodPost, c.base+"/_matrix/media/v3/upload?filename="+url.QueryEscape(name), bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("upload: %d %s", resp.StatusCode, body)
+	}
+	var out struct {
+		ContentURI string `json:"content_uri"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", err
+	}
+	// mxc://server/mediaId
+	return out.ContentURI[strings.LastIndex(out.ContentURI, "/")+1:], nil
+}
+
+// invitedRooms lists pending invites from one sync, used to see a server
+// notice room appear (the server invites the recipient to it).
+func (c *matrixClient) invitedRooms() ([]string, error) {
+	var out struct {
+		Rooms struct {
+			Invite map[string]json.RawMessage `json:"invite"`
+		} `json:"rooms"`
+	}
+	if err := c.do(http.MethodGet, "/_matrix/client/v3/sync?timeout=0", nil, &out); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(out.Rooms.Invite))
+	for id := range out.Rooms.Invite {
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func (c *matrixClient) logout() {

@@ -116,7 +116,8 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
   账号特别多的服务器列表会慢。Synapse 由服务端分页。
 - **Matrix 只支持 Synapse，而且不完整。** 口令（legacy）认证下功能齐全；接了 Matrix Authentication Service 的部署，账号生命周期要有上面说的 MAS 客户端。
   删账号是停用（Matrix 没有删除），id 永久占用；删房间是启动 Synapse 的后台清除，房间可能在列表里多留一会儿。
-  不建房、没有全局设备列表，Synapse 专有的工具（彻底抹除、suspend、shadow ban、注册 token、举报、媒体）都还没有。
+  不建房、没有全局设备列表。Synapse 专有的工具（彻底抹除、挂起、隐形封禁、媒体隔离、注册令牌、举报、房间封禁与清除、服务器通知、联邦状态）已有；
+  抹除、隐形封禁、封禁与清除要 admin 角色并照原样输入目标 ID。服务器通知要求服务端配置了 `server_notices`，面板事先探测不到：没配的话按钮会答「不支持」。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
 - **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
 - **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。

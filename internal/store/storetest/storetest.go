@@ -50,9 +50,13 @@ func InsertServer(t *testing.T, db *store.DB, ring *crypto.KeyRing, impl, endpoi
 	if err != nil {
 		t.Fatal(err)
 	}
+	protocol := "xmpp"
+	if impl == "synapse" {
+		protocol = "matrix"
+	}
 	var id int64
 	err = db.QueryRow(`INSERT INTO servers (name, protocol, implementation, endpoint, domain, credentials_encrypted)
-		VALUES ($1, 'xmpp', $2, $3, $4, $5) RETURNING id`, "test "+impl, impl, endpoint, domain, encrypted).Scan(&id)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, "test "+impl, protocol, impl, endpoint, domain, encrypted).Scan(&id)
 	if err != nil {
 		t.Fatal(err)
 	}

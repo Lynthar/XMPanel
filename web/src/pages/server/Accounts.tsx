@@ -14,6 +14,7 @@ import { usePaging } from '@/lib/paging'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import Modal from '@/components/Modal'
 import SessionRows from './SessionRows'
+import MatrixAccountActions, { MatrixAccountBadges } from './MatrixAccountActions'
 import Field from '@/components/Field'
 import { parseAccountsCsv } from '@/lib/csv'
 
@@ -143,6 +144,7 @@ export default function Accounts({ server, caps }: Props) {
           <span className="font-mono text-sm text-gray-200">{a.id}</span>
           {a.display_name && <span className="text-gray-400">{a.display_name}</span>}
           {a.admin && <span className="badge badge-blue">{t('backend.accounts.admin')}</span>}
+          <MatrixAccountBadges account={a} />
         </div>
       ),
     },
@@ -158,7 +160,7 @@ export default function Accounts({ server, caps }: Props) {
     {
       key: 'actions',
       header: t('common.actions'),
-      className: 'w-40',
+      className: server.protocol === 'matrix' ? 'w-64' : 'w-40',
       render: (a: Account) => (
         <div className="flex gap-1">
           {has('accounts.set_password') && (
@@ -186,6 +188,7 @@ export default function Accounts({ server, caps }: Props) {
               <Trash2 className="w-4 h-4" />
             </button>
           )}
+          {server.protocol === 'matrix' && <MatrixAccountActions server={server} caps={caps} account={a} onChanged={invalidate} />}
         </div>
       ),
     },

@@ -14,6 +14,7 @@ import { usePaging } from '@/lib/paging'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import Modal from '@/components/Modal'
 import Field from '@/components/Field'
+import MatrixRoomActions from './MatrixRoomActions'
 
 /** Rooms tab: paged room listing with create and delete where the backend allows them. */
 export default function Rooms({ server, caps }: { server: Server; caps: ServerCapabilities }) {
@@ -29,6 +30,7 @@ export default function Rooms({ server, caps }: { server: Server; caps: ServerCa
   })
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['rooms', server.id] })
   const canDelete = caps.capabilities.includes('rooms.delete')
+  const matrix = server.protocol === 'matrix' && (caps.capabilities.includes('matrix.room_block') || caps.capabilities.includes('matrix.room_purge'))
 
   const yesNo = (value: boolean, on = 'badge-green') => (
     <span className={clsx('badge', value ? on : 'badge-gray')}>{value ? t('common.yes') : t('common.no')}</span>
@@ -64,15 +66,20 @@ export default function Rooms({ server, caps }: { server: Server; caps: ServerCa
           { key: 'public', header: t('backend.rooms.public'), render: (r: Room) => yesNo(r.public) },
           { key: 'persistent', header: t('backend.rooms.persistent'), render: (r: Room) => (r.xmpp ? yesNo(r.xmpp.persistent, 'badge-blue') : '—') },
           { key: 'membersOnly', header: t('backend.rooms.membersOnly'), render: (r: Room) => (r.xmpp ? yesNo(r.xmpp.members_only, 'badge-yellow') : '—') },
-          ...(canDelete
+          ...(canDelete || matrix
             ? [{
                 key: 'actions',
                 header: t('common.actions'),
-                className: 'w-20',
+                className: matrix ? 'w-44' : 'w-20',
                 render: (r: Room) => (
-                  <button onClick={() => setDeleteTarget(r)} className="p-1 text-red-400 hover:text-red-300" title={t('common.delete')} aria-label={t('common.delete')}>
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {canDelete && (
+                      <button onClick={() => setDeleteTarget(r)} className="p-1 text-red-400 hover:text-red-300" title={t('common.delete')} aria-label={t('common.delete')}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                    {matrix && <MatrixRoomActions server={server} caps={caps} room={r} onChanged={invalidate} />}
+                  </div>
                 ),
               }]
             : []),

@@ -51,6 +51,9 @@ func allowedEndpoint(role models.Role, e endpoint) bool {
 		return role == models.RoleAuditor
 	}
 	if strings.Contains(e.path, "{serverId}") {
+		if e.permission == "backend:danger" {
+			return false
+		}
 		return role == models.RoleOperator || (role == models.RoleViewer && e.method == http.MethodGet)
 	}
 	return e.method == http.MethodGet || strings.HasSuffix(e.path, "/test")

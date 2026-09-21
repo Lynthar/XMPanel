@@ -26,10 +26,12 @@ type Upstream interface {
 // protocol's native form, sessions (ID and AccountID) and room ids. Sessions
 // must belong to accounts in Accounts, the first two to different accounts;
 // at least two of each populated kind are needed for the paging scenario.
+// Media lists ids uploaded by Accounts[0], for the MatrixAdmin scenario.
 type Population struct {
 	Accounts []string
 	Sessions []adapter.Session
 	Rooms    []string
+	Media    []string
 }
 
 type Config struct {
@@ -120,6 +122,10 @@ func Run(t *testing.T, c Config) {
 
 	if c.Expected.Has(adapter.CapRoomsList) {
 		t.Run("rooms", func(t *testing.T) { roomScenario(t, ctx, c, fresh) })
+	}
+
+	if hasAny(c.Expected, adapter.MatrixCapabilities...) {
+		t.Run("matrix admin", func(t *testing.T) { matrixScenario(t, ctx, c, fresh) })
 	}
 
 	t.Run("error classification", func(t *testing.T) {
@@ -353,6 +359,191 @@ func roomScenario(t *testing.T, ctx context.Context, c Config, fresh func(*testi
 	}
 }
 
+// matrixScenario exercises every declared MatrixAdmin capability against the
+// population; the fake decides the shapes, the contract checks the effects.
+func matrixScenario(t *testing.T, ctx context.Context, c Config, fresh func(*testing.T) (adapter.Adapter, Population)) {
+	a, pop := fresh(t)
+	m, ok := a.(adapter.MatrixAdmin)
+	if !ok {
+		t.Fatalf("%T declares matrix capabilities but is not a MatrixAdmin", a)
+	}
+	has := c.Expected.Has
+	account := pop.Accounts[0]
+	if len(pop.Accounts) > 1 {
+		account = pop.Accounts[1]
+	}
+
+	if has(adapter.CapMatrixSuspend) {
+		if err := m.SetSuspended(ctx, account, true); err != nil {
+			t.Fatalf("suspend: %v", err)
+		}
+		if got, err := a.GetAccount(ctx, account); err != nil || got.Matrix == nil || got.Matrix.Suspended == nil || !*got.Matrix.Suspended {
+			t.Errorf("suspended account reads %+v, %v", got, err)
+		}
+		if err := m.SetSuspended(ctx, account, false); err != nil {
+			t.Errorf("unsuspend: %v", err)
+		}
+		if err := m.SetSuspended(ctx, accountID(c.Protocol, "ghost", c.Domain), true); !isKind(err, adapter.NotFound) {
+			t.Errorf("suspend missing account: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixShadowBan) {
+		if err := m.SetShadowBanned(ctx, account, true); err != nil {
+			t.Fatalf("shadow ban: %v", err)
+		}
+		if got, err := a.GetAccount(ctx, account); err != nil || got.Matrix == nil || !got.Matrix.ShadowBanned {
+			t.Errorf("shadow-banned account reads %+v, %v", got, err)
+		}
+		if err := m.SetShadowBanned(ctx, account, false); err != nil {
+			t.Errorf("lift shadow ban: %v", err)
+		}
+		if err := m.SetShadowBanned(ctx, accountID(c.Protocol, "ghost", c.Domain), true); !isKind(err, adapter.NotFound) {
+			t.Errorf("shadow ban missing account: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixRegTokens) {
+		uses := 3
+		created, err := m.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{UsesAllowed: &uses})
+		if err != nil || created.Token == "" || created.UsesAllowed == nil || *created.UsesAllowed != 3 || !created.Valid {
+			t.Fatalf("create token: %+v, %v", created, err)
+		}
+		named, err := m.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "contract-token"})
+		if err != nil || named.Token != "contract-token" || named.UsesAllowed != nil {
+			t.Fatalf("create named token: %+v, %v", named, err)
+		}
+		if _, err := m.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "contract-token"}); !isKind(err, adapter.Conflict) {
+			t.Errorf("duplicate token: %v", err)
+		}
+		tokens, err := m.ListRegistrationTokens(ctx)
+		if err != nil {
+			t.Fatalf("list tokens: %v", err)
+		}
+		listed := map[string]adapter.RegistrationToken{}
+		for _, tk := range tokens {
+			listed[tk.Token] = tk
+		}
+		if _, ok := listed[created.Token]; !ok {
+			t.Errorf("created token missing from %v", tokens)
+		}
+		if _, ok := listed["contract-token"]; !ok {
+			t.Errorf("named token missing from %v", tokens)
+		}
+		if err := m.DeleteRegistrationToken(ctx, "contract-token"); err != nil {
+			t.Fatalf("delete token: %v", err)
+		}
+		tokens, _ = m.ListRegistrationTokens(ctx)
+		for _, tk := range tokens {
+			if tk.Token == "contract-token" && tk.Valid {
+				t.Errorf("deleted token still valid: %+v", tk)
+			}
+		}
+		if err := m.DeleteRegistrationToken(ctx, "no-such-token"); !isKind(err, adapter.NotFound) {
+			t.Errorf("delete missing token: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixReports) {
+		page, err := m.ListReports(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+		if err != nil {
+			t.Fatalf("list reports: %v", err)
+		}
+		for _, r := range page.Items {
+			if r.ID == "" || r.RoomID == "" || r.EventID == "" || r.Reporter == "" {
+				t.Errorf("report %+v lacks identity", r)
+			}
+		}
+	}
+	if has(adapter.CapMatrixMedia) {
+		page, err := m.ListAccountMedia(ctx, pop.Accounts[0], adapter.ListQuery{Limit: adapter.MaxLimit})
+		if err != nil {
+			t.Fatalf("list media: %v", err)
+		}
+		if got := ids(page.Items, func(md adapter.Media) string { return md.ID }); !sameStrings(got, pop.Media) {
+			t.Fatalf("media = %v, want %v", got, pop.Media)
+		}
+		if len(pop.Media) > 0 {
+			n, err := m.QuarantineAccountMedia(ctx, pop.Accounts[0])
+			if err != nil || n != len(pop.Media) {
+				t.Errorf("quarantine = %d, %v; want %d", n, err, len(pop.Media))
+			}
+			if _, err := m.QuarantineAccountMedia(ctx, accountID(c.Protocol, "ghost", c.Domain)); !isKind(err, adapter.NotFound) {
+				t.Errorf("quarantine missing account: %v", err)
+			}
+			page, _ = m.ListAccountMedia(ctx, pop.Accounts[0], adapter.ListQuery{Limit: adapter.MaxLimit})
+			for _, md := range page.Items {
+				if !md.Quarantined {
+					t.Errorf("media %s not quarantined", md.ID)
+				}
+			}
+			if err := m.DeleteMedia(ctx, pop.Media[0]); err != nil {
+				t.Fatalf("delete media: %v", err)
+			}
+			page, _ = m.ListAccountMedia(ctx, pop.Accounts[0], adapter.ListQuery{Limit: adapter.MaxLimit})
+			if contains(ids(page.Items, func(md adapter.Media) string { return md.ID }), pop.Media[0]) {
+				t.Errorf("deleted media still listed")
+			}
+		}
+		if err := m.DeleteMedia(ctx, "no-such-media"); !isKind(err, adapter.NotFound) {
+			t.Errorf("delete missing media: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixRoomBlock) && len(pop.Rooms) > 0 {
+		if err := m.BlockRoom(ctx, pop.Rooms[0], true); err != nil {
+			t.Fatalf("block room: %v", err)
+		}
+		if err := m.BlockRoom(ctx, pop.Rooms[0], false); err != nil {
+			t.Errorf("unblock room: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixServerNotice) {
+		if err := m.SendServerNotice(ctx, account, "contract notice"); err != nil {
+			t.Errorf("server notice: %v", err)
+		}
+		if err := m.SendServerNotice(ctx, accountID(c.Protocol, "ghost", c.Domain), "x"); !isKind(err, adapter.NotFound) {
+			t.Errorf("notice to missing account: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixFederation) {
+		page, err := m.ListFederationDestinations(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+		if err != nil {
+			t.Fatalf("list destinations: %v", err)
+		}
+		for _, d := range page.Items {
+			if d.Destination == "" {
+				t.Errorf("destination without a name: %+v", d)
+			}
+		}
+	}
+	if has(adapter.CapMatrixRoomPurge) && len(pop.Rooms) > 1 {
+		deleteID, err := m.PurgeRoom(ctx, pop.Rooms[1], adapter.PurgeRoom{Purge: true, Block: true})
+		if err != nil || deleteID == "" {
+			t.Fatalf("purge room: %q, %v", deleteID, err)
+		}
+		if _, err := m.PurgeRoom(ctx, missingRoomID(c), adapter.PurgeRoom{Purge: true}); !isKind(err, adapter.NotFound) {
+			t.Errorf("purge missing room: %v", err)
+		}
+	}
+	if has(adapter.CapMatrixDeactivate) {
+		if err := m.Deactivate(ctx, account, true); err != nil {
+			t.Fatalf("deactivate with erase: %v", err)
+		}
+		if _, err := a.GetAccount(ctx, account); !isKind(err, adapter.NotFound) {
+			t.Errorf("get after erase: %v", err)
+		}
+		if err := m.Deactivate(ctx, accountID(c.Protocol, "ghost", c.Domain), false); !isKind(err, adapter.NotFound) {
+			t.Errorf("deactivate missing account: %v", err)
+		}
+	}
+}
+
+func hasAny(set adapter.CapabilitySet, caps ...adapter.Capability) bool {
+	for _, c := range caps {
+		if set.Has(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // pageScenario walks a listing one item at a time and checks the pages tile
 // the full set exactly once.
 func pageScenario(t *testing.T, total int, list func(adapter.ListQuery) ([]string, string, *int, error)) {
@@ -461,6 +652,45 @@ func invoke(ctx context.Context, a adapter.Adapter, cap adapter.Capability, pop 
 		return err
 	case adapter.CapRoomsDelete:
 		return a.DeleteRoom(ctx, room)
+	}
+	m, ok := a.(adapter.MatrixAdmin)
+	if !ok {
+		// Without the extension every matrix capability is unsupported.
+		return adapter.NotSupportedError(string(cap))
+	}
+	media := ""
+	if len(pop.Media) > 0 {
+		media = pop.Media[0]
+	}
+	switch cap {
+	case adapter.CapMatrixDeactivate:
+		return m.Deactivate(ctx, account, false)
+	case adapter.CapMatrixSuspend:
+		return m.SetSuspended(ctx, account, false)
+	case adapter.CapMatrixShadowBan:
+		return m.SetShadowBanned(ctx, account, false)
+	case adapter.CapMatrixRegTokens:
+		_, err := m.ListRegistrationTokens(ctx)
+		return err
+	case adapter.CapMatrixReports:
+		_, err := m.ListReports(ctx, adapter.ListQuery{})
+		return err
+	case adapter.CapMatrixMedia:
+		_, err := m.ListAccountMedia(ctx, account, adapter.ListQuery{})
+		if err == nil && media != "" {
+			err = m.DeleteMedia(ctx, media)
+		}
+		return err
+	case adapter.CapMatrixRoomBlock:
+		return m.BlockRoom(ctx, room, false)
+	case adapter.CapMatrixRoomPurge:
+		_, err := m.PurgeRoom(ctx, room, adapter.PurgeRoom{Purge: true})
+		return err
+	case adapter.CapMatrixServerNotice:
+		return m.SendServerNotice(ctx, account, "consistency check")
+	case adapter.CapMatrixFederation:
+		_, err := m.ListFederationDestinations(ctx, adapter.ListQuery{})
+		return err
 	}
 	panic("unknown capability " + string(cap))
 }

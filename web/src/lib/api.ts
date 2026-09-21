@@ -137,6 +137,8 @@ export type Capability =
   | 'accounts.set_password' | 'accounts.set_enabled' | 'accounts.set_admin'
   | 'sessions.list_all' | 'sessions.list_by_account' | 'sessions.terminate'
   | 'rooms.list' | 'rooms.get' | 'rooms.create' | 'rooms.delete'
+  | 'matrix.deactivate' | 'matrix.suspend' | 'matrix.shadow_ban' | 'matrix.registration_tokens' | 'matrix.reports'
+  | 'matrix.media' | 'matrix.room_block' | 'matrix.room_purge' | 'matrix.server_notice' | 'matrix.federation'
 
 export interface MASCredentials {
   endpoint: string
@@ -284,6 +286,64 @@ export interface Room {
   xmpp?: XMPPRoomFacts
 }
 
+export interface RegistrationToken {
+  token: string
+  uses_allowed: number | null
+  used: number
+  pending: number
+  expires_at?: string
+  created_at?: string
+  valid: boolean
+  revoked: boolean
+}
+
+export interface CreateRegistrationTokenRequest {
+  token?: string
+  uses_allowed?: number
+  expires_at?: string
+}
+
+export interface EventReport {
+  id: string
+  received_at: string
+  room_id: string
+  room_name?: string
+  room_alias?: string
+  event_id: string
+  reporter: string
+  sender: string
+  reason?: string
+  score: number
+}
+
+export interface Media {
+  id: string
+  type?: string
+  size: number
+  name?: string
+  created_at?: string
+  last_access?: string
+  quarantined: boolean
+  protected: boolean
+}
+
+export interface PurgeRoomRequest {
+  block: boolean
+  purge: boolean
+  force_purge: boolean
+  new_room_user?: string
+  new_room_name?: string
+  message?: string
+}
+
+export interface FederationDestination {
+  destination: string
+  healthy: boolean
+  last_failure_at?: string
+  failing_since?: string
+  retry_interval_ms: number
+}
+
 export interface CreateRoomRequest {
   name: string
   domain?: string
@@ -377,6 +437,51 @@ export const backendApi = {
 
   deleteRoom: (serverId: number, room: string) =>
     api.delete(`/servers/${serverId}/rooms/${seg(room)}`),
+}
+
+// Matrix moderation; a server without it answers 501 on every call.
+export const matrixApi = {
+  deactivate: (serverId: number, account: string, erase: boolean) =>
+    api.post(`/servers/${serverId}/matrix/accounts/${seg(account)}/deactivate`, { erase }),
+
+  setSuspended: (serverId: number, account: string, suspended: boolean) =>
+    api.put(`/servers/${serverId}/matrix/accounts/${seg(account)}/suspended`, { suspended }),
+
+  setShadowBanned: (serverId: number, account: string, banned: boolean) =>
+    api.put(`/servers/${serverId}/matrix/accounts/${seg(account)}/shadow-banned`, { banned }),
+
+  listAccountMedia: (serverId: number, account: string, params?: ListParams) =>
+    api.get(`/servers/${serverId}/matrix/accounts/${seg(account)}/media`, { params }),
+
+  quarantineAccountMedia: (serverId: number, account: string) =>
+    api.post(`/servers/${serverId}/matrix/accounts/${seg(account)}/media/quarantine`),
+
+  deleteMedia: (serverId: number, mediaId: string) =>
+    api.delete(`/servers/${serverId}/matrix/media/${seg(mediaId)}`),
+
+  listRegistrationTokens: (serverId: number) =>
+    api.get(`/servers/${serverId}/matrix/registration-tokens`),
+
+  createRegistrationToken: (serverId: number, data: CreateRegistrationTokenRequest) =>
+    api.post(`/servers/${serverId}/matrix/registration-tokens`, data),
+
+  deleteRegistrationToken: (serverId: number, token: string) =>
+    api.delete(`/servers/${serverId}/matrix/registration-tokens/${seg(token)}`),
+
+  listReports: (serverId: number, params?: ListParams) =>
+    api.get(`/servers/${serverId}/matrix/reports`, { params }),
+
+  blockRoom: (serverId: number, room: string, block: boolean) =>
+    api.post(`/servers/${serverId}/matrix/rooms/${seg(room)}/block`, { block }),
+
+  purgeRoom: (serverId: number, room: string, data: PurgeRoomRequest) =>
+    api.post(`/servers/${serverId}/matrix/rooms/${seg(room)}/purge`, data),
+
+  sendNotice: (serverId: number, account: string, body: string) =>
+    api.post(`/servers/${serverId}/matrix/notices`, { account, body }),
+
+  listFederation: (serverId: number, params?: ListParams) =>
+    api.get(`/servers/${serverId}/matrix/federation`, { params }),
 }
 
 // Audit API

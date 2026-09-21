@@ -1,10 +1,13 @@
 # Overrides for the packaged homeserver.yaml: reachable from the host, a
 # shared secret to register the admin, logs on stdout, no rate limits (the
-# test logs in far more than a person), and directory publication allowed.
+# test logs in far more than a person), directory publication and notices.
 server_name: "example.com"
 report_stats: false
 room_list_publication_rules:
   - action: allow
+server_notices:
+  system_mxid_localpart: notices
+  system_mxid_display_name: "Server Notices"
 listeners:
   - port: 8008
     tls: false

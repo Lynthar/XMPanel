@@ -71,6 +71,19 @@ const (
 	MsgSessionTerminated     = "backend.session.terminated"
 	MsgSessionsTerminated    = "backend.sessions.terminated"
 	MsgSessionNotFound       = "backend.session.not_found"
+	MsgAccountDeactivated    = "matrix.account.deactivated"
+	MsgAccountSuspended      = "matrix.account.suspended"
+	MsgAccountUnsuspended    = "matrix.account.unsuspended"
+	MsgAccountShadowBanned   = "matrix.account.shadow_banned"
+	MsgAccountUnshadowBanned = "matrix.account.unshadow_banned"
+	MsgRegTokenDeleted       = "matrix.regtoken.deleted"
+	MsgMediaQuarantined      = "matrix.media.quarantined"
+	MsgMediaDeleted          = "matrix.media.deleted"
+	MsgRoomBlocked           = "matrix.room.blocked"
+	MsgRoomUnblocked         = "matrix.room.unblocked"
+	MsgRoomPurgeStarted      = "matrix.room.purge_started"
+	MsgNoticeSent            = "matrix.notice.sent"
+	MsgMatrixOnly            = "matrix.only"
 	MsgUpstreamNotFound      = "backend.upstream.not_found"
 	MsgUpstreamConflict      = "backend.upstream.conflict"
 	MsgUpstreamInvalid       = "backend.upstream.invalid"
@@ -158,6 +171,19 @@ var messages = map[Locale]map[string]string{
 		MsgRoomExists:            "Room already exists",
 		MsgSessionTerminated:     "Session terminated",
 		MsgSessionsTerminated:    "All sessions terminated",
+		MsgAccountDeactivated:    "Account deactivated",
+		MsgAccountSuspended:      "Account suspended",
+		MsgAccountUnsuspended:    "Account unsuspended",
+		MsgAccountShadowBanned:   "Account shadow-banned",
+		MsgAccountUnshadowBanned: "Shadow ban lifted",
+		MsgRegTokenDeleted:       "Registration token deleted",
+		MsgMediaQuarantined:      "Media quarantined",
+		MsgMediaDeleted:          "Media deleted",
+		MsgRoomBlocked:           "Room blocked",
+		MsgRoomUnblocked:         "Room unblocked",
+		MsgRoomPurgeStarted:      "Room purge started",
+		MsgNoticeSent:            "Notice sent",
+		MsgMatrixOnly:            "This server has no Matrix moderation tools",
 		MsgSessionNotFound:       "Session not found",
 		MsgUpstreamNotFound:      "Not found on the server",
 		MsgUpstreamConflict:      "Already exists on the server",
@@ -243,6 +269,19 @@ var messages = map[Locale]map[string]string{
 		MsgRoomExists:            "房间已存在",
 		MsgSessionTerminated:     "会话已终止",
 		MsgSessionsTerminated:    "全部会话已终止",
+		MsgAccountDeactivated:    "账号已停用",
+		MsgAccountSuspended:      "账号已挂起",
+		MsgAccountUnsuspended:    "账号已解除挂起",
+		MsgAccountShadowBanned:   "账号已隐形封禁",
+		MsgAccountUnshadowBanned: "已解除隐形封禁",
+		MsgRegTokenDeleted:       "注册令牌已删除",
+		MsgMediaQuarantined:      "媒体已隔离",
+		MsgMediaDeleted:          "媒体已删除",
+		MsgRoomBlocked:           "房间已封禁",
+		MsgRoomUnblocked:         "房间已解封",
+		MsgRoomPurgeStarted:      "房间清除已开始",
+		MsgNoticeSent:            "通知已发送",
+		MsgMatrixOnly:            "该服务器没有 Matrix 管理工具",
 		MsgSessionNotFound:       "会话不存在",
 		MsgUpstreamNotFound:      "服务器上不存在该对象",
 		MsgUpstreamConflict:      "服务器上已存在该对象",

@@ -600,7 +600,7 @@ func TestStats(t *testing.T) {
 func TestUnknownEndpointIsNotSupportedAndProxy404IsUpstream(t *testing.T) {
 	a, fake := start(t)
 	ctx := context.Background()
-	_, err := a.call(ctx, request{op: "probe", method: http.MethodGet, path: "/_synapse/admin/v1/registration_tokens"}, nil)
+	_, err := a.call(ctx, request{op: "probe", method: http.MethodGet, path: "/_synapse/admin/v1/background_updates/status"}, nil)
 	if !isKind(err, adapter.NotSupported) {
 		t.Errorf("M_UNRECOGNIZED: %v", err)
 	}
@@ -608,6 +608,139 @@ func TestUnknownEndpointIsNotSupportedAndProxy404IsUpstream(t *testing.T) {
 	_, err = a.Probe(ctx)
 	if failure, ok := adapter.AsError(err); !ok || failure.Kind != adapter.Upstream || failure.Status != http.StatusNotFound {
 		t.Errorf("404 without a Matrix body: %v", err)
+	}
+}
+
+// The MatrixAdmin side against the fake: what the contract does not pin
+// down about wire shapes and MAS routing.
+func TestMatrixAdminShapes(t *testing.T) {
+	a, fake := start(t)
+	ctx := context.Background()
+	alice := "@alice:" + fakeDomain
+
+	if err := a.Deactivate(ctx, alice, true); err != nil || !fake.Erased(alice) {
+		t.Errorf("deactivate with erase: %v, erased=%v", err, fake.Erased(alice))
+	}
+	if err := a.SetSuspended(ctx, "@bob:"+fakeDomain, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.GetAccount(ctx, "@bob:"+fakeDomain); got.Matrix.Suspended == nil || !*got.Matrix.Suspended || !got.Enabled {
+		t.Errorf("suspended account = %+v (suspension must not read as disabled)", got.Matrix)
+	}
+	if err := a.SetShadowBanned(ctx, "@bob:"+fakeDomain, true); err != nil || !requestedContaining(fake, "POST /_synapse/admin/v1/users/@bob:example.com/shadow_ban") {
+		t.Errorf("shadow ban: %v", err)
+	}
+	if err := a.SetShadowBanned(ctx, "@bob:"+fakeDomain, false); err != nil || !requestedContaining(fake, "DELETE /_synapse/admin/v1/users/@bob:example.com/shadow_ban") {
+		t.Errorf("lift shadow ban: %v", err)
+	}
+
+	expires := time.Date(2121, 7, 6, 11, 5, 46, 0, time.UTC)
+	created, err := a.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "unit-token", ExpiresAt: &expires})
+	if err != nil || created.ExpiresAt == nil || !created.ExpiresAt.Equal(expires) || !created.Valid {
+		t.Fatalf("create token with expiry: %+v, %v", created, err)
+	}
+	if _, err := a.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "bad token!"}); !isKind(err, adapter.Invalid) {
+		t.Errorf("invalid token characters: %v", err)
+	}
+	tokens, _ := a.ListRegistrationTokens(ctx)
+	for _, tk := range tokens {
+		if tk.Token == "seed-token" && (tk.Used != 1 || !tk.Valid) {
+			t.Errorf("seed token = %+v", tk)
+		}
+	}
+	// A failed token request must not carry the token in its text or resource.
+	fake.FailWith(http.StatusServiceUnavailable)
+	err = a.DeleteRegistrationToken(ctx, "secret-registration-token")
+	fake.FailWith(0)
+	if failure, ok := adapter.AsError(err); !ok || strings.Contains(err.Error(), "secret-registration") || strings.Contains(failure.Resource, "secret-registration") {
+		t.Errorf("token leaked into the error: %v / %s", err, failure.Resource)
+	}
+	zero := 0
+	if _, err := jsonUnmarshalToken(`{"token":"z","uses_allowed":0,"pending":0,"completed":5,"expiry_time":null}`); err != nil {
+		t.Fatal(err)
+	} else if tk := mustToken(`{"token":"z","uses_allowed":0,"pending":0,"completed":5,"expiry_time":null}`); tk.UsesAllowed != nil || !tk.Valid {
+		t.Errorf("uses_allowed 0 must read as unlimited and valid: %+v (zero=%d)", tk, zero)
+	}
+
+	reports, err := a.ListReports(ctx, adapter.ListQuery{Limit: 10})
+	if err != nil || len(reports.Items) != 1 || reports.Items[0].ID != "2" || reports.Items[0].Reporter != "@bob:"+fakeDomain || reports.Items[0].ReceivedAt.Year() != 2019 {
+		t.Errorf("reports = %+v, %v", reports, err)
+	}
+	media, err := a.ListAccountMedia(ctx, "@admin:"+fakeDomain, adapter.ListQuery{Limit: 10})
+	if err != nil || len(media.Items) != 2 || media.Items[0].Type != "image/png" || media.Items[0].Size != 67 || media.Items[0].CreatedAt == nil {
+		t.Errorf("media = %+v, %v", media, err)
+	}
+	if err := a.DeleteMedia(ctx, "with/slash"); !isKind(err, adapter.Invalid) {
+		t.Errorf("media id with a slash: %v", err)
+	}
+	if err := a.BlockRoom(ctx, "!unknown:"+fakeDomain, true); err != nil {
+		t.Errorf("blocking an unknown room must work: %v", err)
+	}
+	if err := a.BlockRoom(ctx, "room@conference", true); !isKind(err, adapter.Invalid) {
+		t.Errorf("XMPP-shaped room id: %v", err)
+	}
+	if _, err := a.PurgeRoom(ctx, "!room1:"+fakeDomain, adapter.PurgeRoom{Purge: true, Block: true, NewRoomUser: "@admin:" + fakeDomain, Message: "closed"}); err != nil {
+		t.Errorf("purge with a replacement room: %v", err)
+	}
+	if err := a.SendServerNotice(ctx, "@bob:"+fakeDomain, "hello"); err != nil || len(fake.Notices("@bob:"+fakeDomain)) != 1 {
+		t.Errorf("server notice: %v", err)
+	}
+	if err := a.SendServerNotice(ctx, "@bob:"+fakeDomain, "  "); !isKind(err, adapter.Invalid) {
+		t.Errorf("empty notice: %v", err)
+	}
+	fake.ServerNotices(false)
+	if err := a.SendServerNotice(ctx, "@bob:"+fakeDomain, "hello"); !isKind(err, adapter.NotSupported) {
+		t.Errorf("notice without server_notices configured: %v", err)
+	}
+	destinations, err := a.ListFederationDestinations(ctx, adapter.ListQuery{Limit: 10})
+	if err != nil || len(destinations.Items) != 2 {
+		t.Fatalf("destinations = %+v, %v", destinations, err)
+	}
+	if healthy, down := destinations.Items[0], destinations.Items[1]; !healthy.Healthy || healthy.FailingSince != nil || down.Healthy || down.FailingSince == nil || down.LastFailureAt == nil {
+		t.Errorf("destination health = %+v / %+v", healthy, down)
+	}
+}
+
+// Under MAS, deactivation and registration tokens go through MAS; the rest
+// of the MatrixAdmin surface still goes to Synapse.
+func TestMatrixAdminUnderMAS(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	if err := a.Deactivate(ctx, "@alice:"+fakeDomain, true); err != nil || !fake.Erased("@alice:"+fakeDomain) {
+		t.Errorf("deactivate with erase through MAS: %v", err)
+	}
+	if requested(fake, "POST /_synapse/admin/v1/deactivate/") {
+		t.Errorf("deactivation went to Synapse under MAS: %v", fake.Requests)
+	}
+	uses := 2
+	created, err := a.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{UsesAllowed: &uses})
+	if err != nil || created.UsesAllowed == nil || *created.UsesAllowed != 2 || created.CreatedAt == nil {
+		t.Fatalf("create token through MAS: %+v, %v", created, err)
+	}
+	if requested(fake, "POST /_synapse/admin/v1/registration_tokens") {
+		t.Errorf("token creation went to Synapse under MAS: %v", fake.Requests)
+	}
+	if err := a.DeleteRegistrationToken(ctx, created.Token); err != nil {
+		t.Fatalf("revoke through MAS: %v", err)
+	}
+	tokens, _ := a.ListRegistrationTokens(ctx)
+	found := false
+	for _, tk := range tokens {
+		if tk.Token == created.Token {
+			found = true
+			if tk.Valid || !tk.Revoked {
+				t.Errorf("revoked token = %+v", tk)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("revoked token vanished from the MAS listing: %v", tokens)
+	}
+	if err := a.DeleteRegistrationToken(ctx, created.Token); err != nil {
+		t.Errorf("revoking twice must be idempotent: %v", err)
+	}
+	if err := a.SetSuspended(ctx, "@bob:"+fakeDomain, true); err != nil || !requested(fake, "PUT /_synapse/admin/v1/suspend/") {
+		t.Errorf("suspend under MAS still goes to Synapse: %v", err)
 	}
 }
 
@@ -663,6 +796,17 @@ func TestPageTokenAndFlagShapes(t *testing.T) {
 
 func jsonUnmarshal(s string, v any) error {
 	return json.Unmarshal([]byte(s), v)
+}
+
+func jsonUnmarshalToken(s string) (synapseRegToken, error) {
+	var t synapseRegToken
+	err := json.Unmarshal([]byte(s), &t)
+	return t, err
+}
+
+func mustToken(s string) adapter.RegistrationToken {
+	t, _ := jsonUnmarshalToken(s)
+	return t.token()
 }
 
 func requestedContaining(f *synapsetest.Fake, part string) bool {

@@ -161,6 +161,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
 	serverHandler := handler.NewServerHandler(db, keyRing, router.adapters, auditService, logger)
 	backendHandler := handler.NewBackendHandler(router.adapters, auditService, logger)
+	matrixHandler := handler.NewMatrixHandler(router.adapters, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.CookieSecure())
 	router.authMiddleware = authMiddleware
@@ -227,6 +228,24 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	router.route("POST", "/api/v1/servers/{serverId}/rooms", "backend:write", backendHandler.CreateRoom)
 	router.route("GET", "/api/v1/servers/{serverId}/rooms/{room}", "backend:read", backendHandler.GetRoom)
 	router.route("DELETE", "/api/v1/servers/{serverId}/rooms/{room}", "backend:write", backendHandler.DeleteRoom)
+
+	// Matrix moderation, served only by adapters implementing MatrixAdmin
+	// (others answer 501). Erasure, shadow ban, room block and purge with
+	// options need backend:danger; the plain room delete stays a write.
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/accounts/{account}/deactivate", "backend:danger", matrixHandler.Deactivate)
+	router.route("PUT", "/api/v1/servers/{serverId}/matrix/accounts/{account}/suspended", "backend:write", matrixHandler.SetSuspended)
+	router.route("PUT", "/api/v1/servers/{serverId}/matrix/accounts/{account}/shadow-banned", "backend:danger", matrixHandler.SetShadowBanned)
+	router.route("GET", "/api/v1/servers/{serverId}/matrix/accounts/{account}/media", "backend:read", matrixHandler.ListAccountMedia)
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/accounts/{account}/media/quarantine", "backend:write", matrixHandler.QuarantineAccountMedia)
+	router.route("DELETE", "/api/v1/servers/{serverId}/matrix/media/{mediaId}", "backend:write", matrixHandler.DeleteMedia)
+	router.route("GET", "/api/v1/servers/{serverId}/matrix/registration-tokens", "backend:read", matrixHandler.ListRegistrationTokens)
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/registration-tokens", "backend:write", matrixHandler.CreateRegistrationToken)
+	router.route("DELETE", "/api/v1/servers/{serverId}/matrix/registration-tokens/{token}", "backend:write", matrixHandler.DeleteRegistrationToken)
+	router.route("GET", "/api/v1/servers/{serverId}/matrix/reports", "backend:read", matrixHandler.ListReports)
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/rooms/{room}/block", "backend:danger", matrixHandler.BlockRoom)
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/rooms/{room}/purge", "backend:danger", matrixHandler.PurgeRoom)
+	router.route("POST", "/api/v1/servers/{serverId}/matrix/notices", "backend:write", matrixHandler.SendNotice)
+	router.route("GET", "/api/v1/servers/{serverId}/matrix/federation", "backend:read", matrixHandler.ListFederation)
 
 	// Audit logs require audit:read.
 	router.route("GET", "/api/v1/audit", "audit:read", auditHandler.List)

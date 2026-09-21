@@ -281,6 +281,8 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 		return page, err == nil && len(page.Items) == 0
 	})
 
+	runMatrixAdmin(t, ctx, a, login, suffix)
+
 	// Every declared capability must work here and every undeclared one must
 	// answer NotSupported, on a disposable account with one device and one room.
 	disposable := "consistency-" + suffix
@@ -303,5 +305,240 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	}
 	pop.Rooms = []string{seed}
 	pop.Sessions = []adapter.Session{{ID: probe.DeviceID, AccountID: pop.Accounts[0]}}
+	pop.Media = mediaIDs(t, ctx, a, pop.Accounts[0])
 	adaptertest.CheckConsistency(t, ctx, a, pop)
+}
+
+// mediaIDs lists what the account has uploaded, for the consistency population.
+func mediaIDs(t *testing.T, ctx context.Context, a adapter.Adapter, account string) []string {
+	t.Helper()
+	m, ok := a.(adapter.MatrixAdmin)
+	if !ok {
+		return nil
+	}
+	page, err := m.ListAccountMedia(ctx, account, adapter.ListQuery{Limit: adapter.MaxLimit})
+	if err != nil {
+		t.Fatalf("list media: %v", err)
+	}
+	ids := make([]string, len(page.Items))
+	for i, md := range page.Items {
+		ids[i] = md.ID
+	}
+	return ids
+}
+
+// runMatrixAdmin walks every MatrixAdmin capability against the real server
+// with a fresh account: suspension bites and reads back, shadow ban reads
+// back, tokens round-trip, an upload shows in media, a report is listed, a
+// notice invites the recipient, block toggles, purge and erasure are final.
+func runMatrixAdmin(t *testing.T, ctx context.Context, a adapter.Adapter, login func(string, string, string) (*matrixClient, error), suffix string) {
+	m, ok := a.(adapter.MatrixAdmin)
+	if !ok {
+		t.Fatalf("%T is not a MatrixAdmin", a)
+	}
+	caps := a.Capabilities()
+	local := "mod-" + suffix
+	id := "@" + local + ":" + domain
+	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: local, Password: "moderated-pass-1"}); err != nil {
+		t.Fatalf("moderation account: %v", err)
+	}
+	waitFor(t, func() (string, bool) {
+		_, err := a.GetAccount(ctx, id)
+		return fmt.Sprint(err), err == nil
+	})
+	client, err := login(local, "moderated-pass-1", "moderated")
+	if err != nil {
+		t.Fatalf("moderation login: %v", err)
+	}
+	defer client.logout()
+	roomID, err := client.createRoom("moderated-"+suffix, false)
+	if err != nil {
+		t.Fatalf("moderation room: %v", err)
+	}
+
+	// Suspension: reads back, and the suspended account cannot send.
+	if caps.Has(adapter.CapMatrixSuspend) {
+		if err := m.SetSuspended(ctx, id, true); err != nil {
+			t.Fatalf("suspend: %v", err)
+		}
+		if got, err := a.GetAccount(ctx, id); err != nil || got.Matrix == nil || got.Matrix.Suspended == nil || !*got.Matrix.Suspended {
+			t.Errorf("suspended account reads %+v, %v", got, err)
+		}
+		if _, err := client.send(roomID, "while suspended"); err == nil {
+			t.Errorf("suspended account could send")
+		}
+		if err := m.SetSuspended(ctx, id, false); err != nil {
+			t.Fatalf("unsuspend: %v", err)
+		}
+		if _, err := client.send(roomID, "after unsuspend"); err != nil {
+			t.Errorf("unsuspended account cannot send: %v", err)
+		}
+	}
+	if caps.Has(adapter.CapMatrixShadowBan) {
+		if err := m.SetShadowBanned(ctx, id, true); err != nil {
+			t.Fatalf("shadow ban: %v", err)
+		}
+		if got, err := a.GetAccount(ctx, id); err != nil || got.Matrix == nil || !got.Matrix.ShadowBanned {
+			t.Errorf("shadow-banned account reads %+v, %v", got, err)
+		}
+		if err := m.SetShadowBanned(ctx, id, false); err != nil {
+			t.Fatalf("lift shadow ban: %v", err)
+		}
+	}
+
+	// Registration tokens: create, list, delete/revoke, missing.
+	if caps.Has(adapter.CapMatrixRegTokens) {
+		uses := 2
+		created, err := m.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "smoke-" + suffix, UsesAllowed: &uses})
+		if err != nil || created.Token != "smoke-"+suffix || created.UsesAllowed == nil || *created.UsesAllowed != 2 || !created.Valid {
+			t.Fatalf("create token: %+v, %v", created, err)
+		}
+		if _, err := m.CreateRegistrationToken(ctx, adapter.CreateRegistrationToken{Token: "smoke-" + suffix}); !isKind(err, adapter.Conflict) {
+			t.Errorf("duplicate token: %v", err)
+		}
+		tokens, err := m.ListRegistrationTokens(ctx)
+		if err != nil {
+			t.Fatalf("list tokens: %v", err)
+		}
+		listed := false
+		for _, tk := range tokens {
+			listed = listed || tk.Token == created.Token
+		}
+		if !listed {
+			t.Errorf("created token missing from %v", tokens)
+		}
+		if err := m.DeleteRegistrationToken(ctx, created.Token); err != nil {
+			t.Fatalf("delete token: %v", err)
+		}
+		if err := m.DeleteRegistrationToken(ctx, "missing-"+suffix); !isKind(err, adapter.NotFound) {
+			t.Errorf("delete missing token: %v", err)
+		}
+	}
+
+	// Media: an upload is listed, quarantined and deleted.
+	if caps.Has(adapter.CapMatrixMedia) {
+		mediaID, err := client.upload("smoke.txt", []byte("smoke media "+suffix))
+		if err != nil {
+			t.Fatalf("upload: %v", err)
+		}
+		page := waitFor(t, func() (adapter.Page[adapter.Media], bool) {
+			page, err := m.ListAccountMedia(ctx, id, adapter.ListQuery{Limit: adapter.MaxLimit})
+			if err != nil {
+				t.Fatalf("list media: %v", err)
+			}
+			for _, md := range page.Items {
+				if md.ID == mediaID {
+					return page, true
+				}
+			}
+			return page, false
+		})
+		for _, md := range page.Items {
+			if md.ID == mediaID && (md.Name != "smoke.txt" || md.Size == 0 || md.CreatedAt == nil) {
+				t.Errorf("media facts = %+v", md)
+			}
+		}
+		if n, err := m.QuarantineAccountMedia(ctx, id); err != nil || n < 1 {
+			t.Errorf("quarantine = %d, %v", n, err)
+		}
+		if page, err := m.ListAccountMedia(ctx, id, adapter.ListQuery{Limit: adapter.MaxLimit}); err != nil || len(page.Items) == 0 || !page.Items[0].Quarantined {
+			t.Errorf("media after quarantine = %+v, %v", page, err)
+		}
+		if err := m.DeleteMedia(ctx, mediaID); err != nil {
+			t.Fatalf("delete media: %v", err)
+		}
+		if err := m.DeleteMedia(ctx, mediaID); !isKind(err, adapter.NotFound) {
+			t.Errorf("delete deleted media: %v", err)
+		}
+	}
+
+	// Reports: the account reports its own message; the report is listed.
+	if caps.Has(adapter.CapMatrixReports) {
+		eventID, err := client.send(roomID, "reportable "+suffix)
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if err := client.report(roomID, eventID, "smoke report "+suffix); err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		waitFor(t, func() (adapter.Page[adapter.EventReport], bool) {
+			page, err := m.ListReports(ctx, adapter.ListQuery{Limit: adapter.MaxLimit})
+			if err != nil {
+				t.Fatalf("list reports: %v", err)
+			}
+			for _, r := range page.Items {
+				if r.EventID == eventID && r.Reporter == id && r.Reason == "smoke report "+suffix && r.RoomID == roomID {
+					return page, true
+				}
+			}
+			return page, false
+		})
+	}
+
+	// Server notice: the recipient is invited to a notices room, which then
+	// shows up in the server's room listing under the configured name.
+	if caps.Has(adapter.CapMatrixServerNotice) {
+		if err := m.SendServerNotice(ctx, id, "smoke notice "+suffix); err != nil {
+			t.Fatalf("server notice: %v", err)
+		}
+		waitFor(t, func() (adapter.Page[adapter.Room], bool) {
+			page, err := a.ListRooms(ctx, adapter.ListQuery{Search: "Server Notices", Limit: adapter.MaxLimit})
+			return page, err == nil && len(page.Items) > 0
+		})
+		invites := waitFor(t, func() ([]string, bool) {
+			invites, err := client.invitedRooms()
+			return invites, err == nil && len(invites) > 0
+		})
+		t.Logf("notice room invite: %v", invites)
+		if err := m.SendServerNotice(ctx, "@ghost-"+suffix+":"+domain, "x"); !isKind(err, adapter.NotFound) {
+			t.Errorf("notice to a missing account: %v", err)
+		}
+	}
+	if caps.Has(adapter.CapMatrixFederation) {
+		if _, err := m.ListFederationDestinations(ctx, adapter.ListQuery{Limit: adapter.MaxLimit}); err != nil {
+			t.Errorf("list destinations: %v", err)
+		}
+	}
+
+	// Block and unblock are accepted; whether joins are refused is not tested.
+	if caps.Has(adapter.CapMatrixRoomBlock) {
+		if err := m.BlockRoom(ctx, roomID, true); err != nil {
+			t.Fatalf("block: %v", err)
+		}
+		if err := m.BlockRoom(ctx, roomID, false); err != nil {
+			t.Fatalf("unblock: %v", err)
+		}
+	}
+	// Purge with block: the room goes and stays gone.
+	if caps.Has(adapter.CapMatrixRoomPurge) {
+		deleteID, err := m.PurgeRoom(ctx, roomID, adapter.PurgeRoom{Purge: true, Block: true})
+		if err != nil || deleteID == "" {
+			t.Fatalf("purge: %q, %v", deleteID, err)
+		}
+		waitFor(t, func() (string, bool) {
+			_, err := a.GetRoom(ctx, roomID)
+			return fmt.Sprint(err), isKind(err, adapter.NotFound)
+		})
+		if _, err := m.PurgeRoom(ctx, "!ghost-"+suffix+":"+domain, adapter.PurgeRoom{Purge: true}); !isKind(err, adapter.NotFound) {
+			t.Errorf("purge missing room: %v", err)
+		}
+	}
+
+	// Erase: the account is gone, cannot log in, and the id stays taken.
+	if caps.Has(adapter.CapMatrixDeactivate) {
+		if err := m.Deactivate(ctx, id, true); err != nil {
+			t.Fatalf("deactivate with erase: %v", err)
+		}
+		waitFor(t, func() (string, bool) {
+			_, err := a.GetAccount(ctx, id)
+			return fmt.Sprint(err), isKind(err, adapter.NotFound)
+		})
+		if c, err := login(local, "moderated-pass-1", "erased"); err == nil {
+			c.logout()
+			t.Errorf("erased account still logs in")
+		}
+		if err := m.Deactivate(ctx, "@ghost-"+suffix+":"+domain, false); !isKind(err, adapter.NotFound) {
+			t.Errorf("deactivate missing account: %v", err)
+		}
+	}
 }

@@ -36,18 +36,22 @@ const (
 	AuthModeMAS    = "mas"
 )
 
-var legacyCapabilities = adapter.NewCapabilitySet(
+// legacyCapabilities is the full set: the protocol-neutral operations plus
+// every MatrixAdmin one. matrix.server_notice cannot be probed (Synapse only
+// reveals a missing server_notices block when a notice is sent) and answers
+// NotSupported then; it is the one declared capability that may do so.
+var legacyCapabilities = adapter.NewCapabilitySet(append([]adapter.Capability{
 	adapter.CapAccountsList, adapter.CapAccountsSearch, adapter.CapAccountsCreate, adapter.CapAccountsDelete,
 	adapter.CapAccountsSetPassword, adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin,
 	adapter.CapSessionsListByAcct, adapter.CapSessionsTerminate,
 	adapter.CapRoomsList, adapter.CapRoomsGet, adapter.CapRoomsDelete,
-)
+}, adapter.MatrixCapabilities...)...)
 
 // lifecycle names the operations MAS owns once authentication is delegated.
-var lifecycle = []adapter.Capability{
+var lifecycle = append([]adapter.Capability{
 	adapter.CapAccountsCreate, adapter.CapAccountsDelete, adapter.CapAccountsSetPassword,
 	adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin,
-}
+}, masLifecycle...)
 
 func New(cfg adapter.ServerConfig) *Adapter {
 	a := &Adapter{
@@ -863,6 +867,14 @@ type request struct {
 	query                      url.Values
 	body                       any
 	anonymous                  bool
+	label                      string // shown instead of path in error text when path carries a secret
+}
+
+func (r request) shown() string {
+	if r.label != "" {
+		return r.label
+	}
+	return r.path
 }
 
 // call performs one request and maps a failure to *adapter.Error. The Matrix
@@ -921,6 +933,16 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 	_ = json.Unmarshal(respBody, &detail)
 	failure.Code = detail.Errcode
 	failure.Kind = classify(status, detail.Errcode)
+	// Two 400s carry a meaning the errcode does not: a missing server_notices
+	// block, and a registration token that already exists (M_INVALID_PARAM).
+	if status == http.StatusBadRequest {
+		switch {
+		case strings.Contains(detail.Error, "Server notices are not enabled"):
+			failure.Kind = adapter.NotSupported
+		case strings.HasPrefix(detail.Error, "Token already exists"):
+			failure.Kind = adapter.Conflict
+		}
+	}
 	if failure.Kind == adapter.RateLimited && detail.RetryAfterMS > 0 {
 		failure.RetryAfter = time.Duration(detail.RetryAfterMS) * time.Millisecond
 	}
@@ -931,7 +953,7 @@ func (a *Adapter) call(ctx context.Context, req request, out any) (status int, e
 	if message == "" {
 		message = http.StatusText(status)
 	}
-	return status, fmt.Errorf("%s %s: %s", req.method, req.path, message)
+	return status, fmt.Errorf("%s %s: %s", req.method, req.shown(), message)
 }
 
 func classify(status int, errcode string) adapter.Kind {

@@ -136,9 +136,12 @@ Set the JWT secret before you put real data in; the encryption key is checked at
   needs the MAS client described above.
   Deleting an account deactivates it (Matrix has no deletion) and its id stays
   taken; deleting a room starts Synapse's background purge, so the room can linger
-  in listings for a moment. No room creation, no global device list, and none of
-  the Synapse-only tools (erase, suspend, shadow ban, registration tokens, reports,
-  media) yet.
+  in listings for a moment. No room creation and no global device list. The
+  Synapse-only tools (erase, suspend, shadow ban, media quarantine, registration
+  tokens, reports, room block and purge, server notices, federation health) are
+  in; erase, shadow ban, block and purge need the admin role and a typed-out id.
+  Server notices need `server_notices` configured on the homeserver, which the
+  panel cannot detect up front: without it the button answers "not supported".
 - **PostgreSQL only.** No SQLite, no MySQL.
 - **No container image for the panel itself.** Source build and a systemd
   unit; the compose file under `smoke/` only starts test servers.
