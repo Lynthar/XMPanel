@@ -92,18 +92,3 @@ security:
     #            XMPanel itself runs HTTP loopback (most common prod setup)
     #   "never"  never set Secure — only for local HTTP development
     secure_override: "auto"
-
-# XMPP servers can be added via the web UI; the entries below are commented
-# out by default. The same fields are accepted in YAML but the recommended
-# flow is to add servers from the Servers page so the API key gets encrypted
-# at rest via the KeyRing.
-xmpp:
-  servers: []
-  # - id: "prosody-main"
-  #   name: "Main Prosody Server"
-  #   type: "prosody"
-  #   host: "xmpp.example.com"     # NOT 127.0.0.1 — Prosody routes by Host header.
-  #   port: 5280
-  #   api_key: "secret-token:..."  # mod_tokenauth Bearer token
-  #   tls: false                   # loopback HTTP between Go and Prosody
-  #   enabled: true

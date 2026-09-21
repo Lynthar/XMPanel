@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,24 +14,12 @@ import (
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/store/models"
-	apperrors "github.com/xmpanel/xmpanel/pkg/errors"
 	"github.com/xmpanel/xmpanel/pkg/types"
 )
 
-// Adapter implements XMPPAdapter for Prosody 13.x via mod_http_admin_api.
-//
-// Endpoint paths and behaviors verified against Prosody 13.0.5 +
-// prosody-modules mod_http_admin_api (commit 971a531654dc, May 2026).
-//
-// Sessions/MUC/Modules are NOT supported by mod_http_admin_api in Prosody 13;
-// those methods return ErrNotImplemented so the panel UI surfaces 501 instead
-// of confusing 404s.
-//
-// HTTP Host header: mod_http_admin_api routes by Host header. Adapter sends
-// `Host: <server.Host>` so the operator should configure the server with
-// Host = the XMPP virtual host name (e.g. "xmpp.example.com"). For same-box
-// deployments add `127.0.0.1 xmpp.example.com` to /etc/hosts so TCP stays on
-// loopback while the HTTP Host header still matches the VirtualHost.
+// Adapter uses admin_api for server info and admin_panel for account and
+// session operations. HTTP Host must match the configured VirtualHost;
+// otherwise Prosody rejects the request even when the TCP address is valid.
 type Adapter struct {
 	server     *models.XMPPServer
 	apiKey     string
@@ -49,7 +38,8 @@ func NewAdapter(server *models.XMPPServer, apiKey string) *Adapter {
 		server: server,
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		},
 		baseURL: fmt.Sprintf("%s://%s:%d", scheme, server.Host, server.Port),
 	}
@@ -60,8 +50,9 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	return a.Ping(ctx)
 }
 
-// Disconnect is a no-op (HTTP is stateless).
+// Disconnect releases idle HTTP connections; active requests may finish.
 func (a *Adapter) Disconnect() error {
+	a.httpClient.CloseIdleConnections()
 	return nil
 }
 
@@ -70,7 +61,7 @@ func (a *Adapter) Disconnect() error {
 // endpoint in mod_http_admin_api 13 — it returns 404 even when the module
 // is healthy.
 func (a *Adapter) Ping(ctx context.Context) error {
-	_, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
+	_, err := a.doRequest(ctx, "server.ping", http.MethodGet, "/admin_api/server/info", nil)
 	return err
 }
 
@@ -83,7 +74,7 @@ func (a *Adapter) Ping(ctx context.Context) error {
 // Note: hosts list is NOT exposed by /server/info — operators configure the
 // XMPP domain at the server-record level in XMPanel.
 func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
+	resp, err := a.doRequest(ctx, "server.info", http.MethodGet, "/admin_api/server/info", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +84,11 @@ func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) 
 		Version  string `json:"version"`
 	}
 	if err := json.Unmarshal(resp, &info); err != nil {
-		return nil, fmt.Errorf("failed to parse server info: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "server.info", Status: http.StatusOK, Err: fmt.Errorf("failed to parse server info: %w", err)}
 	}
 
 	return &types.ServerInfo{
-		Type:     types.ServerTypeProsody,
+		Type:     models.ServerTypeProsody,
 		Version:  info.Version,
 		Hostname: info.SiteName,
 		Domains:  []string{info.SiteName},
@@ -110,7 +101,7 @@ func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) 
 // 500 Internal Server Error in default config (root cause not investigated;
 // the endpoint is documented as beta). We avoid it entirely.
 func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
-	infoResp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/server/info", nil)
+	infoResp, err := a.doRequest(ctx, "server.stats", http.MethodGet, "/admin_api/server/info", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +117,7 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 
 	// Count registered users via /users (mod_http_admin_api lists across all hosts
 	// the API user has admin on).
-	if usersResp, err := a.doRequest(ctx, http.MethodGet, "/admin_api/users", nil); err == nil {
+	if usersResp, err := a.doRequest(ctx, "server.stats", http.MethodGet, "/admin_api/users", nil); err == nil {
 		var users []struct {
 			Username string `json:"username"`
 			Enabled  bool   `json:"enabled"`
@@ -155,7 +146,7 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 // VirtualHost), so it returns the users for that host. JIDs are built from
 // `server.Host`.
 func (a *Adapter) ListUsers(ctx context.Context, _ string) ([]models.XMPPUser, error) {
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_panel/users", nil)
+	resp, err := a.doRequest(ctx, "accounts.list", http.MethodGet, "/admin_panel/users", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +156,7 @@ func (a *Adapter) ListUsers(ctx context.Context, _ string) ([]models.XMPPUser, e
 		JID      string `json:"jid"`
 	}
 	if err := json.Unmarshal(resp, &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse users: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "accounts.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse users: %w", err)}
 	}
 
 	domain := a.server.Host
@@ -197,7 +188,7 @@ func (a *Adapter) GetUser(ctx context.Context, username, _ string) (*models.XMPP
 			return &all[i], nil
 		}
 	}
-	return nil, apperrors.ErrUserNotFound
+	return nil, &adapter.Error{Kind: adapter.NotFound, Op: "accounts.get", Resource: username + "@" + a.server.Host, Err: errors.New("user not found")}
 }
 
 // CreateUser creates a new XMPP user via the mod_admin_panel endpoint.
@@ -207,7 +198,7 @@ func (a *Adapter) CreateUser(ctx context.Context, req models.CreateXMPPUserReque
 	body := map[string]string{
 		"password": req.Password,
 	}
-	_, err := a.doRequest(ctx, http.MethodPut,
+	_, err := a.doRequest(ctx, "accounts.create", http.MethodPut,
 		fmt.Sprintf("/admin_panel/users/%s", req.Username), body)
 	return err
 }
@@ -215,7 +206,7 @@ func (a *Adapter) CreateUser(ctx context.Context, req models.CreateXMPPUserReque
 // DeleteUser removes a user (calls usermanager.delete_user via admin_panel
 // which fires user-deleted + purges roster/pubsub/etc).
 func (a *Adapter) DeleteUser(ctx context.Context, username, _ string) error {
-	_, err := a.doRequest(ctx, http.MethodDelete,
+	_, err := a.doRequest(ctx, "accounts.delete", http.MethodDelete,
 		fmt.Sprintf("/admin_panel/users/%s", username), nil)
 	return err
 }
@@ -225,7 +216,7 @@ func (a *Adapter) ChangePassword(ctx context.Context, username, _, newPassword s
 	body := map[string]string{
 		"password": newPassword,
 	}
-	_, err := a.doRequest(ctx, http.MethodPatch,
+	_, err := a.doRequest(ctx, "accounts.set_password", http.MethodPatch,
 		fmt.Sprintf("/admin_panel/users/%s", username), body)
 	return err
 }
@@ -259,7 +250,7 @@ func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, 
 	// Trailing slash on the collection URL — mod_admin_panel's `GET /sessions`
 	// route matches the prefix exactly. We use the trailing-slash form for
 	// consistency with the disconnect-user subpath; either works.
-	resp, err := a.doRequest(ctx, http.MethodGet, "/admin_panel/sessions", nil)
+	resp, err := a.doRequest(ctx, "sessions.list", http.MethodGet, "/admin_panel/sessions", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +263,7 @@ func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, 
 		ConnectedAt string `json:"connected_at"`
 	}
 	if err := json.Unmarshal(resp, &raw); err != nil {
-		return nil, fmt.Errorf("failed to parse sessions: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "sessions.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse sessions: %w", err)}
 	}
 	sessions := make([]models.XMPPSession, len(raw))
 	for i, r := range raw {
@@ -315,7 +306,7 @@ func (a *Adapter) KickSession(ctx context.Context, jid string) error {
 	// Slashes and other special chars (legal in JID resources per RFC 6122)
 	// must be percent-encoded so they don't fragment the URL path. Prosody's
 	// HTTP router decodes the captured wildcard before passing to handlers.
-	_, err := a.doRequest(ctx, http.MethodDelete,
+	_, err := a.doRequest(ctx, "sessions.terminate", http.MethodDelete,
 		"/admin_panel/sessions/"+url.PathEscape(jid), nil)
 	return err
 }
@@ -324,7 +315,7 @@ func (a *Adapter) KickSession(ctx context.Context, jid string) error {
 // The domain parameter is informational (mod_admin_panel scopes to the
 // host it's mounted on).
 func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
-	_, err := a.doRequest(ctx, http.MethodPost,
+	_, err := a.doRequest(ctx, "sessions.terminate_all", http.MethodPost,
 		"/admin_panel/sessions/disconnect/"+url.PathEscape(username), nil)
 	return err
 }
@@ -332,41 +323,46 @@ func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
 // --- MUC rooms: NOT supported by mod_http_admin_api in Prosody 13 ---
 
 func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMPPRoom, error) {
-	return nil, apperrors.ErrNotImplemented
+	return nil, &adapter.Error{Kind: adapter.NotSupported, Op: "rooms.list", Err: errors.New("operation not implemented")}
 }
 
 func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.XMPPRoom, error) {
-	return nil, apperrors.ErrNotImplemented
+	return nil, &adapter.Error{Kind: adapter.NotSupported, Op: "rooms.get", Err: errors.New("operation not implemented")}
 }
 
 func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomRequest) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "rooms.create", Err: errors.New("operation not implemented")}
 }
 
 func (a *Adapter) DeleteRoom(ctx context.Context, room, mucDomain string) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "rooms.delete", Err: errors.New("operation not implemented")}
 }
 
 // --- Modules: NOT supported by mod_http_admin_api in Prosody 13 ---
 
 func (a *Adapter) ListModules(ctx context.Context) ([]types.ModuleInfo, error) {
-	return nil, apperrors.ErrNotImplemented
+	return nil, &adapter.Error{Kind: adapter.NotSupported, Op: "modules.list", Err: errors.New("operation not implemented")}
 }
 
 func (a *Adapter) EnableModule(ctx context.Context, module string) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "modules.enable", Err: errors.New("operation not implemented")}
 }
 
 func (a *Adapter) DisableModule(ctx context.Context, module string) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "modules.disable", Err: errors.New("operation not implemented")}
 }
 
-// doRequest performs an HTTP request to the Prosody admin API.
-//
-// Sets req.Host explicitly to server.Host so the request reaches
-// mod_http_admin_api on the matching VirtualHost. For loopback deployments,
-// configure /etc/hosts to resolve the XMPP domain to 127.0.0.1.
-func (a *Adapter) doRequest(ctx context.Context, method, path string, body interface{}) ([]byte, error) {
+// doRequest uses the configured host for both TCP lookup and the HTTP Host
+// header. The name must resolve to the admin listener and its VirtualHost.
+func (a *Adapter) doRequest(ctx context.Context, op, method, path string, body interface{}) (_ []byte, err error) {
+	failure := &adapter.Error{Kind: adapter.Upstream, Op: op, Resource: path}
+	defer func() {
+		if err != nil {
+			failure.Err = err
+			err = failure
+		}
+	}()
+
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -387,9 +383,11 @@ func (a *Adapter) doRequest(ctx context.Context, method, path string, body inter
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", apperrors.ErrConnectionFailed, err)
+		failure.Kind = adapter.Unreachable
+		return nil, fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	failure.Status = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -400,24 +398,27 @@ func (a *Adapter) doRequest(ctx context.Context, method, path string, body inter
 	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return respBody, nil
 	case http.StatusUnauthorized:
-		return nil, apperrors.ErrAuthFailed
+		failure.Kind = adapter.Unauthorized
+		return nil, errors.New("authentication failed")
 	case http.StatusNotFound:
-		// Distinguish "resource not found" from "endpoint not registered".
-		// Heuristic: any GET/DELETE/PATCH on a leaf URL under a known prefix
-		// is treated as "the resource doesn't exist". Routes that are POST
-		// or unknown prefixes get the louder "endpoint not found" message
-		// so unmounted modules surface clearly during install.
+		// Only leaf URLs identify a missing resource. Collection or unknown
+		// endpoint 404s remain upstream failures to expose missing modules.
 		switch method {
 		case http.MethodGet, http.MethodDelete, http.MethodPatch:
 			if strings.HasPrefix(path, "/admin_panel/users/") ||
 				strings.HasPrefix(path, "/admin_panel/sessions/") {
-				return nil, apperrors.ErrUserNotFound
+				failure.Kind = adapter.NotFound
+				return nil, errors.New("user not found")
 			}
 		}
-		return nil, fmt.Errorf("%w: endpoint not found at %s", apperrors.ErrOperationFailed, path)
+		return nil, fmt.Errorf("operation failed: endpoint not found at %s", path)
 	case http.StatusConflict:
-		return nil, apperrors.ErrUserExists
+		failure.Kind = adapter.Conflict
+		return nil, errors.New("user already exists")
+	case http.StatusForbidden:
+		failure.Kind = adapter.Forbidden
+		return nil, fmt.Errorf("operation failed: %s: %s", resp.Status, string(respBody))
 	default:
-		return nil, fmt.Errorf("%w: %s: %s", apperrors.ErrOperationFailed, resp.Status, string(respBody))
+		return nil, fmt.Errorf("operation failed: %s: %s", resp.Status, string(respBody))
 	}
 }

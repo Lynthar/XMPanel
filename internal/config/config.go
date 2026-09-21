@@ -22,7 +22,6 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Security SecurityConfig `yaml:"security"`
-	XMPP     XMPPConfig     `yaml:"xmpp"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -117,23 +116,6 @@ type CORSConfig struct {
 	AllowedHeaders   []string `yaml:"allowed_headers"`
 	AllowCredentials bool     `yaml:"allow_credentials"`
 	MaxAge           int      `yaml:"max_age"`
-}
-
-// XMPPConfig holds XMPP servers configuration
-type XMPPConfig struct {
-	Servers []XMPPServerConfig `yaml:"servers"`
-}
-
-// XMPPServerConfig holds individual XMPP server configuration
-type XMPPServerConfig struct {
-	ID      string `yaml:"id"`
-	Name    string `yaml:"name"`
-	Type    string `yaml:"type"` // prosody or ejabberd
-	Host    string `yaml:"host"`
-	Port    int    `yaml:"port"`
-	APIKey  string `yaml:"api_key"` // Will be encrypted at rest
-	TLS     bool   `yaml:"tls"`
-	Enabled bool   `yaml:"enabled"`
 }
 
 // Load loads configuration from file

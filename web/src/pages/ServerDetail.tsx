@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { serversApi, xmppApi, type ServerCapabilities, type XMPPServer } from '@/lib/api'
+import { serversApi, xmppApi, type ServerCapabilities, type XMPPServer, type XMPPSession } from '@/lib/api'
 import toast from 'react-hot-toast'
 import {
   ArrowLeft,
@@ -29,23 +29,7 @@ interface XMPPUser {
   resources?: string[]
 }
 
-interface XMPPSession {
-  jid: string             // full JID (user@host/resource)
-  bare_jid?: string       // user@host (Prosody mod_admin_panel emits this; missing on others)
-  username?: string
-  host?: string
-  resource: string
-  ip_address: string
-  secure?: boolean
-  priority: number
-  status: string
-  connected_at?: string   // ISO 8601, populated for sessions established after mod_admin_panel loaded
-}
-
-// Resolve a session's bare JID, falling back to stripping the resource off the
-// full JID for adapters that don't emit a separate bare_jid field.
 function sessionBareJid(s: XMPPSession): string {
-  if (s.bare_jid) return s.bare_jid
   const slash = s.jid.indexOf('/')
   return slash >= 0 ? s.jid.slice(0, slash) : s.jid
 }
@@ -523,9 +507,7 @@ function UsersTab({
     setExpandedJids(new Set())
   }, [domain])
 
-  // Group sessions by bare JID once per render. This keeps the per-row badge
-  // O(1) instead of scanning the whole sessions array per user. Falls back to
-  // computing bare_jid from the full JID when the adapter doesn't emit it.
+  // Group once so each user row can read its sessions in constant time.
   const sessionsByBareJid = useMemo(() => {
     const map = new Map<string, XMPPSession[]>()
     for (const s of sessions) {
@@ -782,7 +764,7 @@ function UserSessionsList({
                 {s.ip_address || '—'}
               </td>
               <td className="px-3 py-2 text-gray-400">
-                {s.connected_at ? new Date(s.connected_at).toLocaleString() : '—'}
+                {s.started_at.startsWith('0001-') ? '—' : new Date(s.started_at).toLocaleString()}
               </td>
               <td className="px-3 py-2 text-gray-300">{s.status || 'available'}</td>
               <td className="px-3 py-2 text-right">

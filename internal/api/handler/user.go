@@ -145,7 +145,7 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 		&user.LastLoginAt, &user.LastLoginIP, &user.CreatedAt, &user.UpdatedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
@@ -247,7 +247,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetRole, err := h.roleOf(id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}
@@ -371,7 +371,7 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userRole, err := h.roleOf(id)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
 		return
 	}

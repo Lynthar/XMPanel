@@ -78,6 +78,7 @@ func main() {
 
 	// Initialize router
 	r := router.New(cfg, db, logger)
+	defer r.Close()
 
 	// Configure server
 	srv := &http.Server{

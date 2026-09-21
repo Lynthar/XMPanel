@@ -8,8 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xmpanel/xmpanel/internal/api/handler"
-	"github.com/xmpanel/xmpanel/internal/security/crypto"
+	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/store"
 
 	"go.uber.org/zap"
@@ -49,7 +48,7 @@ type healthResponse struct {
 //
 // Each probe has a 2s timeout. XMPP probes run concurrently so worst-case
 // total latency is ~2s regardless of server count.
-func newHealthHandler(db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger) http.HandlerFunc {
+func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -90,7 +89,7 @@ func newHealthHandler(db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger)
 			return
 		}
 
-		summary := pingXMPPServers(r.Context(), db, keyRing, ids)
+		summary := pingXMPPServers(r.Context(), adapters, ids)
 		status := "ok"
 		if summary.Failed > 0 {
 			status = "degraded"
@@ -104,8 +103,7 @@ func newHealthHandler(db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger)
 }
 
 // listEnabledXMPPServerIDs returns just the IDs of servers with enabled=true.
-// Adapter construction reloads the full row inside GetXMPPAdapter, so we
-// don't need name/host/port here.
+// The registry loads the full row only when constructing a client.
 func listEnabledXMPPServerIDs(db *store.DB) ([]int64, error) {
 	rows, err := db.Query(`SELECT id FROM xmpp_servers WHERE enabled = TRUE`)
 	if err != nil {
@@ -126,20 +124,20 @@ func listEnabledXMPPServerIDs(db *store.DB) ([]int64, error) {
 // pingXMPPServers probes each server concurrently with a per-probe timeout.
 // Returns aggregate counts only — the caller surfaces ok/failed in the public
 // response, never per-server detail.
-func pingXMPPServers(ctx context.Context, db *store.DB, keyRing *crypto.KeyRing, ids []int64) xmppSummary {
+func pingXMPPServers(ctx context.Context, adapters *registry.Registry, ids []int64) xmppSummary {
 	var ok, failed int64
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Add(1)
 		go func(serverID int64) {
 			defer wg.Done()
-			a, err := handler.GetXMPPAdapter(db, keyRing, serverID)
+			pingCtx, cancel := context.WithTimeout(ctx, healthXMPPTimeout)
+			defer cancel()
+			a, err := adapters.Get(pingCtx, serverID)
 			if err != nil {
 				atomic.AddInt64(&failed, 1)
 				return
 			}
-			pingCtx, cancel := context.WithTimeout(ctx, healthXMPPTimeout)
-			defer cancel()
 			if err := a.Ping(pingCtx); err != nil {
 				atomic.AddInt64(&failed, 1)
 				return

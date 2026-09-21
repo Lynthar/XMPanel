@@ -44,8 +44,8 @@ func TestOnlyRespondWritesStatusLines(t *testing.T) {
 // the handlers run on nil stores; database-dependent branches are checked by hand.
 func TestErrorResponseShape(t *testing.T) {
 	logger := zap.NewNop()
-	xmppH := NewXMPPHandler(nil, nil, nil, logger)
-	serverH := NewServerHandler(nil, nil, nil, logger)
+	xmppH := NewXMPPHandler(nil, nil, logger)
+	serverH := NewServerHandler(nil, nil, nil, nil, logger)
 	userH := NewUserHandler(nil, nil, nil, nil, nil, logger)
 	auditH := NewAuditHandler(nil, logger)
 	authH := NewAuthHandler(nil, nil, nil, nil, nil, nil, 0, false, logger)

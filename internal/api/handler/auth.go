@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -156,7 +157,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		&user.LastLoginAt, &user.LastLoginIP, &user.CreatedAt, &user.UpdatedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, "", req.Username,
 			map[string]interface{}{"reason": "user_not_found"})
 		writeError(w, r, http.StatusUnauthorized, i18n.MsgInvalidCredentials)
@@ -333,7 +334,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(`SELECT refresh_token_hash FROM sessions WHERE session_id = $1 AND user_id = $2`,
 		claims.SessionID, claims.UserID).Scan(&storedHash)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
 			return
 		}
@@ -362,7 +363,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	err = h.db.QueryRow(`SELECT role, locked_until FROM users WHERE id = $1`, claims.UserID).
 		Scan(&userRole, &lockedUntil)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, r, http.StatusUnauthorized, i18n.MsgUserNotFound)
 			return
 		}

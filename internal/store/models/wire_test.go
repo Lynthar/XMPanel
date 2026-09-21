@@ -193,6 +193,13 @@ func jsonFields(v interface{}) []string {
 }
 
 func TestWireTypesMatchFrontend(t *testing.T) {
+	sameSet(t, "models.XMPPSession json", jsonFields(XMPPSession{}), "lib/api.ts XMPPSession", tsFields(t, "XMPPSession"))
 	sameSet(t, "models.User json", jsonFields(User{}), "lib/api.ts User", tsFields(t, "User"))
 	sameSet(t, "models.XMPPServer json", jsonFields(XMPPServer{}), "lib/api.ts XMPPServer", tsFields(t, "XMPPServer"))
+}
+
+func TestServerTypesMatchFrontend(t *testing.T) {
+	values := constValues(t, "xmpp.go", "ServerType")
+	labels := block(t, readWeb(t, "lib/api.ts"), "export const serverTypes", "}")
+	sameSet(t, "ServerType", values, "lib/api.ts serverTypes", matches(`(?m)^\s+(\w+):`, labels))
 }

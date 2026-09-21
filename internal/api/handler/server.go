@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
@@ -19,19 +21,21 @@ import (
 
 // ServerHandler handles XMPP server management endpoints
 type ServerHandler struct {
-	db      *store.DB
-	keyRing *crypto.KeyRing
-	audit   *AuditService
-	logger  *zap.Logger
+	adapters *registry.Registry
+	db       *store.DB
+	keyRing  *crypto.KeyRing
+	audit    *AuditService
+	logger   *zap.Logger
 }
 
 // NewServerHandler creates a new server handler
-func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *ServerHandler {
+func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, adapters *registry.Registry, audit *AuditService, logger *zap.Logger) *ServerHandler {
 	return &ServerHandler{
-		db:      db,
-		keyRing: keyRing,
-		audit:   audit,
-		logger:  logger,
+		adapters: adapters,
+		db:       db,
+		keyRing:  keyRing,
+		audit:    audit,
+		logger:   logger,
 	}
 }
 
@@ -82,7 +86,7 @@ func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 		&server.TLSEnabled, &server.Enabled, &server.CreatedAt, &server.UpdatedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, r, http.StatusNotFound, i18n.MsgServerNotFound)
 		return
 	}
@@ -115,7 +119,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "Invalid port")
 		return
 	}
-	if req.Type != models.ServerTypeProsody && req.Type != models.ServerTypeEjabberd {
+	if !registry.Supports(req.Type) {
 		writeError(w, r, http.StatusBadRequest, "Invalid server type")
 		return
 	}
@@ -230,6 +234,8 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, k)
 		}
 	}
+	h.adapters.Invalidate(id)
+
 	h.audit.LogEvent(r, models.AuditActionServerUpdate, models.ResourceTypeServer, idStr, "",
 		map[string]interface{}{"fields": updatedFields})
 
@@ -257,6 +263,8 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.adapters.Invalidate(id)
+
 	h.audit.LogEvent(r, models.AuditActionServerRemove, models.ResourceTypeServer, idStr, "", nil)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgServerDeleted)})
@@ -272,7 +280,7 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get server and create adapter
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
+	xmppAdapter, err := h.adapters.Get(r.Context(), id)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -283,7 +291,7 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := xmppAdapter.GetStats(ctx)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to get server statistics", err)
+		writeAdapterError(w, r, h.logger, "server.stats", err)
 		return
 	}
 
@@ -301,7 +309,7 @@ func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
+	xmppAdapter, err := h.adapters.Get(r.Context(), id)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -319,7 +327,7 @@ func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, id)
+	xmppAdapter, err := h.adapters.Get(r.Context(), id)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return

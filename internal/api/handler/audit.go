@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -431,7 +432,7 @@ func (s *AuditService) Log(entry *models.AuditLogEntry) error {
 	// Get the previous hash within the transaction
 	var prevHash string
 	if err := tx.QueryRow(`SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1`).Scan(&prevHash); err != nil {
-		if err != sql.ErrNoRows {
+		if !errors.Is(err, sql.ErrNoRows) {
 			s.logger.Warn("failed to get previous audit hash", zap.Error(err))
 		}
 		// Continue anyway - first entry won't have a prev hash

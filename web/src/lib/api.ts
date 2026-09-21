@@ -112,6 +112,13 @@ export const usersApi = {
   delete: (id: number) => api.delete(`/users/${id}`),
 }
 
+export const serverTypes = {
+  prosody: 'Prosody',
+  ejabberd: 'ejabberd',
+} as const
+
+export type ServerType = keyof typeof serverTypes
+
 // Servers API
 export const serversApi = {
   list: () => api.get('/servers'),
@@ -120,7 +127,7 @@ export const serversApi = {
 
   create: (data: {
     name: string
-    type: string
+    type: ServerType
     host: string
     port: number
     api_key: string
@@ -157,13 +164,22 @@ export interface User {
 export interface XMPPServer {
   id: number
   name: string
-  type: string
+  type: ServerType
   host: string
   port: number
   tls_enabled: boolean
   enabled: boolean
   created_at: string
   updated_at: string
+}
+
+export interface XMPPSession {
+  jid: string
+  resource: string
+  ip_address: string
+  priority: number
+  status: string
+  started_at: string
 }
 
 export interface ServerCapabilities {

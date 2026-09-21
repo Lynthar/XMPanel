@@ -7,11 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/i18n"
-	"github.com/xmpanel/xmpanel/internal/security/crypto"
-	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
 	"go.uber.org/zap"
@@ -19,19 +17,17 @@ import (
 
 // XMPPHandler handles XMPP operations endpoints
 type XMPPHandler struct {
-	db      *store.DB
-	keyRing *crypto.KeyRing
-	audit   *AuditService
-	logger  *zap.Logger
+	adapters *registry.Registry
+	audit    *AuditService
+	logger   *zap.Logger
 }
 
 // NewXMPPHandler creates a new XMPP handler
-func NewXMPPHandler(db *store.DB, keyRing *crypto.KeyRing, audit *AuditService, logger *zap.Logger) *XMPPHandler {
+func NewXMPPHandler(adapters *registry.Registry, audit *AuditService, logger *zap.Logger) *XMPPHandler {
 	return &XMPPHandler{
-		db:      db,
-		keyRing: keyRing,
-		audit:   audit,
-		logger:  logger,
+		adapters: adapters,
+		audit:    audit,
+		logger:   logger,
 	}
 }
 
@@ -49,7 +45,7 @@ func (h *XMPPHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -60,7 +56,7 @@ func (h *XMPPHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 
 	users, err := xmppAdapter.ListUsers(ctx, domain)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to list users", err)
+		writeAdapterError(w, r, h.logger, "accounts.list", err)
 		return
 	}
 
@@ -82,7 +78,7 @@ func (h *XMPPHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -93,11 +89,7 @@ func (h *XMPPHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 
 	user, err := xmppAdapter.GetUser(ctx, username, domain)
 	if err != nil {
-		if err == adapter.ErrUserNotFound {
-			writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to get user", err)
+		writeAdapterError(w, r, h.logger, "accounts.get", err)
 		return
 	}
 
@@ -132,7 +124,7 @@ func (h *XMPPHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -143,11 +135,7 @@ func (h *XMPPHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.CreateUser(ctx, req)
 	if err != nil {
-		if err == adapter.ErrUserExists {
-			writeError(w, r, http.StatusConflict, "User already exists")
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to create user", err)
+		writeAdapterError(w, r, h.logger, "accounts.create", err)
 		return
 	}
 
@@ -176,7 +164,7 @@ func (h *XMPPHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -187,11 +175,7 @@ func (h *XMPPHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.DeleteUser(ctx, username, domain)
 	if err != nil {
-		if err == adapter.ErrUserNotFound {
-			writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to delete user", err)
+		writeAdapterError(w, r, h.logger, "accounts.delete", err)
 		return
 	}
 
@@ -216,7 +200,7 @@ func (h *XMPPHandler) KickUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -227,7 +211,7 @@ func (h *XMPPHandler) KickUser(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.KickUser(ctx, username, domain)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to kick user", err)
+		writeAdapterError(w, r, h.logger, "sessions.terminate_all", err)
 		return
 	}
 
@@ -245,7 +229,7 @@ func (h *XMPPHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -256,7 +240,7 @@ func (h *XMPPHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	sessions, err := xmppAdapter.GetOnlineSessions(ctx)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to list sessions", err)
+		writeAdapterError(w, r, h.logger, "sessions.list", err)
 		return
 	}
 
@@ -273,7 +257,7 @@ func (h *XMPPHandler) KickSession(w http.ResponseWriter, r *http.Request) {
 
 	jid := r.PathValue("jid")
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -284,7 +268,7 @@ func (h *XMPPHandler) KickSession(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.KickSession(ctx, jid)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to kick session", err)
+		writeAdapterError(w, r, h.logger, "sessions.terminate", err)
 		return
 	}
 
@@ -308,7 +292,7 @@ func (h *XMPPHandler) ListRooms(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -319,7 +303,7 @@ func (h *XMPPHandler) ListRooms(w http.ResponseWriter, r *http.Request) {
 
 	rooms, err := xmppAdapter.ListRooms(ctx, mucDomain)
 	if err != nil {
-		writeUpstreamError(w, r, h.logger, "Failed to list rooms", err)
+		writeAdapterError(w, r, h.logger, "rooms.list", err)
 		return
 	}
 
@@ -341,7 +325,7 @@ func (h *XMPPHandler) GetRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -352,11 +336,7 @@ func (h *XMPPHandler) GetRoom(w http.ResponseWriter, r *http.Request) {
 
 	roomInfo, err := xmppAdapter.GetRoom(ctx, room, mucDomain)
 	if err != nil {
-		if err == adapter.ErrRoomNotFound {
-			writeError(w, r, http.StatusNotFound, "Room not found")
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to get room", err)
+		writeAdapterError(w, r, h.logger, "rooms.get", err)
 		return
 	}
 
@@ -387,7 +367,7 @@ func (h *XMPPHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -398,11 +378,7 @@ func (h *XMPPHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.CreateRoom(ctx, req)
 	if err != nil {
-		if err == adapter.ErrRoomExists {
-			writeError(w, r, http.StatusConflict, "Room already exists")
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to create room", err)
+		writeAdapterError(w, r, h.logger, "rooms.create", err)
 		return
 	}
 
@@ -431,7 +407,7 @@ func (h *XMPPHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	xmppAdapter, err := GetXMPPAdapter(h.db, h.keyRing, serverID)
+	xmppAdapter, err := h.adapters.Get(r.Context(), serverID)
 	if err != nil {
 		writeServerLookupError(w, r, h.logger, err)
 		return
@@ -442,11 +418,7 @@ func (h *XMPPHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 
 	err = xmppAdapter.DeleteRoom(ctx, room, mucDomain)
 	if err != nil {
-		if err == adapter.ErrRoomNotFound {
-			writeError(w, r, http.StatusNotFound, "Room not found")
-			return
-		}
-		writeUpstreamError(w, r, h.logger, "Failed to delete room", err)
+		writeAdapterError(w, r, h.logger, "rooms.delete", err)
 		return
 	}
 

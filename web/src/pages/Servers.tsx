@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { serversApi, type XMPPServer } from '@/lib/api'
+import { serversApi, serverTypes, type ServerType, type XMPPServer } from '@/lib/api'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
@@ -18,7 +18,7 @@ import clsx from 'clsx'
 
 interface CreateServerForm {
   name: string
-  type: string
+  type: ServerType
   host: string
   port: number
   api_key: string
@@ -279,8 +279,9 @@ function AddServerModal({ onClose, onSuccess }: AddServerModalProps) {
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">{t('common.type')}</label>
             <select className="input" {...register('type')}>
-              <option value="prosody">Prosody</option>
-              <option value="ejabberd">ejabberd</option>
+              {Object.entries(serverTypes).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
             </select>
           </div>
 

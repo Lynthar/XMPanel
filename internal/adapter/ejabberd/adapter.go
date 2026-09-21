@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/store/models"
-	apperrors "github.com/xmpanel/xmpanel/pkg/errors"
 	"github.com/xmpanel/xmpanel/pkg/types"
 )
 
@@ -36,7 +36,8 @@ func NewAdapter(server *models.XMPPServer, apiKey string) *Adapter {
 		server: server,
 		apiKey: apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		},
 		baseURL: fmt.Sprintf("%s://%s:%d/api", scheme, server.Host, server.Port),
 	}
@@ -47,43 +48,44 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	return a.Ping(ctx)
 }
 
-// Disconnect closes the connection (no-op for HTTP)
+// Disconnect releases idle HTTP connections; active requests may finish.
 func (a *Adapter) Disconnect() error {
+	a.httpClient.CloseIdleConnections()
 	return nil
 }
 
 // Ping checks if the server is reachable
 func (a *Adapter) Ping(ctx context.Context) error {
-	_, err := a.doRequest(ctx, "status", nil)
+	_, err := a.doRequest(ctx, "server.ping", "status", nil)
 	return err
 }
 
 // GetServerInfo retrieves server information
 func (a *Adapter) GetServerInfo(ctx context.Context) (*types.ServerInfo, error) {
 	// Get version
-	versionResp, err := a.doRequest(ctx, "status", nil)
+	versionResp, err := a.doRequest(ctx, "server.info", "status", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var version string
 	if err := json.Unmarshal(versionResp, &version); err != nil {
-		return nil, fmt.Errorf("failed to parse version: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "server.info", Status: http.StatusOK, Err: fmt.Errorf("failed to parse version: %w", err)}
 	}
 
 	// Get hosts
-	hostsResp, err := a.doRequest(ctx, "registered_vhosts", nil)
+	hostsResp, err := a.doRequest(ctx, "server.info", "registered_vhosts", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var hosts []string
 	if err := json.Unmarshal(hostsResp, &hosts); err != nil {
-		return nil, fmt.Errorf("failed to parse hosts: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "server.info", Status: http.StatusOK, Err: fmt.Errorf("failed to parse hosts: %w", err)}
 	}
 
 	return &types.ServerInfo{
-		Type:    types.ServerTypeEjabberd,
+		Type:    models.ServerTypeEjabberd,
 		Version: version,
 		Domains: hosts,
 	}, nil
@@ -98,21 +100,21 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 	// All three commands return one named integer, which mod_http_api sends as
 	// a bare JSON number on API v1+ (what an unversioned /api URL selects);
 	// parsing `stats` as {"stat": N} left registered users at 0 everywhere.
-	if resp, err := a.doRequest(ctx, "connected_users_number", nil); err == nil {
+	if resp, err := a.doRequest(ctx, "server.stats", "connected_users_number", nil); err == nil {
 		var count int
 		if json.Unmarshal(resp, &count) == nil {
 			stats.OnlineUsers = count
 		}
 	}
 
-	if resp, err := a.doRequest(ctx, "stats", map[string]string{"name": "registeredusers"}); err == nil {
+	if resp, err := a.doRequest(ctx, "server.stats", "stats", map[string]string{"name": "registeredusers"}); err == nil {
 		var count int
 		if json.Unmarshal(resp, &count) == nil {
 			stats.RegisteredUsers = count
 		}
 	}
 
-	if resp, err := a.doRequest(ctx, "incoming_s2s_number", nil); err == nil {
+	if resp, err := a.doRequest(ctx, "server.stats", "incoming_s2s_number", nil); err == nil {
 		var count int
 		if json.Unmarshal(resp, &count) == nil {
 			stats.S2SConnections = count
@@ -124,14 +126,14 @@ func (a *Adapter) GetStats(ctx context.Context) (*models.ServerStats, error) {
 
 // ListUsers lists all users in a domain
 func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUser, error) {
-	resp, err := a.doRequest(ctx, "registered_users", map[string]string{"host": domain})
+	resp, err := a.doRequest(ctx, "accounts.list", "registered_users", map[string]string{"host": domain})
 	if err != nil {
 		return nil, err
 	}
 
 	var usernames []string
 	if err := json.Unmarshal(resp, &usernames); err != nil {
-		return nil, fmt.Errorf("failed to parse users: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "accounts.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse users: %w", err)}
 	}
 
 	users := make([]models.XMPPUser, len(usernames))
@@ -149,7 +151,7 @@ func (a *Adapter) ListUsers(ctx context.Context, domain string) ([]models.XMPPUs
 // GetUser retrieves information about a specific user
 func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models.XMPPUser, error) {
 	// Check if user exists
-	resp, err := a.doRequest(ctx, "check_account", map[string]string{
+	resp, err := a.doRequest(ctx, "accounts.get", "check_account", map[string]string{
 		"user": username,
 		"host": domain,
 	})
@@ -159,14 +161,14 @@ func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models
 
 	var exists int
 	if err := json.Unmarshal(resp, &exists); err != nil {
-		return nil, fmt.Errorf("failed to parse check_account result: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "accounts.get", Status: http.StatusOK, Err: fmt.Errorf("failed to parse check_account result: %w", err)}
 	}
 	if exists != 0 {
-		return nil, apperrors.ErrUserNotFound
+		return nil, &adapter.Error{Kind: adapter.NotFound, Op: "accounts.get", Resource: username + "@" + a.server.Host, Err: errors.New("user not found")}
 	}
 
 	// Get user sessions
-	sessionsResp, err := a.doRequest(ctx, "user_sessions_info", map[string]string{
+	sessionsResp, err := a.doRequest(ctx, "accounts.get", "user_sessions_info", map[string]string{
 		"user": username,
 		"host": domain,
 	})
@@ -192,7 +194,7 @@ func (a *Adapter) GetUser(ctx context.Context, username, domain string) (*models
 
 // CreateUser creates a new user
 func (a *Adapter) CreateUser(ctx context.Context, req models.CreateXMPPUserRequest) error {
-	_, err := a.doRequest(ctx, "register", map[string]string{
+	_, err := a.doRequest(ctx, "accounts.create", "register", map[string]string{
 		"user":     req.Username,
 		"host":     req.Domain,
 		"password": req.Password,
@@ -202,7 +204,7 @@ func (a *Adapter) CreateUser(ctx context.Context, req models.CreateXMPPUserReque
 
 // DeleteUser deletes a user
 func (a *Adapter) DeleteUser(ctx context.Context, username, domain string) error {
-	_, err := a.doRequest(ctx, "unregister", map[string]string{
+	_, err := a.doRequest(ctx, "accounts.delete", "unregister", map[string]string{
 		"user": username,
 		"host": domain,
 	})
@@ -211,7 +213,7 @@ func (a *Adapter) DeleteUser(ctx context.Context, username, domain string) error
 
 // ChangePassword changes a user's password
 func (a *Adapter) ChangePassword(ctx context.Context, username, domain, newPassword string) error {
-	_, err := a.doRequest(ctx, "change_password", map[string]string{
+	_, err := a.doRequest(ctx, "accounts.set_password", "change_password", map[string]string{
 		"user":    username,
 		"host":    domain,
 		"newpass": newPassword,
@@ -221,14 +223,14 @@ func (a *Adapter) ChangePassword(ctx context.Context, username, domain, newPassw
 
 // GetOnlineSessions retrieves all online sessions
 func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, error) {
-	resp, err := a.doRequest(ctx, "connected_users_info", nil)
+	resp, err := a.doRequest(ctx, "sessions.list", "connected_users_info", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var rawSessions []map[string]interface{}
 	if err := json.Unmarshal(resp, &rawSessions); err != nil {
-		return nil, fmt.Errorf("failed to parse sessions: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "sessions.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse sessions: %w", err)}
 	}
 
 	// connected_users_info carries the full JID in one "jid" field and has no
@@ -250,7 +252,7 @@ func (a *Adapter) GetOnlineSessions(ctx context.Context) ([]models.XMPPSession, 
 
 // GetUserSessions retrieves sessions for a specific user
 func (a *Adapter) GetUserSessions(ctx context.Context, username, domain string) ([]models.XMPPSession, error) {
-	resp, err := a.doRequest(ctx, "user_sessions_info", map[string]string{
+	resp, err := a.doRequest(ctx, "sessions.list_by_account", "user_sessions_info", map[string]string{
 		"user": username,
 		"host": domain,
 	})
@@ -260,7 +262,7 @@ func (a *Adapter) GetUserSessions(ctx context.Context, username, domain string) 
 
 	var rawSessions []map[string]interface{}
 	if err := json.Unmarshal(resp, &rawSessions); err != nil {
-		return nil, fmt.Errorf("failed to parse sessions: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "sessions.list_by_account", Status: http.StatusOK, Err: fmt.Errorf("failed to parse sessions: %w", err)}
 	}
 
 	sessions := make([]models.XMPPSession, len(rawSessions))
@@ -281,7 +283,7 @@ func (a *Adapter) GetUserSessions(ctx context.Context, username, domain string) 
 func (a *Adapter) KickSession(ctx context.Context, jid string) error {
 	// Parse JID
 	user, server, resource := parseJID(jid)
-	_, err := a.doRequest(ctx, "kick_session", map[string]string{
+	_, err := a.doRequest(ctx, "sessions.terminate", "kick_session", map[string]string{
 		"user":     user,
 		"host":     server,
 		"resource": resource,
@@ -292,7 +294,7 @@ func (a *Adapter) KickSession(ctx context.Context, jid string) error {
 
 // KickUser disconnects all sessions for a user
 func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
-	_, err := a.doRequest(ctx, "kick_user", map[string]string{
+	_, err := a.doRequest(ctx, "sessions.terminate_all", "kick_user", map[string]string{
 		"user":   username,
 		"host":   domain,
 		"reason": "Kicked by administrator",
@@ -302,7 +304,7 @@ func (a *Adapter) KickUser(ctx context.Context, username, domain string) error {
 
 // ListRooms lists all MUC rooms
 func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMPPRoom, error) {
-	resp, err := a.doRequest(ctx, "muc_online_rooms", map[string]string{
+	resp, err := a.doRequest(ctx, "rooms.list", "muc_online_rooms", map[string]string{
 		"service": mucDomain,
 	})
 	if err != nil {
@@ -314,7 +316,7 @@ func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMP
 	// lookup under that name failed.
 	var roomJIDs []string
 	if err := json.Unmarshal(resp, &roomJIDs); err != nil {
-		return nil, fmt.Errorf("failed to parse rooms: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "rooms.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse rooms: %w", err)}
 	}
 
 	rooms := make([]models.XMPPRoom, len(roomJIDs))
@@ -341,7 +343,7 @@ func (a *Adapter) ListRooms(ctx context.Context, mucDomain string) ([]models.XMP
 
 // GetRoom retrieves information about a specific room
 func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.XMPPRoom, error) {
-	resp, err := a.doRequest(ctx, "get_room_options", map[string]string{
+	resp, err := a.doRequest(ctx, "rooms.get", "get_room_options", map[string]string{
 		"name":    room,
 		"service": mucDomain,
 	})
@@ -377,7 +379,7 @@ func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.
 	}
 
 	// Get occupants count
-	if occResp, err := a.doRequest(ctx, "get_room_occupants_number", map[string]string{
+	if occResp, err := a.doRequest(ctx, "rooms.get", "get_room_occupants_number", map[string]string{
 		"name":    room,
 		"service": mucDomain,
 	}); err == nil {
@@ -393,7 +395,7 @@ func (a *Adapter) GetRoom(ctx context.Context, room, mucDomain string) (*models.
 // CreateRoom creates a new MUC room
 func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomRequest) error {
 	// Create room
-	_, err := a.doRequest(ctx, "create_room", map[string]string{
+	_, err := a.doRequest(ctx, "rooms.create", "create_room", map[string]string{
 		"name":    req.Name,
 		"service": req.Domain,
 		"host":    req.Domain,
@@ -412,7 +414,7 @@ func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomReque
 	}
 
 	for _, opt := range options {
-		if _, err := a.doRequest(ctx, "change_room_option", map[string]string{
+		if _, err := a.doRequest(ctx, "rooms.create", "change_room_option", map[string]string{
 			"name":    req.Name,
 			"service": req.Domain,
 			"option":  opt["name"],
@@ -427,7 +429,7 @@ func (a *Adapter) CreateRoom(ctx context.Context, req models.CreateXMPPRoomReque
 
 // DeleteRoom deletes a MUC room
 func (a *Adapter) DeleteRoom(ctx context.Context, room, mucDomain string) error {
-	_, err := a.doRequest(ctx, "destroy_room", map[string]string{
+	_, err := a.doRequest(ctx, "rooms.delete", "destroy_room", map[string]string{
 		"name":    room,
 		"service": mucDomain,
 	})
@@ -436,7 +438,7 @@ func (a *Adapter) DeleteRoom(ctx context.Context, room, mucDomain string) error 
 
 // ListModules lists all loaded modules
 func (a *Adapter) ListModules(ctx context.Context) ([]types.ModuleInfo, error) {
-	resp, err := a.doRequest(ctx, "loaded_modules", map[string]string{
+	resp, err := a.doRequest(ctx, "modules.list", "loaded_modules", map[string]string{
 		"host": a.server.Host,
 	})
 	if err != nil {
@@ -445,7 +447,7 @@ func (a *Adapter) ListModules(ctx context.Context) ([]types.ModuleInfo, error) {
 
 	var moduleNames []string
 	if err := json.Unmarshal(resp, &moduleNames); err != nil {
-		return nil, fmt.Errorf("failed to parse modules: %w", err)
+		return nil, &adapter.Error{Kind: adapter.Upstream, Op: "modules.list", Status: http.StatusOK, Err: fmt.Errorf("failed to parse modules: %w", err)}
 	}
 
 	modules := make([]types.ModuleInfo, len(moduleNames))
@@ -461,21 +463,16 @@ func (a *Adapter) ListModules(ctx context.Context) ([]types.ModuleInfo, error) {
 
 // EnableModule enables a module
 func (a *Adapter) EnableModule(ctx context.Context, module string) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "modules.enable", Err: errors.New("operation not implemented")}
 }
 
 // DisableModule disables a module
 func (a *Adapter) DisableModule(ctx context.Context, module string) error {
-	return apperrors.ErrNotImplemented
+	return &adapter.Error{Kind: adapter.NotSupported, Op: "modules.disable", Err: errors.New("operation not implemented")}
 }
 
-// Capabilities reports what this adapter can do against ejabberd.
-//
-// NOTE: this adapter has not been validated against a real ejabberd
-// server (CLAUDE.md flags this). The flags below describe what the code
-// **attempts** to do, not what we've confirmed works. If you hit 502s on
-// supposedly-supported endpoints, narrow these flags and patch the
-// concrete methods.
+// Capabilities reports the implemented operations. Each operation still
+// returns an error when the upstream deployment cannot perform it.
 func (a *Adapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		OnlineUsersCount:     true,  // connected_users_number
@@ -484,12 +481,20 @@ func (a *Adapter) Capabilities() adapter.Capabilities {
 		S2SConnectionsCount:  true,  // incoming_s2s_number
 		Sessions:             true,  // connected_users_info, kick_session/kick_user
 		Rooms:                true,  // muc_online_rooms, get_room_options, etc
-		Modules:              false, // EnableModule/DisableModule return ErrNotImplemented
+		Modules:              false, // Module changes are unsupported.
 	}
 }
 
 // doRequest performs an HTTP request to the ejabberd API
-func (a *Adapter) doRequest(ctx context.Context, command string, args map[string]string) ([]byte, error) {
+func (a *Adapter) doRequest(ctx context.Context, op, command string, args map[string]string) (_ []byte, err error) {
+	failure := &adapter.Error{Kind: adapter.Upstream, Op: op, Resource: command}
+	defer func() {
+		if err != nil {
+			failure.Err = err
+			err = failure
+		}
+	}()
+
 	url := fmt.Sprintf("%s/%s", a.baseURL, command)
 
 	var bodyReader io.Reader
@@ -512,9 +517,11 @@ func (a *Adapter) doRequest(ctx context.Context, command string, args map[string
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", apperrors.ErrConnectionFailed, err)
+		failure.Kind = adapter.Unreachable
+		return nil, fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	failure.Status = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -525,11 +532,18 @@ func (a *Adapter) doRequest(ctx context.Context, command string, args map[string
 	case http.StatusOK:
 		return respBody, nil
 	case http.StatusUnauthorized:
-		return nil, apperrors.ErrAuthFailed
+		failure.Kind = adapter.Unauthorized
+		return nil, errors.New("authentication failed")
 	case http.StatusNotFound:
-		return nil, apperrors.ErrUserNotFound
+		if !strings.HasPrefix(op, "rooms.") {
+			failure.Kind = adapter.NotFound
+		}
+		return nil, errors.New("user not found")
+	case http.StatusForbidden:
+		failure.Kind = adapter.Forbidden
+		return nil, fmt.Errorf("operation failed: %s", string(respBody))
 	default:
-		return nil, fmt.Errorf("%w: %s", apperrors.ErrOperationFailed, string(respBody))
+		return nil, fmt.Errorf("operation failed: %s", string(respBody))
 	}
 }
 

@@ -4,20 +4,7 @@ import (
 	"context"
 
 	"github.com/xmpanel/xmpanel/internal/store/models"
-	apperrors "github.com/xmpanel/xmpanel/pkg/errors"
 	"github.com/xmpanel/xmpanel/pkg/types"
-)
-
-// Re-export errors for convenience
-var (
-	ErrNotImplemented   = apperrors.ErrNotImplemented
-	ErrConnectionFailed = apperrors.ErrConnectionFailed
-	ErrAuthFailed       = apperrors.ErrAuthFailed
-	ErrUserNotFound     = apperrors.ErrUserNotFound
-	ErrUserExists       = apperrors.ErrUserExists
-	ErrRoomNotFound     = apperrors.ErrRoomNotFound
-	ErrRoomExists       = apperrors.ErrRoomExists
-	ErrOperationFailed  = apperrors.ErrOperationFailed
 )
 
 // Re-export types for convenience

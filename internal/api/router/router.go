@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/handler"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
@@ -18,8 +19,12 @@ import (
 
 // Router wraps http.ServeMux with middleware support
 type Router struct {
-	mux         *http.ServeMux
-	middlewares []func(http.Handler) http.Handler
+	adapters       *registry.Registry
+	mux            *http.ServeMux
+	middlewares    []func(http.Handler) http.Handler
+	endpoints      []endpoint
+	authMiddleware *middleware.AuthMiddleware
+	csrfMiddleware *middleware.CSRFMiddleware
 }
 
 // NewRouter creates a new router
@@ -35,14 +40,22 @@ func (r *Router) Use(mw func(http.Handler) http.Handler) {
 	r.middlewares = append(r.middlewares, mw)
 }
 
-// Handle registers a handler for a pattern
+// Handle registers an allowlisted public route.
 func (r *Router) Handle(pattern string, handler http.Handler) {
+	if !publicRoutes[pattern] {
+		panic("public route is not allowlisted: " + pattern)
+	}
 	r.mux.Handle(pattern, handler)
+	method, path, hasMethod := strings.Cut(pattern, " ")
+	if !hasMethod {
+		method, path = "", pattern
+	}
+	r.endpoints = append(r.endpoints, endpoint{method: method, path: path})
 }
 
 // HandleFunc registers a handler function for a pattern
 func (r *Router) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
-	r.mux.HandleFunc(pattern, handler)
+	r.Handle(pattern, http.HandlerFunc(handler))
 }
 
 // ServeHTTP implements http.Handler
@@ -55,46 +68,50 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	handler.ServeHTTP(w, req)
 }
 
-// Group creates a new route group with additional middlewares
-func (r *Router) Group(prefix string, middlewares ...func(http.Handler) http.Handler) *RouteGroup {
-	return &RouteGroup{
-		router:      r,
-		prefix:      prefix,
-		middlewares: middlewares,
-	}
+const permissionSelf = "auth:self"
+
+var publicRoutes = map[string]bool{
+	"GET /health":               true,
+	"POST /api/v1/auth/login":   true,
+	"POST /api/v1/auth/refresh": true,
+	"/":                         true,
 }
 
-// RouteGroup represents a group of routes with common prefix and middlewares
-type RouteGroup struct {
-	router      *Router
-	prefix      string
-	middlewares []func(http.Handler) http.Handler
+type endpoint struct {
+	method, path, permission string
 }
 
-// Handle registers a handler for a pattern in the group.
-//
-// Patterns may use Go 1.22+ method-prefixed form ("POST /foo") or be path-only
-// ("/foo"). The group prefix is inserted before the path, after the method if
-// present, so "POST /foo" with prefix "/api/v1" becomes "POST /api/v1/foo".
-func (g *RouteGroup) Handle(pattern string, handler http.Handler) {
-	for i := len(g.middlewares) - 1; i >= 0; i-- {
-		handler = g.middlewares[i](handler)
+// route requires an explicit permission for every authenticated endpoint.
+// auth:self is limited to auth routes whose target comes from JWT claims;
+// other routes must use a permission declared by the role table.
+func (r *Router) route(method, path, permission string, h http.HandlerFunc) {
+	known := false
+	if permission == permissionSelf {
+		known = strings.HasPrefix(path, "/api/v1/auth/")
+	} else if permission != "" {
+		for _, permissions := range models.Permissions {
+			for _, value := range permissions {
+				if permission == value {
+					known = true
+				}
+			}
+		}
 	}
-
-	full := g.prefix + pattern
-	if idx := strings.Index(pattern, " "); idx >= 0 {
-		full = pattern[:idx+1] + g.prefix + pattern[idx+1:]
+	if !known {
+		panic("route requires a known permission: " + method + " " + path)
 	}
-	g.router.Handle(full, handler)
-}
-
-// HandleFunc registers a handler function for a pattern in the group
-func (g *RouteGroup) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
-	g.Handle(pattern, http.HandlerFunc(handler))
+	var protected http.Handler = h
+	if permission != permissionSelf {
+		protected = middleware.RequirePermission(permission)(protected)
+	}
+	protected = r.csrfMiddleware.Protect(protected)
+	protected = r.authMiddleware.Authenticate(protected)
+	r.mux.Handle(method+" "+path, protected)
+	r.endpoints = append(r.endpoints, endpoint{method, path, permission})
 }
 
 // New creates and configures the main router
-func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
+func New(cfg *config.Config, db *store.DB, logger *zap.Logger) *Router {
 	router := NewRouter()
 
 	// Initialize components
@@ -142,6 +159,8 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	// Initialize password validator
 	passwordValidator := password.NewValidator(cfg.Security.Password)
 
+	router.adapters = registry.New(db, keyRing, logger)
+
 	// Initialize handlers (auditService is shared across all mutation handlers)
 	auditService := handler.NewAuditService(db, logger)
 	authHandler := handler.NewAuthHandler(
@@ -149,14 +168,16 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 		cfg.Security.JWT.RefreshTokenTTL, cfg.CookieSecure(), logger,
 	)
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
-	serverHandler := handler.NewServerHandler(db, keyRing, auditService, logger)
-	xmppHandler := handler.NewXMPPHandler(db, keyRing, auditService, logger)
+	serverHandler := handler.NewServerHandler(db, keyRing, router.adapters, auditService, logger)
+	xmppHandler := handler.NewXMPPHandler(router.adapters, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
 	csrfMiddleware := middleware.NewCSRFMiddleware(cfg.CookieSecure())
+	router.authMiddleware = authMiddleware
+	router.csrfMiddleware = csrfMiddleware
 
 	// Health check (public). Aggregate-only response shape — see health.go for
 	// the contract and disclosure rationale.
-	router.HandleFunc("GET /health", newHealthHandler(db, keyRing, logger))
+	router.HandleFunc("GET /health", newHealthHandler(db, router.adapters, logger))
 
 	// Auth routes (public). Login has no CSRF — the user has no session yet
 	// so there's no cookie to mirror; SameSite=Strict on the cookies set by a
@@ -168,66 +189,53 @@ func New(cfg *config.Config, db *store.DB, logger *zap.Logger) http.Handler {
 	router.Handle("POST /api/v1/auth/refresh",
 		csrfMiddleware.Protect(http.HandlerFunc(authHandler.Refresh)))
 
-	// Protected API routes. CSRFMiddleware skips safe methods, so attaching it
-	// at the group level only enforces the double-submit pattern on POST/PUT/
-	// DELETE/PATCH while leaving GETs untouched.
-	api := router.Group("/api/v1", authMiddleware.Authenticate, csrfMiddleware.Protect)
+	// Authenticated routes always apply authentication and CSRF before the
+	// declared permission. CSRF leaves safe methods unchanged.
 
 	// Auth (protected)
-	api.HandleFunc("POST /auth/logout", authHandler.Logout)
-	api.HandleFunc("GET /auth/me", authHandler.Me)
-	api.HandleFunc("POST /auth/mfa/setup", authHandler.SetupMFA)
-	api.HandleFunc("POST /auth/mfa/verify", authHandler.VerifyMFA)
-	api.HandleFunc("POST /auth/mfa/disable", authHandler.DisableMFA)
-	api.HandleFunc("POST /auth/password", authHandler.ChangePassword)
+	router.route("POST", "/api/v1/auth/logout", permissionSelf, authHandler.Logout)
+	router.route("GET", "/api/v1/auth/me", permissionSelf, authHandler.Me)
+	router.route("POST", "/api/v1/auth/mfa/setup", permissionSelf, authHandler.SetupMFA)
+	router.route("POST", "/api/v1/auth/mfa/verify", permissionSelf, authHandler.VerifyMFA)
+	router.route("POST", "/api/v1/auth/mfa/disable", permissionSelf, authHandler.DisableMFA)
+	router.route("POST", "/api/v1/auth/password", permissionSelf, authHandler.ChangePassword)
 
-	// User management (admin only)
-	adminGroup := router.Group("/api/v1",
-		authMiddleware.Authenticate,
-		csrfMiddleware.Protect,
-		middleware.RequireRole(models.RoleSuperAdmin, models.RoleAdmin),
-	)
-	adminGroup.HandleFunc("GET /users", userHandler.List)
-	adminGroup.HandleFunc("POST /users", userHandler.Create)
-	adminGroup.HandleFunc("GET /users/{id}", userHandler.Get)
-	adminGroup.HandleFunc("PUT /users/{id}", userHandler.Update)
-	adminGroup.HandleFunc("DELETE /users/{id}", userHandler.Delete)
+	// User management permissions are held by admin and superadmin.
+	router.route("GET", "/api/v1/users", "users:read", userHandler.List)
+	router.route("POST", "/api/v1/users", "users:write", userHandler.Create)
+	router.route("GET", "/api/v1/users/{id}", "users:read", userHandler.Get)
+	router.route("PUT", "/api/v1/users/{id}", "users:write", userHandler.Update)
+	router.route("DELETE", "/api/v1/users/{id}", "users:write", userHandler.Delete)
 
 	// Server management
-	api.HandleFunc("GET /servers", serverHandler.List)
-	api.Handle("POST /servers", middleware.RequirePermission("servers:write")(http.HandlerFunc(serverHandler.Create)))
-	api.HandleFunc("GET /servers/{id}", serverHandler.Get)
-	api.Handle("PUT /servers/{id}", middleware.RequirePermission("servers:write")(http.HandlerFunc(serverHandler.Update)))
-	api.Handle("DELETE /servers/{id}", middleware.RequirePermission("servers:write")(http.HandlerFunc(serverHandler.Delete)))
-	api.HandleFunc("GET /servers/{id}/stats", serverHandler.Stats)
-	api.HandleFunc("GET /servers/{id}/capabilities", serverHandler.Capabilities)
-	api.HandleFunc("POST /servers/{id}/test", serverHandler.Test)
+	router.route("GET", "/api/v1/servers", "servers:read", serverHandler.List)
+	router.route("POST", "/api/v1/servers", "servers:write", serverHandler.Create)
+	router.route("GET", "/api/v1/servers/{id}", "servers:read", serverHandler.Get)
+	router.route("PUT", "/api/v1/servers/{id}", "servers:write", serverHandler.Update)
+	router.route("DELETE", "/api/v1/servers/{id}", "servers:write", serverHandler.Delete)
+	router.route("GET", "/api/v1/servers/{id}/stats", "servers:read", serverHandler.Stats)
+	router.route("GET", "/api/v1/servers/{id}/capabilities", "servers:read", serverHandler.Capabilities)
+	router.route("POST", "/api/v1/servers/{id}/test", "servers:read", serverHandler.Test)
 
 	// XMPP operations
-	api.HandleFunc("GET /servers/{serverId}/users", xmppHandler.ListUsers)
-	api.HandleFunc("GET /servers/{serverId}/users/{username}", xmppHandler.GetUser)
-	api.Handle("POST /servers/{serverId}/users", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.CreateUser)))
-	api.Handle("DELETE /servers/{serverId}/users/{username}", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.DeleteUser)))
-	api.Handle("POST /servers/{serverId}/users/{username}/kick", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.KickUser)))
+	router.route("GET", "/api/v1/servers/{serverId}/users", "xmpp:read", xmppHandler.ListUsers)
+	router.route("GET", "/api/v1/servers/{serverId}/users/{username}", "xmpp:read", xmppHandler.GetUser)
+	router.route("POST", "/api/v1/servers/{serverId}/users", "xmpp:write", xmppHandler.CreateUser)
+	router.route("DELETE", "/api/v1/servers/{serverId}/users/{username}", "xmpp:write", xmppHandler.DeleteUser)
+	router.route("POST", "/api/v1/servers/{serverId}/users/{username}/kick", "xmpp:write", xmppHandler.KickUser)
 
-	api.HandleFunc("GET /servers/{serverId}/sessions", xmppHandler.ListSessions)
-	api.Handle("DELETE /servers/{serverId}/sessions/{jid}", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.KickSession)))
+	router.route("GET", "/api/v1/servers/{serverId}/sessions", "xmpp:read", xmppHandler.ListSessions)
+	router.route("DELETE", "/api/v1/servers/{serverId}/sessions/{jid}", "xmpp:write", xmppHandler.KickSession)
 
-	api.HandleFunc("GET /servers/{serverId}/rooms", xmppHandler.ListRooms)
-	api.HandleFunc("GET /servers/{serverId}/rooms/{room}", xmppHandler.GetRoom)
-	api.Handle("POST /servers/{serverId}/rooms", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.CreateRoom)))
-	api.Handle("DELETE /servers/{serverId}/rooms/{room}", middleware.RequirePermission("xmpp:write")(http.HandlerFunc(xmppHandler.DeleteRoom)))
+	router.route("GET", "/api/v1/servers/{serverId}/rooms", "xmpp:read", xmppHandler.ListRooms)
+	router.route("GET", "/api/v1/servers/{serverId}/rooms/{room}", "xmpp:read", xmppHandler.GetRoom)
+	router.route("POST", "/api/v1/servers/{serverId}/rooms", "xmpp:write", xmppHandler.CreateRoom)
+	router.route("DELETE", "/api/v1/servers/{serverId}/rooms/{room}", "xmpp:write", xmppHandler.DeleteRoom)
 
-	// Audit logs (currently read-only; CSRF is a no-op on GETs but kept for
-	// consistency in case write endpoints are added later).
-	auditGroup := router.Group("/api/v1",
-		authMiddleware.Authenticate,
-		csrfMiddleware.Protect,
-		middleware.RequirePermission("audit:read"),
-	)
-	auditGroup.HandleFunc("GET /audit", auditHandler.List)
-	auditGroup.HandleFunc("GET /audit/verify", auditHandler.Verify)
-	auditGroup.HandleFunc("GET /audit/export", auditHandler.Export)
+	// Audit logs require audit:read.
+	router.route("GET", "/api/v1/audit", "audit:read", auditHandler.List)
+	router.route("GET", "/api/v1/audit/verify", "audit:read", auditHandler.Verify)
+	router.route("GET", "/api/v1/audit/export", "audit:read", auditHandler.Export)
 
 	// Serve static files (frontend) for non-API routes
 	fs := http.FileServer(http.Dir("web/dist"))
@@ -253,4 +261,11 @@ func hasFileExtension(path string) bool {
 		}
 	}
 	return false
+}
+
+// Close releases cached adapter connections after HTTP requests have drained.
+func (r *Router) Close() {
+	if r.adapters != nil {
+		r.adapters.Close()
+	}
 }
