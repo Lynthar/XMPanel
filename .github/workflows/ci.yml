@@ -129,12 +129,13 @@ jobs:
       - uses: crazy-max/ghaction-github-runtime@v4
 
       # The server images are built from apt on purpose (no Docker Hub pull);
-      # the layer cache turns a repeat build into seconds.
+      # the layer cache turns a repeat build into seconds. Bake resolves the
+      # compose file's build contexts from its own cwd, hence source: ./smoke.
       - name: Build server images
         uses: docker/bake-action@v7
         with:
-          source: .
-          files: smoke/docker-compose.yml
+          source: ./smoke
+          files: docker-compose.yml
           load: true
           set: |
             prosody.cache-from=type=gha,scope=smoke-prosody
