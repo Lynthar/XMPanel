@@ -54,6 +54,9 @@ func allowedEndpoint(role models.Role, e endpoint) bool {
 		if e.permission == "backend:danger" {
 			return false
 		}
+		if e.permission == "backend:write" {
+			return role == models.RoleOperator
+		}
 		return role == models.RoleOperator || (role == models.RoleViewer && e.method == http.MethodGet)
 	}
 	return e.method == http.MethodGet || strings.HasSuffix(e.path, "/test")

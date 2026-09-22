@@ -238,7 +238,10 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	router.route("GET", "/api/v1/servers/{serverId}/matrix/accounts/{account}/media", "backend:read", matrixHandler.ListAccountMedia)
 	router.route("POST", "/api/v1/servers/{serverId}/matrix/accounts/{account}/media/quarantine", "backend:write", matrixHandler.QuarantineAccountMedia)
 	router.route("DELETE", "/api/v1/servers/{serverId}/matrix/media/{mediaId}", "backend:write", matrixHandler.DeleteMedia)
-	router.route("GET", "/api/v1/servers/{serverId}/matrix/registration-tokens", "backend:read", matrixHandler.ListRegistrationTokens)
+	// Listing is a write permission: a registration token opens accounts
+	// upstream, so a read-only role holding one would hold a write power the
+	// panel never audits.
+	router.route("GET", "/api/v1/servers/{serverId}/matrix/registration-tokens", "backend:write", matrixHandler.ListRegistrationTokens)
 	router.route("POST", "/api/v1/servers/{serverId}/matrix/registration-tokens", "backend:write", matrixHandler.CreateRegistrationToken)
 	router.route("DELETE", "/api/v1/servers/{serverId}/matrix/registration-tokens/{token}", "backend:write", matrixHandler.DeleteRegistrationToken)
 	router.route("GET", "/api/v1/servers/{serverId}/matrix/reports", "backend:read", matrixHandler.ListReports)
