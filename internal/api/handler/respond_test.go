@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
+	"github.com/xmpanel/xmpanel/internal/config"
 
 	"go.uber.org/zap"
 )
@@ -45,7 +46,7 @@ func TestOnlyRespondWritesStatusLines(t *testing.T) {
 func TestErrorResponseShape(t *testing.T) {
 	logger := zap.NewNop()
 	backendH := NewBackendHandler(nil, nil, logger)
-	serverH := NewServerHandler(nil, nil, nil, nil, logger)
+	serverH := NewServerHandler(nil, nil, nil, nil, config.DefaultConfig().Monitor, logger)
 	userH := NewUserHandler(nil, nil, nil, nil, nil, logger)
 	auditH := NewAuditHandler(nil, logger)
 	authH := NewAuthHandler(nil, nil, nil, nil, nil, nil, 0, false, logger)

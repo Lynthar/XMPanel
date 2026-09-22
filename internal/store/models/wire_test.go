@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/xmpanel/xmpanel/internal/adapter"
+	"github.com/xmpanel/xmpanel/internal/monitor"
 )
 
 // The Go constants and struct tags in this package are the source of truth;
@@ -212,6 +213,28 @@ func TestWireTypesMatchFrontend(t *testing.T) {
 	sameSet(t, "models.CreateServerRequest json", jsonFields(CreateServerRequest{}), "lib/api.ts CreateServerRequest", tsFields(t, "CreateServerRequest"))
 	sameSet(t, "adapter.Credentials json", jsonFields(adapter.Credentials{}), "lib/api.ts Credentials", tsFields(t, "Credentials"))
 	sameSet(t, "adapter.MASCredentials json", jsonFields(adapter.MASCredentials{}), "lib/api.ts MASCredentials", tsFields(t, "MASCredentials"))
+	sameSet(t, "monitor.Point json", jsonFields(monitor.Point{}), "lib/api.ts Point", tsFields(t, "Point"))
+	sameSet(t, "monitor.Series json", jsonFields(monitor.Series{}), "lib/api.ts Series", tsFields(t, "Series"))
+	sameSet(t, "monitor.Check json", jsonFields(monitor.Check{}), "lib/api.ts Check", tsFields(t, "Check"))
+	sameSet(t, "monitor.CheckDetail json", jsonFields(monitor.CheckDetail{}), "lib/api.ts CheckDetail", tsFields(t, "CheckDetail"))
+	sameSet(t, "monitor.CheckItem json", jsonFields(monitor.CheckItem{}), "lib/api.ts CheckItem", tsFields(t, "CheckItem"))
+}
+
+// The ranges the Overview page offers must be the ones the handler accepts;
+// any other value answers 400.
+func TestSampleRangesMatchFrontend(t *testing.T) {
+	windows := block(t, mustRead(t, "../../api/handler/server.go"), "var sampleWindows = map[string]time.Duration{", "}")
+	ranges := block(t, readWeb(t, "lib/api.ts"), "export const sampleRanges =", "\n")
+	sameSet(t, "handler.sampleWindows", matches(`"([\dhd]+)":`, windows), "lib/api.ts sampleRanges", matches(`'([\dhd]+)'`, ranges))
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }
 
 // The implementation table and the capability list are the only protocol

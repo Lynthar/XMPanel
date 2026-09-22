@@ -22,6 +22,14 @@ database:
   max_idle_conns: 5
   conn_max_lifetime: "5m"
 
+monitor:
+  # Liveness, latency and counters, one row per server per tick.
+  sample_interval: 1m
+  # TLS expiry, DNS SRV, well-known and federation reachability.
+  check_interval: 6h
+  # Samples older than this are deleted daily.
+  retention: 720h            # 30 days
+
 security:
   jwt:
     # ≥32 chars enforced by config.Validate. If empty, a random secret is

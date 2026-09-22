@@ -9,6 +9,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
 	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/monitor"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/security/password"
 	"github.com/xmpanel/xmpanel/internal/store"
@@ -20,6 +21,7 @@ import (
 // Router wraps http.ServeMux with middleware support
 type Router struct {
 	adapters       *registry.Registry
+	monitor        *monitor.Monitor
 	mux            *http.ServeMux
 	middlewares    []func(http.Handler) http.Handler
 	endpoints      []endpoint
@@ -151,6 +153,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	passwordValidator := password.NewValidator(cfg.Security.Password)
 
 	router.adapters = registry.New(db, keyRing, logger)
+	router.monitor = monitor.New(db, router.adapters, cfg.Monitor, logger)
 
 	// Initialize handlers (auditService is shared across all mutation handlers)
 	auditService := handler.NewAuditService(db, logger)
@@ -159,7 +162,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 		cfg.Security.JWT.RefreshTokenTTL, cfg.CookieSecure(), logger,
 	)
 	userHandler := handler.NewUserHandler(db, hasher, keyRing, passwordValidator, auditService, logger)
-	serverHandler := handler.NewServerHandler(db, keyRing, router.adapters, auditService, logger)
+	serverHandler := handler.NewServerHandler(db, keyRing, router.adapters, auditService, cfg.Monitor, logger)
 	backendHandler := handler.NewBackendHandler(router.adapters, auditService, logger)
 	matrixHandler := handler.NewMatrixHandler(router.adapters, auditService, logger)
 	auditHandler := handler.NewAuditHandler(db, logger)
@@ -169,7 +172,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 
 	// Health check (public). Aggregate-only response shape — see health.go for
 	// the contract and disclosure rationale.
-	router.HandleFunc("GET /health", newHealthHandler(db, router.adapters, logger))
+	router.HandleFunc("GET /health", newHealthHandler(db, router.monitor.Health, logger))
 
 	// Auth routes (public). Login has no CSRF — the user has no session yet
 	// so there's no cookie to mirror; SameSite=Strict on the cookies set by a
@@ -206,6 +209,8 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	router.route("PUT", "/api/v1/servers/{id}", "servers:write", serverHandler.Update)
 	router.route("DELETE", "/api/v1/servers/{id}", "servers:write", serverHandler.Delete)
 	router.route("GET", "/api/v1/servers/{id}/stats", "servers:read", serverHandler.Stats)
+	router.route("GET", "/api/v1/servers/{id}/samples", "servers:read", serverHandler.Samples)
+	router.route("GET", "/api/v1/servers/{id}/checks", "servers:read", serverHandler.Checks)
 	router.route("GET", "/api/v1/servers/{id}/capabilities", "servers:read", serverHandler.Capabilities)
 	router.route("POST", "/api/v1/servers/{id}/test", "servers:read", serverHandler.Test)
 
@@ -282,7 +287,16 @@ func hasFileExtension(path string) bool {
 }
 
 // Close releases cached adapter connections after HTTP requests have drained.
+// StartMonitor launches the background sampler. Close stops it again; a
+// Router that never starts it simply serves an empty monitoring history.
+func (r *Router) StartMonitor() {
+	r.monitor.Start()
+}
+
 func (r *Router) Close() {
+	if r.monitor != nil {
+		r.monitor.Close()
+	}
 	if r.adapters != nil {
 		r.adapters.Close()
 	}

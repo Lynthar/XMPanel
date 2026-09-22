@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/xmpanel/xmpanel/internal/adapter/registry"
+	"github.com/xmpanel/xmpanel/internal/monitor"
 	"github.com/xmpanel/xmpanel/internal/store"
 
 	"go.uber.org/zap"
 )
 
-const (
-	healthDBTimeout      = 2 * time.Second
-	healthBackendTimeout = 2 * time.Second
-)
+const healthDBTimeout = 2 * time.Second
+
+// backendHealth reports the monitor's last completed sample round, or nil
+// before the first one finishes. Taking the reading as a function is what
+// keeps the registry out of the public request path entirely.
+type backendHealth func() *monitor.Health
 
 type backendSummary struct {
 	OK     int `json:"ok"`
@@ -31,13 +31,17 @@ type healthResponse struct {
 }
 
 // newHealthHandler returns the public liveness probe handler. It pings the
-// PostgreSQL connection and probes every enabled backend to summarize
-// reachability for monitoring tools.
+// PostgreSQL connection and reports the backend counts from the monitor's
+// latest sample round, which is at most one sample interval old.
+//
+// The request never probes a backend itself: /health is public, so a request
+// path that reaches every registered server would let anyone outside make the
+// panel generate traffic to all of them.
 //
 // Response shape is intentionally minimal: only aggregate ok/failed counts
-// for backends, never per-server names, IDs, IPs, or latencies. /health is a
-// public endpoint and detailed disclosure would help fingerprint the
-// deployment.
+// for backends, never per-server names, IDs, IPs, latencies, or the age of the
+// sample. /health is a public endpoint and detailed disclosure would help
+// fingerprint the deployment.
 //
 // HTTP status:
 //   - 200 + status=ok        database reachable, all backends responded.
@@ -46,15 +50,16 @@ type healthResponse struct {
 //     should not restart on this.
 //   - 503 + status=error     database unreachable; panel is broken.
 //
-// Each probe has a 2s timeout. Backend probes run concurrently so worst-case
-// total latency is ~2s regardless of server count.
-func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Logger) http.HandlerFunc {
+// The backends block is omitted when no server is registered, and also before
+// the monitor's first round finishes — a panel that has just started reports
+// on itself rather than guessing about its backends.
+func newHealthHandler(db *store.DB, backends backendHealth, logger *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 
-		// 1. Database ping — short-circuit on failure since the panel can't
-		// function without the DB and probing XMPP would just waste 2s.
+		// Database ping — short-circuit on failure since the panel can't
+		// function without the DB.
 		dbCtx, cancel := context.WithTimeout(r.Context(), healthDBTimeout)
 		defer cancel()
 		if err := db.PingContext(dbCtx); err != nil {
@@ -67,85 +72,13 @@ func newHealthHandler(db *store.DB, adapters *registry.Registry, logger *zap.Log
 			return
 		}
 
-		// 2. List enabled server IDs. A query failure here doesn't fail
-		// the whole probe — DB ping already showed connectivity, this is just
-		// missing a non-critical breakdown.
-		ids, err := listEnabledServerIDs(db)
-		if err != nil {
-			logger.Warn("health check: failed to list servers", zap.Error(err))
-			_ = json.NewEncoder(w).Encode(healthResponse{
-				Status:   "ok",
-				Database: true,
-			})
-			return
-		}
-
-		if len(ids) == 0 {
-			// No servers configured — valid state, omit the backends block.
-			_ = json.NewEncoder(w).Encode(healthResponse{
-				Status:   "ok",
-				Database: true,
-			})
-			return
-		}
-
-		summary := probeServers(r.Context(), adapters, ids)
-		status := "ok"
-		if summary.Failed > 0 {
-			status = "degraded"
-		}
-		_ = json.NewEncoder(w).Encode(healthResponse{
-			Status:   status,
-			Database: true,
-			Backends: &summary,
-		})
-	}
-}
-
-// listEnabledServerIDs returns just the IDs of servers with enabled=true.
-// The registry loads the full row only when constructing a client.
-func listEnabledServerIDs(db *store.DB) ([]int64, error) {
-	rows, err := db.Query(`SELECT id FROM servers WHERE enabled = TRUE`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// probeServers probes each server concurrently with a per-probe timeout.
-// Returns aggregate counts only — the caller surfaces ok/failed in the public
-// response, never per-server detail. A server whose last probe failed is
-// answered from the registry's cache until its retry window passes.
-func probeServers(ctx context.Context, adapters *registry.Registry, ids []int64) backendSummary {
-	var ok, failed int64
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		wg.Add(1)
-		go func(serverID int64) {
-			defer wg.Done()
-			probeCtx, cancel := context.WithTimeout(ctx, healthBackendTimeout)
-			defer cancel()
-			a, _, err := adapters.Get(probeCtx, serverID)
-			if err != nil {
-				atomic.AddInt64(&failed, 1)
-				return
+		response := healthResponse{Status: "ok", Database: true}
+		if health := backends(); health != nil && health.OK+health.Failed > 0 {
+			response.Backends = &backendSummary{OK: health.OK, Failed: health.Failed}
+			if health.Failed > 0 {
+				response.Status = "degraded"
 			}
-			if _, err := a.Probe(probeCtx); err != nil {
-				atomic.AddInt64(&failed, 1)
-				return
-			}
-			atomic.AddInt64(&ok, 1)
-		}(id)
+		}
+		_ = json.NewEncoder(w).Encode(response)
 	}
-	wg.Wait()
-	return backendSummary{OK: int(ok), Failed: int(failed)}
 }

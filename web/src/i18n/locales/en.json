@@ -182,6 +182,35 @@
       "s2sConnections": "S2S Connections"
     }
   },
+  "monitor": {
+    "tab": "Overview",
+    "availability": "Availability",
+    "latency": "Probe latency",
+    "counts": "Counters",
+    "checks": "Checks",
+    "noSamples": "No samples in this window yet.",
+    "noChecks": "No check has run yet.",
+    "notPublished": "not published",
+    "expires": "expires {{date}}",
+    "ranges": {
+      "1h": "1 hour",
+      "6h": "6 hours",
+      "24h": "24 hours",
+      "7d": "7 days",
+      "30d": "30 days"
+    },
+    "status": {
+      "ok": "OK",
+      "warn": "Warning",
+      "fail": "Failed"
+    },
+    "kinds": {
+      "tls_cert": "TLS certificates",
+      "dns_srv": "DNS SRV records",
+      "well_known": "Well-known",
+      "federation": "Federation"
+    }
+  },
   "users": {
     "title": "System Users",
     "subtitle": "Manage users who can access XMPanel",

@@ -182,6 +182,35 @@
       "s2sConnections": "S2S 连接"
     }
   },
+  "monitor": {
+    "tab": "概览",
+    "availability": "可用性",
+    "latency": "探测延迟",
+    "counts": "计数",
+    "checks": "检查",
+    "noSamples": "这个时间范围内还没有采样。",
+    "noChecks": "还没有跑过检查。",
+    "notPublished": "未发布",
+    "expires": "{{date}} 到期",
+    "ranges": {
+      "1h": "1 小时",
+      "6h": "6 小时",
+      "24h": "24 小时",
+      "7d": "7 天",
+      "30d": "30 天"
+    },
+    "status": {
+      "ok": "正常",
+      "warn": "警告",
+      "fail": "失败"
+    },
+    "kinds": {
+      "tls_cert": "TLS 证书",
+      "dns_srv": "DNS SRV 记录",
+      "well_known": "well-known",
+      "federation": "联邦"
+    }
+  },
   "users": {
     "title": "系统用户",
     "subtitle": "管理可访问 XMPanel 的用户",

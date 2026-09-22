@@ -1,23 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import toast from 'react-hot-toast'
-import { ArrowLeft, Users, MessageSquare, Activity, RefreshCw, AlertTriangle, Clock, Globe, Wrench } from 'lucide-react'
+import { ArrowLeft, Users, MessageSquare, Activity, RefreshCw, AlertTriangle, Clock, Globe, Wrench, LineChart } from 'lucide-react'
 import clsx from 'clsx'
 import {
   serversApi, errorMessage,
   type Capability, type Server, type ServerCapabilities, type Stats,
 } from '@/lib/api'
+import Overview from './Overview'
 import Accounts from './Accounts'
 import Sessions from './Sessions'
 import Rooms from './Rooms'
 import MatrixTools from './MatrixTools'
 
-type Tab = 'accounts' | 'sessions' | 'rooms' | 'tools'
+type Tab = 'overview' | 'accounts' | 'sessions' | 'rooms' | 'tools'
 
+// Which capability each tab needs. Overview is not in the table: it reads the
+// monitor's own history, not the backend.
 // The tools tab appears when any of its server-wide capabilities is declared.
-const tabCapability: Record<Tab, Capability[]> = {
+const tabCapability: Record<Exclude<Tab, 'overview'>, Capability[]> = {
   accounts: ['accounts.list', 'accounts.get'],
   sessions: ['sessions.list_all'],
   rooms: ['rooms.list'],
@@ -30,7 +33,7 @@ export default function ServerDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const serverId = parseInt(id!, 10)
-  const [activeTab, setActiveTab] = useState<Tab>('accounts')
+  const [activeTab, setActiveTab] = useState<Tab>('overview')
 
   const { data: server, isLoading: serverLoading } = useQuery({
     queryKey: ['server', serverId],
@@ -67,8 +70,12 @@ export default function ServerDetail() {
     onError: () => toast.error(t('servers.testError')),
   })
 
-  // A tab whose capability the server lacks falls back to the first offered one.
-  const tabs = (['accounts', 'sessions', 'rooms', 'tools'] as Tab[]).filter((tab) => tabCapability[tab].some(has))
+  // A tab whose capability the server lacks falls back to the first offered
+  // one. Overview is always offered, including when the probe fails: a server
+  // that stopped answering is exactly when its history matters.
+  const tabs = useMemo<Tab[]>(() => ['overview', ...(['accounts', 'sessions', 'rooms', 'tools'] as Exclude<Tab, 'overview'>[])
+    .filter((tab) => tabCapability[tab].some((c) => caps?.capabilities.includes(c) ?? false))], [caps])
+  const capabilityTabs = tabs.slice(1)
   useEffect(() => {
     if (caps && !tabs.includes(activeTab) && tabs.length > 0) setActiveTab(tabs[0])
   }, [caps, tabs, activeTab])
@@ -85,7 +92,7 @@ export default function ServerDetail() {
   }
 
   const protocol = server.protocol
-  const tabIcons = { accounts: Users, sessions: Activity, rooms: MessageSquare, tools: Wrench }
+  const tabIcons = { overview: LineChart, accounts: Users, sessions: Activity, rooms: MessageSquare, tools: Wrench }
 
   return (
     <div className="space-y-6">
@@ -112,16 +119,17 @@ export default function ServerDetail() {
 
       {!server.enabled ? (
         <p className="card text-gray-400">{t('backend.serverDisabled')}</p>
-      ) : capsQuery.isError ? (
-        <div className="card flex items-start gap-3 border-red-900/50">
-          <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
-          <div>
-            <p className="text-white font-medium">{t('backend.probeFailed')}</p>
-            <p className="text-gray-400 text-sm mt-1">{errorMessage(capsQuery.error) ?? t('errors.generic')}</p>
-          </div>
-        </div>
       ) : (
         <>
+          {capsQuery.isError && (
+            <div className="card flex items-start gap-3 border-red-900/50">
+              <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
+              <div>
+                <p className="text-white font-medium">{t('backend.probeFailed')}</p>
+                <p className="text-gray-400 text-sm mt-1">{errorMessage(capsQuery.error) ?? t('errors.generic')}</p>
+              </div>
+            </div>
+          )}
           {stats && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard icon={Users} label={t('servers.stats.registeredUsers')} value={stats.registered_users} />
@@ -147,15 +155,22 @@ export default function ServerDetail() {
                     )}
                   >
                     <Icon className="w-4 h-4" />
-                    {tab === 'sessions' ? t(`backend.sessions.${protocol}.tab`) : tab === 'tools' ? t('backend.matrix.tab') : t(`backend.${tab}.tab`)}
+                    {tab === 'overview' ? t('monitor.tab')
+                      : tab === 'sessions' ? t(`backend.sessions.${protocol}.tab`)
+                        : tab === 'tools' ? t('backend.matrix.tab')
+                          : t(`backend.${tab}.tab`)}
                   </button>
                 )
               })}
             </div>
           </div>
 
+          {caps && capabilityTabs.length === 0 && (
+            <p className="text-center text-gray-400 text-sm">{t('backend.noCapabilities')}</p>
+          )}
+
           <div className="card">
-            {caps && tabs.length === 0 && <p className="text-center text-gray-400 py-8">{t('backend.noCapabilities')}</p>}
+            {activeTab === 'overview' && <Overview server={server} />}
             {caps && activeTab === 'accounts' && (has('accounts.list') || has('accounts.get')) && <Accounts server={server} caps={caps} />}
             {caps && activeTab === 'sessions' && has('sessions.list_all') && <Sessions server={server} caps={caps} />}
             {caps && activeTab === 'rooms' && has('rooms.list') && <Rooms server={server} caps={caps} />}

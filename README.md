@@ -134,6 +134,9 @@ Non-safe methods also need `X-CSRF-Token`, read from the `csrf_token` cookie.
 | `security.cookies.secure_override` | `auto`, `always` or `never` — use `always` behind a TLS-terminating proxy |
 | `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP. Governs every client address the panel records — rate limiting, login lockout, sessions and the audit log |
 | `server.address` | Default `:8080` |
+| `monitor.sample_interval` | How often every enabled server is probed for liveness, latency and counters; default `1m`. `/health` answers from the latest round, so this is also how stale that endpoint can be |
+| `monitor.check_interval` | How often TLS expiry, DNS SRV, well-known and federation reachability are checked; default `6h` |
+| `monitor.retention` | How long samples are kept; default `720h` (30 days). One server costs roughly 2.5 MB a month at the default interval |
 
 Set the JWT secret before you put real data in; the encryption key is checked at startup.
 

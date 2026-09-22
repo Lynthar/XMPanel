@@ -14,6 +14,8 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
+	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/monitor"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 	"github.com/xmpanel/xmpanel/internal/store/storetest"
 
@@ -54,7 +56,7 @@ func newBackendFixture(t *testing.T) *backendFixture {
 	t.Cleanup(f.adapters.Close)
 	f.audit = NewAuditService(db, logger)
 	f.backend = NewBackendHandler(f.adapters, f.audit, logger)
-	f.servers = NewServerHandler(db, ring, f.adapters, f.audit, logger)
+	f.servers = NewServerHandler(db, ring, f.adapters, f.audit, config.DefaultConfig().Monitor, logger)
 	return f
 }
 
@@ -261,5 +263,38 @@ func TestListAccountsPages(t *testing.T) {
 	rec = f.call(t, f.backend.ListAccounts, "GET", "/?cursor=nope", "", nil)
 	if rec.Code != 400 {
 		t.Fatalf("bad cursor = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The monitoring routes answer from the monitor's tables, so a server with no
+// history is an empty window rather than an error, and only the ranges the
+// Overview page offers are accepted.
+func TestMonitoringRoutes(t *testing.T) {
+	f := newBackendFixture(t)
+
+	rec := f.call(t, f.servers.Samples, "GET", "/?range=6h", "", nil)
+	if rec.Code != 200 {
+		t.Fatalf("samples status = %d: %s", rec.Code, rec.Body)
+	}
+	var series monitor.Series
+	if err := json.Unmarshal(rec.Body.Bytes(), &series); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	if len(series.Points) != 0 || series.BucketSeconds == 0 || !series.To.After(series.From) {
+		t.Fatalf("series = %+v, want an empty but bounded window", series)
+	}
+
+	// No range at all is the default window, not a rejection.
+	if rec := f.call(t, f.servers.Samples, "GET", "/", "", nil); rec.Code != 200 {
+		t.Fatalf("default range status = %d: %s", rec.Code, rec.Body)
+	}
+	// An unknown one is refused instead of being widened silently.
+	if rec := f.call(t, f.servers.Samples, "GET", "/?range=10y", "", nil); rec.Code != 400 {
+		t.Fatalf("unknown range status = %d, want 400", rec.Code)
+	}
+
+	rec = f.call(t, f.servers.Checks, "GET", "/", "", nil)
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("checks = %d %q, want an empty list", rec.Code, rec.Body.String())
 	}
 }

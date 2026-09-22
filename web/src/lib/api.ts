@@ -211,6 +211,51 @@ export interface Stats {
   s2s_connections: number | null
 }
 
+// One bucket of sampled history. ok_ratio is the share of samples in the
+// bucket that reached the server; the counters are the bucket's last reading.
+export interface Point {
+  ts: string
+  ok_ratio: number
+  latency_ms: number | null
+  registered_users: number | null
+  online_users: number | null
+  active_sessions: number | null
+  rooms: number | null
+}
+
+// from/to bound the x axis even where no sample exists, so a gap in the data
+// renders as a gap rather than a straight line across it.
+export interface Series {
+  from: string
+  to: string
+  bucket_seconds: number
+  points: Point[]
+}
+
+export type CheckStatus = 'ok' | 'warn' | 'fail'
+
+export interface CheckItem {
+  target: string
+  status: CheckStatus
+  values?: string[]
+  not_after?: string
+  error?: string
+}
+
+export interface CheckDetail {
+  items: CheckItem[]
+}
+
+export interface Check {
+  kind: string
+  ts: string
+  status: CheckStatus
+  detail: CheckDetail
+}
+
+export const sampleRanges = ['1h', '6h', '24h', '7d', '30d'] as const
+export type SampleRange = (typeof sampleRanges)[number]
+
 export interface XMPPAccountFacts {
   roles?: string[]
 }
@@ -384,6 +429,10 @@ export const serversApi = {
   delete: (id: number) => api.delete(`/servers/${id}`),
 
   stats: (id: number) => api.get(`/servers/${id}/stats`),
+
+  samples: (id: number, range: SampleRange) => api.get(`/servers/${id}/samples`, { params: { range } }),
+
+  checks: (id: number) => api.get(`/servers/${id}/checks`),
 
   capabilities: (id: number) => api.get(`/servers/${id}/capabilities`),
 

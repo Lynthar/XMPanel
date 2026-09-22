@@ -14,7 +14,9 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
+	"github.com/xmpanel/xmpanel/internal/config"
 	"github.com/xmpanel/xmpanel/internal/i18n"
+	"github.com/xmpanel/xmpanel/internal/monitor"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
@@ -30,11 +32,12 @@ type ServerHandler struct {
 	db       *store.DB
 	keyRing  *crypto.KeyRing
 	audit    *AuditService
+	monitor  config.MonitorConfig
 	logger   *zap.Logger
 }
 
-func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, adapters *registry.Registry, audit *AuditService, logger *zap.Logger) *ServerHandler {
-	return &ServerHandler{adapters: adapters, db: db, keyRing: keyRing, audit: audit, logger: logger}
+func NewServerHandler(db *store.DB, keyRing *crypto.KeyRing, adapters *registry.Registry, audit *AuditService, monitorCfg config.MonitorConfig, logger *zap.Logger) *ServerHandler {
+	return &ServerHandler{adapters: adapters, db: db, keyRing: keyRing, audit: audit, monitor: monitorCfg, logger: logger}
 }
 
 func scanServer(row interface{ Scan(...interface{}) error }) (models.Server, error) {
@@ -334,6 +337,55 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// Samples returns the monitor's sampled history for one server. The window is
+// chosen from a fixed set so a caller cannot ask for an unbounded scan.
+func (h *ServerHandler) Samples(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		return
+	}
+	window, ok := sampleWindows[r.URL.Query().Get("range")]
+	if !ok {
+		if r.URL.Query().Has("range") {
+			writeError(w, r, http.StatusBadRequest, "Invalid range")
+			return
+		}
+		window = 24 * time.Hour
+	}
+	series, err := monitor.QuerySamples(r.Context(), h.db, id, window, h.monitor.SampleInterval)
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to query samples", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, series)
+}
+
+// sampleWindows are the ranges the Overview page offers.
+var sampleWindows = map[string]time.Duration{
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+}
+
+// Checks returns the latest result of every periodic check recorded for a
+// server. An empty list means the monitor has not reached its first round.
+func (h *ServerHandler) Checks(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		return
+	}
+	checks, err := monitor.QueryChecks(r.Context(), h.db, id)
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to query checks", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, checks)
 }
 
 // Capabilities returns the probed server facts and the operations the UI may

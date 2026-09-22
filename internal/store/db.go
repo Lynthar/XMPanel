@@ -270,6 +270,32 @@ func Migrate(db *DB) error {
 		`ALTER TABLE servers DROP CONSTRAINT IF EXISTS xmpp_servers_host_port_key`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_servers_endpoint_domain ON servers(endpoint, domain)`,
 
+		// Monitoring samples: one row per server per tick, pruned by
+		// monitor.retention. Counters are nullable because a backend may not
+		// report them.
+		`CREATE TABLE IF NOT EXISTS server_samples (
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			ts TIMESTAMP NOT NULL,
+			ok BOOLEAN NOT NULL,
+			latency_ms INTEGER,
+			registered_users INTEGER,
+			online_users INTEGER,
+			active_sessions INTEGER,
+			rooms INTEGER,
+			PRIMARY KEY (server_id, ts)
+		)`,
+
+		// Only the latest result per kind is kept; history lives in the
+		// samples table.
+		`CREATE TABLE IF NOT EXISTS server_checks (
+			server_id INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+			kind VARCHAR(50) NOT NULL,
+			ts TIMESTAMP NOT NULL,
+			status VARCHAR(20) NOT NULL,
+			detail JSONB,
+			PRIMARY KEY (server_id, kind)
+		)`,
+
 		// Audit Logs table (with chain hash for integrity)
 		// details is JSONB so callers can filter by structured fields via @>.
 		`CREATE TABLE IF NOT EXISTS audit_logs (

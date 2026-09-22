@@ -22,6 +22,16 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	Security SecurityConfig `yaml:"security"`
+	Monitor  MonitorConfig  `yaml:"monitor"`
+}
+
+// MonitorConfig paces the background sampler. Sampling is not optional: the
+// public /health endpoint answers from the sampler's snapshot, so turning it
+// off would leave health blind rather than cheap.
+type MonitorConfig struct {
+	SampleInterval time.Duration `yaml:"sample_interval"`
+	CheckInterval  time.Duration `yaml:"check_interval"`
+	Retention      time.Duration `yaml:"retention"`
 }
 
 // ServerConfig holds HTTP server configuration
@@ -244,6 +254,17 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Database.ConnMaxLifetime == "" {
 		cfg.Database.ConnMaxLifetime = "5m"
+	}
+
+	// Monitor defaults
+	if cfg.Monitor.SampleInterval == 0 {
+		cfg.Monitor.SampleInterval = time.Minute
+	}
+	if cfg.Monitor.CheckInterval == 0 {
+		cfg.Monitor.CheckInterval = 6 * time.Hour
+	}
+	if cfg.Monitor.Retention == 0 {
+		cfg.Monitor.Retention = 30 * 24 * time.Hour
 	}
 
 	// JWT defaults

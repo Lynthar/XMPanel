@@ -114,6 +114,9 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 | `security.cookies.secure_override` | `auto` / `always` / `never`——在卸载 TLS 的反代后面用 `always` |
 | `security.rate_limit.trust_x_forwarded_for` | 只有在受信代理后面、且代理列进 `trusted_proxies` 才开，否则客户端能伪造源 IP。面板记录的客户端地址全看它——限流、登录锁定、会话与审计日志 |
 | `server.address` | 默认 `:8080` |
+| `monitor.sample_interval` | 每台启用的服务器多久探一次存活、延迟与计数，默认 `1m`。`/health` 读的就是最近一轮，所以它同时是该端点的陈旧上限 |
+| `monitor.check_interval` | TLS 到期、DNS SRV、well-known 与联邦可达性多久查一次，默认 `6h` |
+| `monitor.retention` | 采样保留多久，默认 `720h`（30 天）。按默认周期，一台服务器一个月约 2.5 MB |
 
 放真实数据进去之前先把 JWT secret 设好；加密密钥启动时就会检查。
 
