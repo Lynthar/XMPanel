@@ -20,6 +20,10 @@ SERVER=$!
     if curl -fsS http://127.0.0.1:8080/.well-known/openid-configuration >/dev/null 2>&1 \
        && curl -fsS http://synapse-mas:8008/_matrix/client/versions >/dev/null 2>&1; then
       ./mas-cli manage register-user $CONFIG --yes admin --password admin-password-smoke --admin --ignore-password-complexity || true
+      # Provision before issuing. Issuing pushes the new session's device to
+      # Synapse, which answers 404 for a user it has not been told about yet,
+      # and that one lost device leaves the token refused for good.
+      ./mas-cli manage provision-all-users $CONFIG >/dev/null 2>&1 || true
       ./mas-cli manage issue-compatibility-token $CONFIG admin --yes-i-want-to-grant-synapse-admin-privileges 2>&1 \
         | sed -n 's/.*[Cc]ompatibility token issued: *\([^ ]*\).*/\1/p' | head -n 1 > "$TOKEN.tmp" || true
       # Synapse rejects the token until MAS has synced the session's device
