@@ -247,9 +247,15 @@ func run(t *testing.T, tg target) {
 		if err := a.DeleteRoom(ctx, roomID); err != nil {
 			t.Fatalf("delete room: %v", err)
 		}
-		if _, err := a.GetRoom(ctx, roomID); !isKind(err, adapter.NotFound) {
-			t.Errorf("get deleted room: %v", err)
-		}
+		// ejabberd 23.10 deregisters the room process after destroy_room has
+		// already returned; a read landing in that window crashes upstream
+		// (mod_muc_admin.erl:935 badmatch on {error,notfound}) and answers 500
+		// instead of the empty options an absent room gets. The end state must
+		// still be NotFound, so wait for it rather than accept the 502.
+		waitFor(t, func() (error, bool) {
+			_, err := a.GetRoom(ctx, roomID)
+			return err, isKind(err, adapter.NotFound)
+		})
 	}
 
 	if err := a.DeleteAccount(ctx, id); err != nil {
