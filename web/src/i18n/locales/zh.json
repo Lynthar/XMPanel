@@ -265,7 +265,7 @@
     "allActions": "全部操作",
     "exportSuccess": "导出已下载",
     "exportError": "导出审计日志失败",
-    "verifySuccess": "审计日志完整性验证通过",
+    "verifySuccess": "记录 #{{first}}–#{{last}}（共 {{count}} 条）链条完整。最新记录被删除无法检出。",
     "verifyFailure": "审计日志完整性验证失败！",
     "filters": {
       "title": "筛选",

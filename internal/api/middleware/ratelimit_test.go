@@ -137,3 +137,71 @@ func TestRateLimit_KeysOnResolvedClientIP(t *testing.T) {
 		t.Errorf("first client again: code = %d, want 429", code)
 	}
 }
+
+// nginx's $proxy_add_x_forwarded_for keeps whatever the client sent and
+// appends the peer, so only the rightmost untrusted hop is the proxy's word.
+func TestClientIP_WalksForwardedForFromTheRight(t *testing.T) {
+	res := NewClientIPResolver(true, []string{"127.0.0.1", "10.0.0.0/8", "::1"})
+
+	cases := []struct {
+		name    string
+		headers []string
+		realIP  string
+		want    string
+	}{
+		{"forged prefix", []string{"203.0.113.17, 198.51.100.44"}, "", "198.51.100.44"},
+		{"listed proxy chain", []string{"198.51.100.44, 10.1.2.3, 10.0.0.9"}, "", "198.51.100.44"},
+		{"unlisted outer proxy", []string{"198.51.100.44, 192.0.2.80"}, "", "192.0.2.80"},
+		{"all hops trusted", []string{"10.0.0.2, 10.0.0.3"}, "", "10.0.0.2"},
+		{"garbage behind a trusted hop", []string{"198.51.100.44, not-an-ip, 10.0.0.9"}, "", "10.0.0.9"},
+		{"empty trailing hop", []string{"198.51.100.44, "}, "", "127.0.0.1"},
+		{"split across header lines", []string{"203.0.113.17", "198.51.100.44"}, "", "198.51.100.44"},
+		{"ipv6 in canonical form", []string{"2001:0db8:0000::1, ::1"}, "", "2001:db8::1"},
+		{"real-ip does not outrank forwarded-for", []string{"203.0.113.17, 198.51.100.44"}, "203.0.113.17", "198.51.100.44"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		for _, h := range tc.headers {
+			req.Header.Add("X-Forwarded-For", h)
+		}
+		if tc.realIP != "" {
+			req.Header.Set("X-Real-IP", tc.realIP)
+		}
+		if got := probeClientIP(res, req); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestClientIP_IgnoresMalformedRealIP(t *testing.T) {
+	res := NewClientIPResolver(true, []string{"127.0.0.1"})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:40000"
+	req.Header.Set("X-Real-IP", "not-an-ip")
+
+	if got := probeClientIP(res, req); got != "127.0.0.1" {
+		t.Errorf("got %q, want the peer address 127.0.0.1", got)
+	}
+}
+
+// One client rotating the prefix it sends must stay in one bucket.
+func TestRateLimit_ForgedPrefixDoesNotEscapeTheBucket(t *testing.T) {
+	res := NewClientIPResolver(true, []string{"127.0.0.1"})
+	limiter := NewRateLimiter(config.RateLimitConfig{RequestsPerSecond: 0, Burst: 1})
+	chain := ClientIP(res)(RateLimit(limiter)(okHandler()))
+
+	var codes []int
+	for _, prefix := range []string{"203.0.113.17", "203.0.113.17", "203.0.113.18"} {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("X-Forwarded-For", prefix+", 198.51.100.44")
+		rec := httptest.NewRecorder()
+		chain.ServeHTTP(rec, req)
+		codes = append(codes, rec.Code)
+	}
+	if codes[1] != http.StatusTooManyRequests || codes[2] != http.StatusTooManyRequests {
+		t.Errorf("codes = %v, want the second and third request throttled", codes)
+	}
+}

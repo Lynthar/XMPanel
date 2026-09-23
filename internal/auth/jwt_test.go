@@ -120,3 +120,20 @@ func TestJWTManager_RejectsWrongIssuer(t *testing.T) {
 		t.Error("token from different issuer validated successfully")
 	}
 }
+
+// Rotation within one second must still yield a different token, or the
+// replaced one stays valid and replay detection never fires.
+func TestJWTManager_RefreshTokensNeverRepeat(t *testing.T) {
+	m := newTestManager(15*time.Minute, time.Hour)
+	a, err := m.GenerateTokenPair(42, "alice", "admin", "sess-abc", "")
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+	b, err := m.GenerateTokenPair(42, "alice", "admin", "sess-abc", "")
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+	if a.RefreshToken == b.RefreshToken {
+		t.Error("two refresh tokens for one session came out identical")
+	}
+}

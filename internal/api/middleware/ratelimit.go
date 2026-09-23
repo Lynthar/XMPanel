@@ -216,6 +216,13 @@ func NewClientIPResolver(trustXForwardedFor bool, trustedProxies []string) *Clie
 // only when the connection itself comes from a trusted proxy. Anyone can set
 // those headers, so trusting them unconditionally lets a client pick its own
 // rate-limit bucket and its own audit trail.
+//
+// X-Forwarded-For is walked from the right, past every listed proxy, to the
+// first address no listed proxy vouches for; everything left of that the
+// client could have written itself. Every proxy in front of the panel must
+// therefore be in trustedProxies, or the address of the outermost unlisted
+// one is taken for the client. X-Real-IP is read only without
+// X-Forwarded-For, and is only as good as the proxy that overwrites it.
 func (res *ClientIPResolver) Resolve(r *http.Request) string {
 	remoteIP := extractIP(r.RemoteAddr)
 
@@ -223,19 +230,32 @@ func (res *ClientIPResolver) Resolve(r *http.Request) string {
 		return remoteIP
 	}
 
-	// X-Forwarded-For can contain multiple IPs: client, proxy1, proxy2, ...
-	// Take the first IP (original client)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if clientIP := strings.TrimSpace(strings.Split(xff, ",")[0]); clientIP != "" {
-			return clientIP
-		}
+	if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+		return res.firstUntrustedHop(remoteIP, strings.Split(strings.Join(xff, ","), ","))
 	}
 
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		return xri
+	if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); ip != nil {
+		return ip.String()
 	}
 
 	return remoteIP
+}
+
+// firstUntrustedHop walks hops from the right, as each proxy appended them.
+// An entry that is not an address ends the walk at the hop that reported it.
+func (res *ClientIPResolver) firstUntrustedHop(remoteIP string, hops []string) string {
+	client := remoteIP
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(hops[i]))
+		if ip == nil {
+			break
+		}
+		client = ip.String()
+		if !res.isTrustedProxy(client) {
+			break
+		}
+	}
+	return client
 }
 
 // isTrustedProxy checks if the given IP is in the trusted proxies list

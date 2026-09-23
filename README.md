@@ -26,11 +26,14 @@ the operations its adapter cannot perform.
 
 It has its own user system instead of borrowing the server's: short-lived JWTs
 with refresh rotation, TOTP with recovery codes, Argon2id password hashing, five
-permission levels. The audit log is chained with SHA-256, so a modified or
-removed record breaks the chain (records written by builds before September 2026
-were hashed with a timestamp precision the database does not keep and fail
+permission levels. The audit log is chained with SHA-256: verification finds a
+modified record, or one removed from anywhere but the newest end, and reports
+which records it covered. It catches edits made without recomputing the chain;
+someone with write access to the database can still rewrite it or drop the
+newest records unseen. Records written by builds before September 2026 were
+hashed with a timestamp precision the database does not keep and fail
 verification — the chain is verifiable from the first record written after
-upgrading); stored server credentials are encrypted at rest with AES-256-GCM.
+upgrading. Stored server credentials are encrypted at rest with AES-256-GCM.
 
 ## Install
 
@@ -132,7 +135,7 @@ Non-safe methods also need `X-CSRF-Token`, read from the `csrf_token` cookie.
 | `database.encryption_key` | base64 32 bytes, **required**: the panel refuses to start without it, since server credentials encrypted under a lost key cannot be recovered |
 | `security.jwt.secret` | At least 32 characters, enforced. Left empty, one is generated per start and every session is invalidated on restart |
 | `security.cookies.secure_override` | `auto`, `always` or `never` — use `always` behind a TLS-terminating proxy |
-| `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP. Governs every client address the panel records — rate limiting, login lockout, sessions and the audit log |
+| `security.rate_limit.trust_x_forwarded_for` | Only with a trusted proxy listed in `trusted_proxies`, or clients can forge their source IP. List every proxy in the chain, CDN included: `X-Forwarded-For` is read right to left and the first unlisted hop counts as the client. Governs every client address the panel records — rate limiting, login lockout, sessions and the audit log |
 | `server.address` | Default `:8080` |
 | `monitor.sample_interval` | How often every enabled server is probed for liveness, latency and counters; default `1m`. `/health` answers from the latest round, so this is also how stale that endpoint can be |
 | `monitor.check_interval` | How often TLS expiry, DNS SRV, well-known and federation reachability are checked; default `6h` |
@@ -165,8 +168,6 @@ Set the JWT secret before you put real data in; the encryption key is checked at
 - **PostgreSQL only.** No SQLite, no MySQL.
 - **No container image for the panel itself.** Source build and a systemd
   unit; the compose file under `smoke/` only starts test servers.
-- **Refreshing in several browser tabs at once trips the token reuse detector**
-  and signs that user out everywhere.
 
 ## Security
 

@@ -68,7 +68,9 @@ security:
     # and every audit row. Only trust X-Forwarded-For when at least one
     # trusted proxy is listed. Leave false (default) if XMPanel is exposed
     # directly — otherwise clients can spoof their source IP, bypass rate
-    # limiting and choose what the audit log says about them.
+    # limiting and choose what the audit log says about them. List every
+    # proxy in front of the panel (CDN included): X-Forwarded-For is read
+    # right to left, and the first unlisted hop is taken as the client.
     trust_x_forwarded_for: false
     trusted_proxies: []
       # - "127.0.0.1/32"

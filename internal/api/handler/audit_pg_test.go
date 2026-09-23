@@ -151,6 +151,66 @@ func TestAuditChain_VerifyDetectsADeletedRow(t *testing.T) {
 	}
 }
 
+func TestAuditChain_VerifyDetectsDeletedOldestRows(t *testing.T) {
+	db := newTestDB(t)
+	svc, h := newTestAudit(t, db)
+
+	for i := 0; i < 3; i++ {
+		if err := svc.Log(&models.AuditLogEntry{
+			Username: fmt.Sprintf("user%d", i),
+			Action:   models.AuditActionLogin,
+		}); err != nil {
+			t.Fatalf("Log: %v", err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM audit_logs WHERE id = (SELECT MIN(id) FROM audit_logs)`); err != nil {
+		t.Fatalf("delete row: %v", err)
+	}
+
+	result := verifyChain(t, h)
+	if result["valid"] != false {
+		t.Errorf("a removed genesis record left the chain reported valid: %v", result)
+	}
+	if got := result["broken_at_index"]; got != float64(0) {
+		t.Errorf("broken_at_index = %v, want 0", got)
+	}
+}
+
+// A range that starts mid-chain has no genesis row to demand.
+func TestAuditChain_VerifyFromStartIDSkipsGenesis(t *testing.T) {
+	db := newTestDB(t)
+	svc, h := newTestAudit(t, db)
+
+	for i := 0; i < 3; i++ {
+		if err := svc.Log(&models.AuditLogEntry{
+			Username: fmt.Sprintf("user%d", i),
+			Action:   models.AuditActionLogin,
+		}); err != nil {
+			t.Fatalf("Log: %v", err)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	h.Verify(rec, httptest.NewRequest(http.MethodGet, "/audit/verify?start_id=2", nil))
+	var result map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if result["valid"] != true || result["records_checked"] != float64(2) {
+		t.Errorf("verify from start_id=2 = %v, want valid over 2 records", result)
+	}
+}
+
+func TestAuditChain_VerifyRefusesAnEmptyTable(t *testing.T) {
+	db := newTestDB(t)
+	_, h := newTestAudit(t, db)
+
+	result := verifyChain(t, h)
+	if result["valid"] != false {
+		t.Errorf("an empty table was reported valid: %v", result)
+	}
+}
+
 // Events logged without details store SQL NULL. The CSV export used to scan
 // that column into a plain string, fail, and skip the row — losing exactly
 // the password changes and MFA switches an auditor is looking for.

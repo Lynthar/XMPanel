@@ -148,7 +148,9 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Verify verifies the integrity of audit logs
+// Verify checks that the surviving records form one unbroken chain from the
+// genesis row (or from start_id), and says which ids it covered. It cannot see
+// the newest records being removed: nothing outside the table records the tail.
 func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	// Get logs to verify
 	startID := int64(0)
@@ -216,7 +218,10 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		}
 		lastID = log.ID
 
-		if !models.VerifyEntry(prev, &log) {
+		// A full-table run must start at the genesis row, or deleting the
+		// oldest records would leave a chain that verifies.
+		genesisMissing := checked == 0 && startID <= 0 && log.PrevHash.String != ""
+		if genesisMissing || !models.VerifyEntry(prev, &log) {
 			brokenAt = checked
 			checked++
 			break
@@ -229,8 +234,10 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// No rows vouch for nothing. The caller had to log in, which wrote a row,
+	// so an empty table means the chain was wiped.
 	result := map[string]interface{}{
-		"valid":           brokenAt < 0,
+		"valid":           checked > 0 && brokenAt < 0,
 		"records_checked": checked,
 	}
 	if checked > 0 {

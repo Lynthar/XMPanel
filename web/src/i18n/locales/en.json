@@ -265,7 +265,7 @@
     "allActions": "All Actions",
     "exportSuccess": "Export downloaded",
     "exportError": "Failed to export logs",
-    "verifySuccess": "Audit log integrity verified",
+    "verifySuccess": "Records #{{first}}–#{{last}} ({{count}}) form an unbroken chain. Removal of the newest records cannot be detected.",
     "verifyFailure": "Audit log integrity check failed!",
     "filters": {
       "title": "Filters",

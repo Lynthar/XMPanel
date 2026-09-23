@@ -43,6 +43,32 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
+let refreshInFlight: Promise<string> | null = null
+
+/**
+ * Exchanges the refresh cookie for a new access token. Every refresh must go
+ * through here: the refresh token is single-use, so two requests carrying the
+ * same cookie are taken for a replay and end the session. Calls in this tab
+ * share one request; other tabs wait on a Web Lock and then send the cookie
+ * the previous rotation left behind.
+ */
+export function refreshAccessToken(): Promise<string> {
+  if (!refreshInFlight) {
+    refreshInFlight = oneTabAtATime(async () => {
+      const { data } = await api.post('/auth/refresh')
+      return data.access_token as string
+    }).finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+// Web Locks need a secure context; without them only this tab is serialised.
+async function oneTabAtATime<T>(fn: () => Promise<T>): Promise<T> {
+  return navigator.locks ? await navigator.locks.request('xmpanel-auth-refresh', fn) : fn()
+}
+
 // Response interceptor: silently exchange the refresh cookie for a new access
 // token on 401 and replay the original request once.
 api.interceptors.response.use(
@@ -62,8 +88,7 @@ api.interceptors.response.use(
 
     originalRequest._retry = true
     try {
-      const { data } = await api.post('/auth/refresh')
-      const accessToken: string = data.access_token
+      const accessToken = await refreshAccessToken()
       useAuthStore.getState().setAccessToken(accessToken)
       originalRequest.headers.Authorization = `Bearer ${accessToken}`
       return api(originalRequest)
@@ -80,9 +105,6 @@ export const authApi = {
     api.post('/auth/login', { username, password, totp_code, recovery_code }),
 
   logout: () => api.post('/auth/logout'),
-
-  // Refresh has no body — the browser ships the xmpanel_refresh HttpOnly cookie.
-  refresh: () => api.post('/auth/refresh'),
 
   me: () => api.get('/auth/me'),
 

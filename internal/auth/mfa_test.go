@@ -2,6 +2,8 @@ package auth
 
 import (
 	"encoding/base32"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -78,15 +80,27 @@ func TestTOTPManager_RejectsWrongLength(t *testing.T) {
 	}
 }
 
-// loginRecoveryCodePattern mirrors the pattern the login form validates a
-// typed recovery code against (web/src/pages/Login.tsx). Anything this
-// rejects, a user cannot submit — however valid the code is.
-var loginRecoveryCodePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{4}-?[A-Za-z0-9_-]{4}$`)
+// loginRecoveryCodePattern reads the pattern the login form validates a typed
+// recovery code against off Login.tsx itself: a copy here would stay green
+// while the form went back to rejecting codes users were issued.
+func loginRecoveryCodePattern(t *testing.T) *regexp.Regexp {
+	t.Helper()
+	src, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "pages", "Login.tsx"))
+	if err != nil {
+		t.Fatalf("read Login.tsx: %v", err)
+	}
+	field := regexp.MustCompile(`(?s)register\('recovery_code'.*?pattern:\s*\{\s*value:\s*/(.+?)/,`).FindSubmatch(src)
+	if field == nil {
+		t.Fatal("Login.tsx: no pattern literal on the recovery_code field")
+	}
+	return regexp.MustCompile(string(field[1]))
+}
 
 // Generated codes must be typeable: base64url puts "-" and "_" in them, and a
 // letters-and-digits class silently bounced about a fifth at the login form.
 // 200 codes make any narrower class overwhelmingly likely to show up.
 func TestRecoveryCodeManager_CodesMatchLoginPattern(t *testing.T) {
+	pattern := loginRecoveryCodePattern(t)
 	m := NewRecoveryCodeManager()
 	for i := 0; i < 20; i++ {
 		codes, err := m.GenerateCodes()
@@ -94,7 +108,7 @@ func TestRecoveryCodeManager_CodesMatchLoginPattern(t *testing.T) {
 			t.Fatalf("GenerateCodes: %v", err)
 		}
 		for _, c := range codes {
-			if !loginRecoveryCodePattern.MatchString(c) {
+			if !pattern.MatchString(c) {
 				t.Errorf("generated code %q is rejected by the login form", c)
 			}
 		}

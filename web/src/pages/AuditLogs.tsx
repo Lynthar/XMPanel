@@ -195,7 +195,13 @@ export default function AuditLogs() {
       return
     }
     if (result.valid) {
-      toast.success(t('audit.verifySuccess'))
+      toast.success(
+        t('audit.verifySuccess', {
+          first: result.first_id,
+          last: result.last_id,
+          count: result.records_checked,
+        })
+      )
     } else {
       toast.error(t('audit.verifyFailure'))
     }

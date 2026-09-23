@@ -22,9 +22,10 @@ XMPP 服务器（Prosody、ejabberd）与 Matrix 服务器（Synapse、Tuwunel�
 适配器做不到的操作在界面上不出现。
 
 它自带一套账号体系，不借用服务器的：短时效 JWT 加刷新轮换、TOTP 与一次性恢复码、
-Argon2id 口令哈希、五级权限。审计日志用 SHA-256 链起来，改过或删掉一条会让链断开
-（2026 年 9 月之前的构建写下的记录，哈希用的时间戳精度数据库存不下，验证必然失败——
-链从升级后写下的第一条起可验）；存进去的服务器凭据用 AES-256-GCM 静态加密。
+Argon2id 口令哈希、五级权限。审计日志用 SHA-256 链起来：改过一条，或删掉最新一端以外的任何一条，
+验证都会报出来，并说明验了哪一段。它防的是没重算链的改动；有数据库写权限的人仍能整链重写，
+或删掉最新几条而不被发现。2026 年 9 月之前的构建写下的记录，哈希用的时间戳精度数据库存不下，
+验证必然失败——链从升级后写下的第一条起可验。存进去的服务器凭据用 AES-256-GCM 静态加密。
 
 ## 安装
 
@@ -112,7 +113,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 | `database.encryption_key` | base64 32 字节，**必填**：没有它面板拒绝启动，因为密钥丢了之后凭据就再也解不开 |
 | `security.jwt.secret` | 至少 32 字符，强制。留空会每次启动现生成一个，重启后所有会话作废 |
 | `security.cookies.secure_override` | `auto` / `always` / `never`——在卸载 TLS 的反代后面用 `always` |
-| `security.rate_limit.trust_x_forwarded_for` | 只有在受信代理后面、且代理列进 `trusted_proxies` 才开，否则客户端能伪造源 IP。面板记录的客户端地址全看它——限流、登录锁定、会话与审计日志 |
+| `security.rate_limit.trust_x_forwarded_for` | 只有在受信代理后面、且代理列进 `trusted_proxies` 才开，否则客户端能伪造源 IP。链上每一层代理（含 CDN）都要列进去：`X-Forwarded-For` 从右往左读，第一个没列的地址就当作客户端。面板记录的客户端地址全看它——限流、登录锁定、会话与审计日志 |
 | `server.address` | 默认 `:8080` |
 | `monitor.sample_interval` | 每台启用的服务器多久探一次存活、延迟与计数，默认 `1m`。`/health` 读的就是最近一轮，所以它同时是该端点的陈旧上限 |
 | `monitor.check_interval` | TLS 到期、DNS SRV、well-known 与联邦可达性多久查一次，默认 `6h` |
@@ -133,7 +134,6 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
   其他服务器只有规范能给的那一小部分：查一个账号、锁定、挂起、看连接，没有列表，没有别的。
 - **只支持 PostgreSQL**，没有 SQLite、没有 MySQL。
 - **面板本身没有容器镜像。** 源码构建加 systemd；`smoke/` 下的 compose 只用来起测试服务器。
-- **多个浏览器标签页同时刷新会触发 token 重用检测**，把那个用户的全部会话一起登出。
 
 ## 安全
 

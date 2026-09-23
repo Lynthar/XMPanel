@@ -344,16 +344,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	incomingHash := crypto.HashToken(refreshToken)
 	if !storedHash.Valid || storedHash.String != incomingHash {
-		// Possible token theft: revoke the session and clear cookies so the
-		// client falls back to /login instead of looping on /auth/refresh.
-		if _, err := h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID); err != nil {
-			h.logger.Error("failed to revoke session", zap.Error(err))
-		}
-		h.logger.Warn("refresh token reuse detected, revoking session",
-			zap.Int64("user_id", claims.UserID),
-			zap.String("session_id", claims.SessionID))
-		h.clearAuthCookies(w)
-		writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
+		h.revokeReplayedSession(w, r, claims)
 		return
 	}
 
@@ -390,12 +381,24 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rotate: persist the new refresh token's hash. Any further use of the old
-	// refresh token will hit the mismatch branch above.
+	// Rotate only if the hash is still the one checked above: two concurrent
+	// calls with one token must not both succeed, or the cookie the browser
+	// keeps and the hash stored here can end up belonging to different tokens.
 	newHash := crypto.HashToken(tokenPair.RefreshToken)
-	if _, err := h.db.Exec(`UPDATE sessions SET refresh_token_hash = $1, expires_at = $2, last_used_at = NOW() WHERE session_id = $3`,
-		newHash, tokenPair.ExpiresAt.Add(7*24*time.Hour), claims.SessionID); err != nil {
+	res, err := h.db.Exec(`UPDATE sessions SET refresh_token_hash = $1, expires_at = $2, last_used_at = NOW()
+		WHERE session_id = $3 AND refresh_token_hash = $4`,
+		newHash, tokenPair.ExpiresAt.Add(7*24*time.Hour), claims.SessionID, incomingHash)
+	if err != nil {
 		writeInternalError(w, r, h.logger, "failed to rotate refresh token", err)
+		return
+	}
+	rotated, err := res.RowsAffected()
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to rotate refresh token", err)
+		return
+	}
+	if rotated == 0 {
+		h.revokeReplayedSession(w, r, claims)
 		return
 	}
 
@@ -411,6 +414,20 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		"expires_at":   tokenPair.ExpiresAt,
 		"token_type":   tokenPair.TokenType,
 	})
+}
+
+// revokeReplayedSession answers a refresh token presented after it was
+// rotated away: possible theft, so the whole session goes, and the cookies
+// are cleared so the client falls back to /login instead of looping.
+func (h *AuthHandler) revokeReplayedSession(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	if _, err := h.db.Exec(`DELETE FROM sessions WHERE session_id = $1`, claims.SessionID); err != nil {
+		h.logger.Error("failed to revoke session", zap.Error(err))
+	}
+	h.logger.Warn("refresh token reuse detected, revoking session",
+		zap.Int64("user_id", claims.UserID),
+		zap.String("session_id", claims.SessionID))
+	h.clearAuthCookies(w)
+	writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
 }
 
 // Logout handles user logout

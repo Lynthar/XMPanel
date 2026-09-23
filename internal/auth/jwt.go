@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/security/crypto"
 )
 
 var (
@@ -88,9 +89,15 @@ func (m *JWTManager) GenerateTokenPair(userID int64, username, role, sessionID, 
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
 
-	// Generate refresh token
+	// A random ID makes every rotation yield a new token: claims alone repeat
+	// within a second, and a rotation that reissues the same token revokes nothing.
+	refreshID, err := crypto.GenerateRandomString(22)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token id: %w", err)
+	}
 	refreshClaims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        refreshID,
 			Issuer:    m.issuer,
 			Subject:   fmt.Sprintf("%d", userID),
 			IssuedAt:  jwt.NewNumericDate(now),

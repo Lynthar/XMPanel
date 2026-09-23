@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -81,18 +82,6 @@ func matches(pattern, src string) []string {
 	return out
 }
 
-func unique(items []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, s := range items {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 func localeKeys(t *testing.T, file string, path ...string) []string {
 	t.Helper()
 	var doc map[string]json.RawMessage
@@ -163,12 +152,29 @@ func TestRolesMatchEveryCopy(t *testing.T) {
 		sameSet(t, "Role", roles, file+" users.roles", localeKeys(t, file, "users", "roles"))
 	}
 
-	offered := matches(`<option value="(\w+)">\{t\('users\.roles\.`, page)
+	// Each select on its own: a union over the page stays whole when one form
+	// offers a role twice or labels an option with another role's name.
 	offerable := minus(roles, []string{string(RoleSuperAdmin)})
-	if len(offered) != 2*len(offerable) {
-		t.Errorf("expected two role selects offering %d roles each, found %d options", len(offerable), len(offered))
+	selects := strings.Split(page, "{...register('role')}>")[1:]
+	if len(selects) != 2 {
+		t.Fatalf("expected the create and edit role selects, found %d", len(selects))
 	}
-	sameSet(t, "Role minus superadmin", offerable, "Users.tsx role <select> options", unique(offered))
+	option := regexp.MustCompile(`<option value="(\w+)">\{t\('users\.roles\.(\w+)'\)\}</option>`)
+	for i, sel := range selects {
+		end := strings.Index(sel, "</select>")
+		if end < 0 {
+			t.Fatalf("role select %d has no </select>", i+1)
+		}
+		sel = sel[:end]
+		var values []string
+		for _, m := range option.FindAllStringSubmatch(sel, -1) {
+			if m[1] != m[2] {
+				t.Errorf("role select %d: option value %q is labelled users.roles.%s", i+1, m[1], m[2])
+			}
+			values = append(values, m[1])
+		}
+		sameSet(t, "Role minus superadmin", offerable, fmt.Sprintf("Users.tsx role select %d", i+1), values)
+	}
 }
 
 // tsFields lists an `export interface` body of lib/api.ts as name or name? per line.

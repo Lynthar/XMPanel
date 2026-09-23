@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
-import { authApi } from '@/lib/api'
+import { authApi, refreshAccessToken } from '@/lib/api'
 import Layout from '@/components/Layout'
 import Login from '@/pages/Login'
 import Dashboard from '@/pages/Dashboard'
@@ -19,9 +19,10 @@ function bootstrapAuth(): Promise<void> {
   if (bootstrapPromise) return bootstrapPromise
   bootstrapPromise = (async () => {
     try {
-      const { data } = await authApi.refresh()
+      const accessToken = await refreshAccessToken()
+      useAuthStore.getState().setAccessToken(accessToken)
       const me = await authApi.me()
-      useAuthStore.getState().setAuth(me.data, data.access_token)
+      useAuthStore.getState().setAuth(me.data, accessToken)
     } catch {
       // No valid refresh cookie — caller falls through to /login.
     }
