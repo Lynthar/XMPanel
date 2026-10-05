@@ -49,9 +49,10 @@ var legacyCapabilities = adapter.NewCapabilitySet(append([]adapter.Capability{
 }, adapter.MatrixCapabilities...)...)
 
 // lifecycle names the operations MAS owns once authentication is delegated.
+// Ending a session is one: without MAS the removed device comes back.
 var lifecycle = append([]adapter.Capability{
 	adapter.CapAccountsCreate, adapter.CapAccountsDelete, adapter.CapAccountsSetPassword,
-	adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin,
+	adapter.CapAccountsSetEnabled, adapter.CapAccountsSetAdmin, adapter.CapSessionsTerminate,
 }, masLifecycle...)
 
 // tuwunelMask is what Tuwunel 1.9 leaves out of the Synapse admin API: those
@@ -127,6 +128,10 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	if _, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: who.UserID, Method: http.MethodGet, Path: userPath(who.UserID)}, nil); err != nil {
 		return nil, err
 	}
+	var warnings []string
+	if warning := a.tuwunelWarning(ctx, op); warning != "" {
+		warnings = append(warnings, warning)
+	}
 	passwords := true
 	if authMode == AuthModeMAS && a.mas != nil {
 		if passwords, err = a.masPasswordLogin(ctx, op); err != nil {
@@ -158,7 +163,26 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 		Version:  version,
 		Domains:  []string{serverName},
 		AuthMode: authMode,
+		Warnings: warnings,
 	}, nil
+}
+
+// tuwunelWarning asks Tuwunel's unauthenticated version route, which Synapse
+// lacks, whether the registered implementation is the one answering. It only
+// warns: a proxy may drop /_tuwunel/*, and other failures prove nothing.
+func (a *Adapter) tuwunelWarning(ctx context.Context, op string) string {
+	var out struct {
+		Name string `json:"name"`
+	}
+	_, err := a.call(ctx, matrixhttp.Request{Op: op, Method: http.MethodGet, Path: "/_tuwunel/server_version", Anonymous: true}, &out)
+	failure, failed := adapter.AsError(err)
+	switch {
+	case a.cfg.Impl == adapter.ImplSynapse && err == nil && strings.Contains(strings.ToLower(out.Name), "tuwunel"):
+		return adapter.WarnLooksLikeTuwunel
+	case a.cfg.Impl == adapter.ImplTuwunel && failed && failure.Status == http.StatusNotFound:
+		return adapter.WarnTuwunelUnconfirmed
+	}
+	return ""
 }
 
 // detectAuthMode reads whether authentication is delegated to MAS. Tuwunel
@@ -536,6 +560,9 @@ func (a *Adapter) TerminateSession(ctx context.Context, accountID, sessionID str
 	if sessionID == "" {
 		return &adapter.Error{Kind: adapter.Invalid, Op: op, Resource: mxid, Err: errors.New("device id is required")}
 	}
+	if err := a.masTerminate(ctx, op, mxid, func(s masSession) bool { return s.device == sessionID }); err != nil {
+		return err
+	}
 	_, err = a.call(ctx, matrixhttp.Request{
 		Op: op, Resource: mxid + "/" + sessionID, Method: http.MethodDelete,
 		Path: userPath(mxid) + "/devices/" + url.PathEscape(sessionID),
@@ -545,14 +572,20 @@ func (a *Adapter) TerminateSession(ctx context.Context, accountID, sessionID str
 
 func (a *Adapter) TerminateAccountSessions(ctx context.Context, accountID string) error {
 	const op = "sessions.terminate_all"
-	sessions, err := a.ListAccountSessions(ctx, accountID)
+	mxid, err := a.mxid(op, accountID)
+	if err != nil {
+		return err
+	}
+	if err := a.masTerminate(ctx, op, mxid, func(masSession) bool { return true }); err != nil {
+		return err
+	}
+	sessions, err := a.ListAccountSessions(ctx, mxid)
 	if err != nil {
 		return err
 	}
 	if len(sessions) == 0 {
 		return nil
 	}
-	mxid := sessions[0].AccountID
 	ids := make([]string, len(sessions))
 	for i, s := range sessions {
 		ids[i] = s.ID
@@ -563,6 +596,33 @@ func (a *Adapter) TerminateAccountSessions(ctx context.Context, accountID string
 		Body: map[string][]string{"devices": ids},
 	}, nil)
 	return err
+}
+
+// masTerminate ends the matching MAS sessions before the Synapse device goes.
+// Deleting the device alone is no logout under delegation: the refresh token
+// keeps working and the next device sync recreates the device from the session.
+func (a *Adapter) masTerminate(ctx context.Context, op, mxid string, match func(masSession) bool) error {
+	viaMAS, err := a.lifecycle(op)
+	if err != nil || !viaMAS {
+		return err
+	}
+	record, err := a.masUser(ctx, op, mxid)
+	if err != nil {
+		return err
+	}
+	sessions, err := a.masSessions(ctx, op, mxid, record.ID)
+	if err != nil {
+		return err
+	}
+	for _, s := range sessions {
+		if !match(s) {
+			continue
+		}
+		if err := a.masEndSession(ctx, op, mxid, s); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) ListRooms(ctx context.Context, q adapter.ListQuery) (adapter.Page[adapter.Room], error) {

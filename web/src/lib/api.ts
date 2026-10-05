@@ -132,6 +132,8 @@ export const usersApi = {
     api.put(`/users/${id}`, data),
 
   delete: (id: number) => api.delete(`/users/${id}`),
+
+  resetMFA: (id: number) => api.post(`/users/${id}/mfa/reset`),
 }
 
 // Copies of Go tables. A Go test keeps each one in step with its constants:
@@ -216,6 +218,8 @@ export interface ServerInfo {
   version: string
   domains: string[]
   auth_mode?: string
+  /** Codes from adapter.Warn*, translated under servers.warnings. */
+  warnings?: string[]
 }
 
 export interface ServerCapabilities {

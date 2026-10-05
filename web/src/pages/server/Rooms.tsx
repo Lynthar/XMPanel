@@ -40,7 +40,8 @@ export default function Rooms({ server, caps }: { server: Server; caps: ServerCa
     setDeleteTarget(null)
     try {
       await backendApi.deleteRoom(server.id, room.id)
-      toast.success(t('backend.rooms.deleted'))
+      // A Matrix room is purged in the background and stays listed until then.
+      toast.success(t(server.protocol === 'matrix' ? 'backend.rooms.deleteStarted' : 'backend.rooms.deleted'))
       invalidate()
     } catch (error) {
       toast.error(errorMessage(error) ?? t('backend.rooms.deleteFailed'))

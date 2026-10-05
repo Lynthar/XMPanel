@@ -60,7 +60,7 @@ func runMatrixGeneric(t *testing.T, tg genericTarget) {
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	if info.Impl != adapter.ImplMatrixGeneric || info.Version == "" || !contains(info.Domains, domain) {
+	if info.Impl != adapter.ImplMatrixGeneric || info.Version == "" || !contains(info.Domains, domain) || len(info.Warnings) != 0 {
 		t.Fatalf("info = %+v", info)
 	}
 	caps := a.Capabilities()

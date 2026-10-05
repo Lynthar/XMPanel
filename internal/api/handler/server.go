@@ -74,7 +74,7 @@ func (h *ServerHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	server, err := scanServer(h.db.QueryRow(`SELECT `+serverColumns+` FROM servers WHERE id = $1`, id))
@@ -102,7 +102,7 @@ func validEndpoint(raw string) bool {
 // token; bearer+mas also needs the MAS endpoint, client id and secret.
 func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string) {
 	if creds == nil {
-		return adapter.Credentials{}, "Credentials are required"
+		return adapter.Credentials{}, i18n.MsgServerCredentialsRequired
 	}
 	if creds.Kind == "" {
 		creds.Kind = adapter.CredentialsBearer
@@ -126,7 +126,7 @@ func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string
 		return adapter.Credentials{}, "Unsupported credential kind"
 	}
 	if strings.TrimSpace(creds.Token) == "" {
-		return adapter.Credentials{}, "Credential token is required"
+		return adapter.Credentials{}, i18n.MsgServerTokenRequired
 	}
 	return *creds, ""
 }
@@ -134,7 +134,7 @@ func credentialsOrError(creds *adapter.Credentials) (adapter.Credentials, string
 func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -142,16 +142,16 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	req.Domain = strings.TrimSpace(req.Domain)
 	switch {
 	case req.Name == "":
-		writeError(w, r, http.StatusBadRequest, "Name is required")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgServerNameRequired)
 		return
 	case !registry.Supports(req.Protocol, req.Implementation):
 		writeError(w, r, http.StatusBadRequest, i18n.MsgUnsupportedServerType)
 		return
 	case !validEndpoint(req.Endpoint):
-		writeError(w, r, http.StatusBadRequest, "Endpoint must be an http or https URL")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgServerEndpointInvalid)
 		return
 	case req.Domain == "":
-		writeError(w, r, http.StatusBadRequest, "Domain is required")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgServerDomainRequired)
 		return
 	}
 	creds, problem := credentialsOrError(req.Credentials)
@@ -160,7 +160,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if creds.MAS != nil && req.Implementation != adapter.ImplSynapse {
-		writeError(w, r, http.StatusBadRequest, "MAS credentials apply to Synapse only")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgServerMASSynapseOnly)
 		return
 	}
 	encrypted, err := store.EncryptCredentials(h.keyRing, creds)
@@ -178,7 +178,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	`, req.Name, req.Protocol, req.Implementation, req.Endpoint, req.Domain, encrypted, now).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, r, http.StatusConflict, "A server with this endpoint and domain already exists")
+			writeError(w, r, http.StatusConflict, i18n.MsgServerExists)
 			return
 		}
 		writeInternalError(w, r, h.logger, "failed to create server", err)
@@ -198,12 +198,12 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	var req models.UpdateServerRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
@@ -215,21 +215,21 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name != nil {
 		if strings.TrimSpace(*req.Name) == "" {
-			writeError(w, r, http.StatusBadRequest, "Name is required")
+			writeError(w, r, http.StatusBadRequest, i18n.MsgServerNameRequired)
 			return
 		}
 		set("name", strings.TrimSpace(*req.Name))
 	}
 	if req.Endpoint != nil {
 		if !validEndpoint(strings.TrimSpace(*req.Endpoint)) {
-			writeError(w, r, http.StatusBadRequest, "Endpoint must be an http or https URL")
+			writeError(w, r, http.StatusBadRequest, i18n.MsgServerEndpointInvalid)
 			return
 		}
 		set("endpoint", strings.TrimSpace(*req.Endpoint))
 	}
 	if req.Domain != nil {
 		if strings.TrimSpace(*req.Domain) == "" {
-			writeError(w, r, http.StatusBadRequest, "Domain is required")
+			writeError(w, r, http.StatusBadRequest, i18n.MsgServerDomainRequired)
 			return
 		}
 		set("domain", strings.TrimSpace(*req.Domain))
@@ -250,7 +250,7 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, r, h.logger, "failed to load server", err)
 				return
 			case impl != adapter.ImplSynapse:
-				writeError(w, r, http.StatusBadRequest, "MAS credentials apply to Synapse only")
+				writeError(w, r, http.StatusBadRequest, i18n.MsgServerMASSynapseOnly)
 				return
 			}
 		}
@@ -265,7 +265,7 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 		set("enabled", *req.Enabled)
 	}
 	if len(columns) == 0 {
-		writeError(w, r, http.StatusBadRequest, "No fields to update")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgNoFieldsToUpdate)
 		return
 	}
 	updated := append([]string(nil), columns...)
@@ -279,7 +279,7 @@ func (h *ServerHandler) Update(w http.ResponseWriter, r *http.Request) {
 	result, err := h.db.Exec(`UPDATE servers SET `+strings.Join(assignments, ", ")+` WHERE id = $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, r, http.StatusConflict, "A server with this endpoint and domain already exists")
+			writeError(w, r, http.StatusConflict, i18n.MsgServerExists)
 			return
 		}
 		writeInternalError(w, r, h.logger, "failed to update server", err)
@@ -300,7 +300,7 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	result, err := h.db.Exec(`DELETE FROM servers WHERE id = $1`, id)
@@ -321,7 +321,7 @@ func (h *ServerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	a, _, err := h.adapters.Get(r.Context(), id)
@@ -344,13 +344,13 @@ func (h *ServerHandler) Stats(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Samples(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	window, ok := sampleWindows[r.URL.Query().Get("range")]
 	if !ok {
 		if r.URL.Query().Has("range") {
-			writeError(w, r, http.StatusBadRequest, "Invalid range")
+			writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidRange)
 			return
 		}
 		window = 24 * time.Hour
@@ -377,7 +377,7 @@ var sampleWindows = map[string]time.Duration{
 func (h *ServerHandler) Checks(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	checks, err := monitor.QueryChecks(r.Context(), h.db, id)
@@ -393,7 +393,7 @@ func (h *ServerHandler) Checks(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	a, info, err := h.adapters.Get(r.Context(), id)
@@ -412,7 +412,7 @@ func (h *ServerHandler) Capabilities(w http.ResponseWriter, r *http.Request) {
 func (h *ServerHandler) Test(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), backendWriteTimeout)

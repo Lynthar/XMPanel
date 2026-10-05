@@ -21,6 +21,8 @@ export default function MatrixRoomActions({ server, caps, room, onChanged }: Pro
   const [blockToo, setBlockToo] = useState(true)
   const [newRoomUser, setNewRoomUser] = useState('')
   const [message, setMessage] = useState('')
+  // Tuwunel accepts the replacement-room fields and ignores them.
+  const offersNewRoom = server.implementation !== 'tuwunel'
 
   const block = useMutation({
     mutationFn: (value: boolean) => matrixApi.blockRoom(server.id, room.id, value),
@@ -33,7 +35,8 @@ export default function MatrixRoomActions({ server, caps, room, onChanged }: Pro
   const purge = useMutation({
     mutationFn: () => matrixApi.purgeRoom(server.id, room.id, {
       purge: true, block: blockToo, force_purge: false,
-      new_room_user: newRoomUser.trim() || undefined, message: newRoomUser.trim() ? message || undefined : undefined,
+      new_room_user: (offersNewRoom && newRoomUser.trim()) || undefined,
+      message: offersNewRoom && newRoomUser.trim() ? message || undefined : undefined,
     }),
     onSuccess: (response) => {
       toast.success(t('backend.rooms.purgeStarted', { id: response.data.delete_id }))
@@ -78,11 +81,13 @@ export default function MatrixRoomActions({ server, caps, room, onChanged }: Pro
             <input type="checkbox" checked={blockToo} onChange={(e) => setBlockToo(e.target.checked)} />
             {t('backend.rooms.purgeBlock')}
           </label>
-          <label className="block">
-            {t('backend.rooms.purgeNewRoom')}
-            <input type="text" className="input font-mono text-sm mt-1" placeholder={`@admin:${server.domain}`} value={newRoomUser} onChange={(e) => setNewRoomUser(e.target.value)} />
-          </label>
-          {newRoomUser.trim() && (
+          {offersNewRoom && (
+            <label className="block">
+              {t('backend.rooms.purgeNewRoom')}
+              <input type="text" className="input font-mono text-sm mt-1" placeholder={`@admin:${server.domain}`} value={newRoomUser} onChange={(e) => setNewRoomUser(e.target.value)} />
+            </label>
+          )}
+          {offersNewRoom && newRoomUser.trim() && (
             <label className="block">
               {t('backend.rooms.purgeMessage')}
               <input type="text" className="input mt-1" value={message} onChange={(e) => setMessage(e.target.value)} />

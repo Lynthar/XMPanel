@@ -60,6 +60,91 @@ func masUserPath(ulid string) string {
 	return "/api/admin/v1/users/" + url.PathEscape(ulid)
 }
 
+// masSession is one active MAS session of a user and the Matrix device it
+// carries ("" for none). Kind is the admin API collection it lives in.
+type masSession struct {
+	kind   *masSessionKind
+	id     string
+	device string
+}
+
+// masSessionKind is one of the three session collections the device sync
+// job reads: ending a session of any kind is what stops that job from
+// recreating the device.
+type masSessionKind struct {
+	collection, userFilter, end string
+}
+
+var masSessionKinds = []*masSessionKind{
+	{"compat-sessions", "filter[user]", "/finish"},
+	{"oauth2-sessions", "filter[user]", "/finish"},
+	{"personal-sessions", "filter[actor_user]", "/revoke"},
+}
+
+// Device scope tokens: the stable form and the MSC2967 form MAS still writes.
+var deviceScopePrefixes = []string{"urn:matrix:client:device:", "urn:matrix:org.matrix.msc2967.client:device:"}
+
+// masSessionAttributes are the fields the three collections share or that
+// name the device: compat sessions carry device_id, the others a scope.
+type masSessionAttributes struct {
+	DeviceID string `json:"device_id"`
+	Scope    string `json:"scope"`
+}
+
+func (attrs masSessionAttributes) device() string {
+	if attrs.DeviceID != "" {
+		return attrs.DeviceID
+	}
+	for _, token := range strings.Fields(attrs.Scope) {
+		for _, prefix := range deviceScopePrefixes {
+			if device, ok := strings.CutPrefix(token, prefix); ok {
+				return device
+			}
+		}
+	}
+	return ""
+}
+
+// masSessions lists the active sessions of a user across all three
+// collections, following the admin API's pagination links.
+func (a *Adapter) masSessions(ctx context.Context, op, mxid, ulid string) ([]masSession, error) {
+	var sessions []masSession
+	for _, kind := range masSessionKinds {
+		path := "/api/admin/v1/" + kind.collection + "?" + kind.userFilter + "=" + url.QueryEscape(ulid) + "&filter[status]=active&page[first]=100"
+		for path != "" {
+			var page struct {
+				Data []struct {
+					ID         string               `json:"id"`
+					Attributes masSessionAttributes `json:"attributes"`
+				} `json:"data"`
+				Links struct {
+					Next string `json:"next"`
+				} `json:"links"`
+			}
+			if _, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: path}, &page); err != nil {
+				return nil, err
+			}
+			for _, s := range page.Data {
+				sessions = append(sessions, masSession{kind: kind, id: s.ID, device: s.Attributes.device()})
+			}
+			path = page.Links.Next
+		}
+	}
+	return sessions, nil
+}
+
+// masEndSession finishes or revokes one session. MAS then schedules a device
+// sync that no longer lists the session's device.
+func (a *Adapter) masEndSession(ctx context.Context, op, mxid string, s masSession) error {
+	resource := mxid
+	if s.device != "" {
+		resource += "/" + s.device
+	}
+	path := "/api/admin/v1/" + s.kind.collection + "/" + url.PathEscape(s.id) + s.kind.end
+	_, err := a.mas.call(ctx, matrixhttp.Request{Op: op, Resource: resource, Method: http.MethodPost, Path: path}, nil)
+	return err
+}
+
 // call performs one admin API request. A 401 on a cached token means MAS
 // revoked it early, so the token is dropped and the request sent once more.
 func (m *masClient) call(ctx context.Context, req matrixhttp.Request, out any) (int, error) {

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/xmpanel/xmpanel/internal/i18n"
+
 	"go.uber.org/zap"
 )
 
@@ -22,10 +24,7 @@ func Recovery(logger *zap.Logger) func(http.Handler) http.Handler {
 						zap.String("stack", string(debug.Stack())),
 					)
 
-					// Return 500 error to client
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusInternalServerError)
-					_, _ = w.Write([]byte(`{"error":"Internal server error"}`))
+					writeError(w, r, http.StatusInternalServerError, i18n.MsgInternalError)
 				}
 			}()
 

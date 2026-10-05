@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 )
 
 // RateLimiter implements a token bucket rate limiter
@@ -93,7 +94,7 @@ func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 			if !limiter.Allow(key) {
 				w.Header().Set("Retry-After", "1")
-				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				writeError(w, r, http.StatusTooManyRequests, i18n.MsgRateLimitExceeded)
 				return
 			}
 
@@ -104,10 +105,11 @@ func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 
 // LoginRateLimiter specifically limits login attempts
 type LoginRateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string]*loginAttempts
-	maxTries int
-	window   time.Duration
+	mu        sync.Mutex
+	attempts  map[string]*loginAttempts
+	maxTries  int
+	window    time.Duration
+	lastSweep time.Time
 }
 
 type loginAttempts struct {
@@ -131,6 +133,11 @@ func (lr *LoginRateLimiter) Check(key string) (bool, time.Duration) {
 	defer lr.mu.Unlock()
 
 	now := time.Now()
+	// Every name tried leaves a key, so without the sweep anyone can grow
+	// this map until the process runs out of memory, never logging in.
+	if now.Sub(lr.lastSweep) > lr.window {
+		lr.sweep(now)
+	}
 	a, exists := lr.attempts[key]
 
 	if !exists {
@@ -164,6 +171,17 @@ func (lr *LoginRateLimiter) Check(key string) (bool, time.Duration) {
 	}
 
 	return true, 0
+}
+
+// sweep drops the keys whose window and lockout have both run out; the next
+// attempt under such a key starts from one either way.
+func (lr *LoginRateLimiter) sweep(now time.Time) {
+	for key, a := range lr.attempts {
+		if now.Sub(a.firstTry) > lr.window && !now.Before(a.lockedUntil) {
+			delete(lr.attempts, key)
+		}
+	}
+	lr.lastSweep = now
 }
 
 // RecordFailure records a failed login attempt

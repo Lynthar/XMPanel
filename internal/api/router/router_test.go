@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
 	"github.com/xmpanel/xmpanel/internal/config"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/security/crypto"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
@@ -35,6 +37,17 @@ func testRouter(t *testing.T) (*Router, *auth.JWTManager) {
 	r := New(cfg, nil, ring, zap.NewNop())
 	t.Cleanup(r.Close)
 	return r, auth.NewJWTManager(cfg.Security.JWT)
+}
+
+// sessionNamesRole stands in for the database: each token's session id names
+// the role its account currently holds.
+func sessionNamesRole(_ context.Context, _ int64, sessionID string) (string, error) {
+	return sessionID, nil
+}
+
+// errorBody is the JSON every middleware rejection carries, in the default locale.
+func errorBody(key string) string {
+	return `{"error":"` + i18n.T(i18n.DefaultLocale, key) + `"}` + "\n"
 }
 
 func allowedEndpoint(role models.Role, e endpoint) bool {
@@ -99,7 +112,7 @@ func TestAuthenticatedRouteAccess(t *testing.T) {
 		}
 		t.Run(e.method+" "+e.path, func(t *testing.T) {
 			r := NewRouter()
-			r.authMiddleware = application.authMiddleware
+			r.authMiddleware = middleware.NewAuthMiddleware(tokens, sessionNamesRole)
 			r.csrfMiddleware = middleware.NewCSRFMiddleware(false)
 			reached := false
 			r.route(e.method, e.path, e.permission, func(w http.ResponseWriter, _ *http.Request) {
@@ -110,7 +123,7 @@ func TestAuthenticatedRouteAccess(t *testing.T) {
 			for _, role := range []models.Role{"", models.RoleSuperAdmin, models.RoleAdmin, models.RoleOperator, models.RoleViewer, models.RoleAuditor} {
 				req := httptest.NewRequest(e.method, path, nil)
 				if role != "" {
-					pair, err := tokens.GenerateTokenPair(1, "tester", string(role), "session", "")
+					pair, err := tokens.GenerateTokenPair(1, "tester", string(role), string(role), "")
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -130,7 +143,7 @@ func TestAuthenticatedRouteAccess(t *testing.T) {
 				if rec.Code != want || reached != (want == http.StatusNoContent) {
 					t.Errorf("role %q: status %d, reached %v; want %d", role, rec.Code, reached, want)
 				}
-				if want == http.StatusForbidden && rec.Body.String() != "Forbidden\n" {
+				if want == http.StatusForbidden && rec.Body.String() != errorBody(i18n.MsgForbidden) {
 					t.Errorf("permission response changed: %q", rec.Body.String())
 				}
 				if role == models.RoleAdmin && e.method != http.MethodGet {
@@ -138,7 +151,7 @@ func TestAuthenticatedRouteAccess(t *testing.T) {
 					reached = false
 					rec = httptest.NewRecorder()
 					r.ServeHTTP(rec, req)
-					if rec.Code != http.StatusForbidden || reached || rec.Body.String() != "CSRF token missing\n" {
+					if rec.Code != http.StatusForbidden || reached || rec.Body.String() != errorBody(i18n.MsgCSRFRejected) {
 						t.Errorf("unsafe route omitted CSRF: %d %q", rec.Code, rec.Body.String())
 					}
 				}
@@ -201,10 +214,10 @@ func TestFrontendAPIMatchesRoutes(t *testing.T) {
 }
 
 func TestSessionRoutePreservesEscapedJID(t *testing.T) {
-	application, tokens := testRouter(t)
+	_, tokens := testRouter(t)
 	r := NewRouter()
-	r.authMiddleware = application.authMiddleware
-	r.csrfMiddleware = application.csrfMiddleware
+	r.authMiddleware = middleware.NewAuthMiddleware(tokens, sessionNamesRole)
+	r.csrfMiddleware = middleware.NewCSRFMiddleware(false)
 	const jid = "alice@example.com/phone/one"
 	r.route("DELETE", "/api/v1/servers/{serverId}/sessions/{session}", "backend:write", func(w http.ResponseWriter, req *http.Request) {
 		if req.PathValue("session") != jid {
@@ -212,7 +225,7 @@ func TestSessionRoutePreservesEscapedJID(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	pair, err := tokens.GenerateTokenPair(1, "tester", "operator", "session", "")
+	pair, err := tokens.GenerateTokenPair(1, "tester", "operator", "operator", "")
 	if err != nil {
 		t.Fatal(err)
 	}

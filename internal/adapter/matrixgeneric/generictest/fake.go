@@ -305,11 +305,17 @@ func (f *Fake) whoisRoute(w http.ResponseWriter, r *http.Request) {
 		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
 		return
 	}
-	if !f.admin() {
+	id := r.PathValue("id")
+	// Synapse and Tuwunel let any token read its own record; only another
+	// account needs admin rights, and that check precedes the locality one.
+	if id != f.mxid(AdminLocalpart) && !f.admin() {
 		matrixError(w, http.StatusForbidden, "M_FORBIDDEN", "You are not a server admin")
 		return
 	}
-	id := r.PathValue("id")
+	if _, domain := adapter.SplitMXID(id); domain != f.domain {
+		matrixError(w, http.StatusBadRequest, "M_INVALID_PARAM", "Can only whois a local user")
+		return
+	}
 	byDevice := map[string][]map[string]any{}
 	for _, c := range f.connections[id] {
 		byDevice[c.device] = append(byDevice[c.device], map[string]any{"ip": c.ip, "last_seen": c.lastSeen, "user_agent": c.userAgent})

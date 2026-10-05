@@ -5,6 +5,8 @@ package smoke
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -72,7 +74,7 @@ func matrixTargets() []matrixTarget {
 // account this run creates carries a fresh suffix. Under MAS the account
 // state reaches Synapse asynchronously, hence the waits after each change.
 func runMatrix(t *testing.T, tg matrixTarget) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	a := tg.build(adapter.ServerConfig{
 		Protocol: adapter.ProtocolMatrix, Impl: tg.impl, Endpoint: tg.endpoint, Domain: domain, Creds: tg.creds(t),
@@ -88,6 +90,12 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	}
 	if info.Impl != tg.impl || info.Version == "" || !contains(info.Domains, domain) || info.AuthMode != tg.authMode {
 		t.Fatalf("info = %+v", info)
+	}
+	if len(info.Warnings) != 0 {
+		t.Errorf("a correctly registered %s probes with warnings %v", tg.impl, info.Warnings)
+	}
+	if tg.impl == adapter.ImplTuwunel {
+		checkTuwunelRegisteredAsSynapse(t, ctx, tg)
 	}
 	caps := a.Capabilities()
 	t.Logf("%s %s declares %v", tg.impl, info.Version, caps.Sorted())
@@ -169,6 +177,9 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 		own, err := a.ListAccountSessions(ctx, id)
 		return fmt.Sprintf("%v %v", own, err), err == nil && !sessionListed(own, client.DeviceID)
 	})
+	if tg.authMode == synapse.AuthModeMAS {
+		checkKickedDeviceStaysGone(t, ctx, a, tg, local, "second-password-2")
+	}
 	second, err := login(local, "second-password-2", "again")
 	if err != nil {
 		t.Fatalf("second login: %v", err)
@@ -316,6 +327,88 @@ func runMatrix(t *testing.T, tg matrixTarget) {
 	pop.Sessions = []adapter.Session{{ID: probe.DeviceID, AccountID: pop.Accounts[0]}}
 	pop.Media = mediaIDs(t, ctx, a, pop.Accounts[0])
 	adaptertest.CheckConsistency(t, ctx, a, pop)
+}
+
+// checkTuwunelRegisteredAsSynapse probes the Tuwunel server as if it had
+// been registered as Synapse: the probe passes (the two serve the same admin
+// API) and must say so in a warning instead.
+func checkTuwunelRegisteredAsSynapse(t *testing.T, ctx context.Context, tg matrixTarget) {
+	t.Helper()
+	a := tg.build(adapter.ServerConfig{
+		Protocol: adapter.ProtocolMatrix, Impl: adapter.ImplSynapse, Endpoint: tg.endpoint, Domain: domain, Creds: tg.creds(t),
+	})
+	defer func() { _ = a.Close() }()
+	info, err := a.Probe(ctx)
+	if err != nil {
+		t.Fatalf("probe of Tuwunel registered as synapse: %v", err)
+	}
+	if !contains(info.Warnings, adapter.WarnLooksLikeTuwunel) {
+		t.Errorf("Tuwunel registered as synapse probed with warnings %v, want %s", info.Warnings, adapter.WarnLooksLikeTuwunel)
+	}
+}
+
+// checkKickedDeviceStaysGone: MAS's device sync recreates any device whose
+// MAS session is still active. The panel kicks the victim; a sentinel deleted
+// behind MAS's back returns to prove a sync ran; the trigger's logout runs it.
+func checkKickedDeviceStaysGone(t *testing.T, ctx context.Context, a adapter.Adapter, tg matrixTarget, local, password string) {
+	t.Helper()
+	id := "@" + local + ":" + domain
+	victim, err := matrixLoginRefreshable(tg.loginBase, tg.endpoint, local, password, "victim")
+	if err != nil {
+		t.Fatalf("victim login: %v", err)
+	}
+	sentinel, err := matrixLogin(tg.loginBase, tg.endpoint, local, password, "sentinel")
+	if err != nil {
+		t.Fatalf("sentinel login: %v", err)
+	}
+	trigger, err := matrixLogin(tg.loginBase, tg.endpoint, local, password, "trigger")
+	if err != nil {
+		t.Fatalf("trigger login: %v", err)
+	}
+	if err := a.TerminateSession(ctx, id, victim.DeviceID); err != nil {
+		t.Fatalf("terminate victim: %v", err)
+	}
+	if victim.whoami() == nil {
+		t.Errorf("victim token survived termination")
+	}
+	// The sentinel goes through Synapse's admin API alone, so its MAS
+	// session stays active and the sync must bring it back.
+	admin := &matrixClient{base: tg.endpoint, token: tg.creds(t).Token, http: victim.http}
+	if err := admin.do(http.MethodDelete, "/_synapse/admin/v2/users/"+url.PathEscape(id)+"/devices/"+url.PathEscape(sentinel.DeviceID), nil, nil); err != nil {
+		t.Fatalf("delete sentinel device behind MAS's back: %v", err)
+	}
+	trigger.logout()
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		own, err := a.ListAccountSessions(ctx, id)
+		if err != nil {
+			t.Fatalf("list devices: %v", err)
+		}
+		if sessionListed(own, sentinel.DeviceID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("MAS never synced the devices back: %+v", own)
+		}
+		time.Sleep(time.Second)
+	}
+	own, err := a.ListAccountSessions(ctx, id)
+	if err != nil || sessionListed(own, victim.DeviceID) {
+		t.Errorf("kicked device came back with the device sync: %+v, %v", own, err)
+	}
+	if victim.whoami() == nil {
+		t.Errorf("kicked device's access token works again after the device sync")
+	}
+	if err := victim.refresh(); err == nil {
+		if victim.whoami() == nil {
+			t.Errorf("kicked device refreshed itself into a working token")
+		} else {
+			t.Logf("refresh answered a token Synapse refuses")
+		}
+	} else {
+		t.Logf("refresh refused: %v", err)
+	}
+	sentinel.logout()
 }
 
 // mediaIDs lists what the account has uploaded, for the consistency population.

@@ -31,7 +31,7 @@ func NewMatrixHandler(adapters *registry.Registry, audit *AuditService, logger *
 func (h *MatrixHandler) target(w http.ResponseWriter, r *http.Request) (adapter.MatrixAdmin, int64, bool) {
 	serverID, err := strconv.ParseInt(r.PathValue("serverId"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return nil, 0, false
 	}
 	a, _, err := h.adapters.Get(r.Context(), serverID)
@@ -66,7 +66,7 @@ func (h *MatrixHandler) Deactivate(w http.ResponseWriter, r *http.Request) {
 		Erase bool `json:"erase"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -90,7 +90,7 @@ func (h *MatrixHandler) SetSuspended(w http.ResponseWriter, r *http.Request) {
 		Suspended *bool `json:"suspended"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Suspended == nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -118,7 +118,7 @@ func (h *MatrixHandler) SetShadowBanned(w http.ResponseWriter, r *http.Request) 
 		Banned *bool `json:"banned"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Banned == nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -162,13 +162,13 @@ func (h *MatrixHandler) ListRegistrationTokens(w http.ResponseWriter, r *http.Re
 func (h *MatrixHandler) CreateRegistrationToken(w http.ResponseWriter, r *http.Request) {
 	var req adapter.CreateRegistrationToken
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	// Zero means "unlimited" to Synapse and "unusable" to MAS, so it is
 	// refused rather than mapped; omitting the field is the way to say unlimited.
 	if req.UsesAllowed != nil && *req.UsesAllowed < 1 {
-		writeError(w, r, http.StatusBadRequest, "Uses allowed must be positive; omit it for unlimited")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgUsesAllowedInvalid)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -276,7 +276,7 @@ func (h *MatrixHandler) BlockRoom(w http.ResponseWriter, r *http.Request) {
 		Block *bool `json:"block"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Block == nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -304,7 +304,7 @@ func (h *MatrixHandler) BlockRoom(w http.ResponseWriter, r *http.Request) {
 func (h *MatrixHandler) PurgeRoom(w http.ResponseWriter, r *http.Request) {
 	var req adapter.PurgeRoom
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	m, serverID, ok := h.target(w, r)
@@ -330,11 +330,11 @@ func (h *MatrixHandler) SendNotice(w http.ResponseWriter, r *http.Request) {
 		Body    string `json:"body"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	if req.Account == "" || strings.TrimSpace(req.Body) == "" {
-		writeError(w, r, http.StatusBadRequest, "Account and body are required")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgNoticeFieldsRequired)
 		return
 	}
 	m, serverID, ok := h.target(w, r)

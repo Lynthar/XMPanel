@@ -29,7 +29,7 @@ Argon2id 口令哈希、五级权限。审计日志用 SHA-256 链起来：改�
 
 ## 安装
 
-没有软件包、没有镜像、也没有 release，只能自己编译。需要 Go 1.24.7+、Node 20.19+ / 22.13+ / 24+，
+没有软件包、没有镜像、也没有 release，只能自己编译。需要 Go 1.26+、Node 20.19+ / 22.13+ / 24+，
 以及 PostgreSQL 14+（唯一支持的数据库）。
 
 ```bash
@@ -143,7 +143,7 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 登录失败只记进数据库的审计日志，不写 stderr，所以 fail2ban 目前无从匹配。
 
-没有私密漏洞报告渠道，敏感问题请不要发公开 issue。
+漏洞请通过 GitHub 的[私密报告表单](https://github.com/Lynthar/XMPanel/security/advisories/new)提交，不要发公开 issue。
 
 ## 许可证
 

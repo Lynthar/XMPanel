@@ -38,7 +38,7 @@ upgrading. Stored server credentials are encrypted at rest with AES-256-GCM.
 ## Install
 
 No packages, no container images and no releases; you build it yourself. You'll
-need Go 1.24.7+, Node 20.19+ / 22.13+ / 24+, and PostgreSQL 14+ (the only supported database).
+need Go 1.26+, Node 20.19+ / 22.13+ / 24+, and PostgreSQL 14+ (the only supported database).
 
 ```bash
 git clone https://github.com/Lynthar/XMPanel.git
@@ -179,8 +179,9 @@ credentials are encrypted with AES-256-GCM.
 Failed logins are recorded in the database audit log but not written to stderr,
 so fail2ban has nothing to match on yet.
 
-There's no private disclosure channel; please don't file sensitive findings as
-public issues.
+Report vulnerabilities privately through GitHub's
+[security advisory form](https://github.com/Lynthar/XMPanel/security/advisories/new),
+not as public issues.
 
 ## License
 

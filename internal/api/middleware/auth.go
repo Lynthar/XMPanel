@@ -2,10 +2,12 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/xmpanel/xmpanel/internal/auth"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 )
 
@@ -18,48 +20,69 @@ const (
 	contextKeyClientIP  contextKey = "client_ip"
 )
 
+// ErrSessionGone is what a SessionLookup returns when the account or the
+// session a token was issued for no longer exists.
+var ErrSessionGone = errors.New("session no longer exists")
+
+// SessionLookup returns the current role of userID while sessionID is still
+// one of its sessions, and ErrSessionGone otherwise.
+type SessionLookup func(ctx context.Context, userID int64, sessionID string) (string, error)
+
 // AuthMiddleware validates JWT tokens and adds user info to context
 type AuthMiddleware struct {
 	jwtManager *auth.JWTManager
+	lookup     SessionLookup
 }
 
-// NewAuthMiddleware creates a new auth middleware
-func NewAuthMiddleware(jwtManager *auth.JWTManager) *AuthMiddleware {
+// NewAuthMiddleware creates a new auth middleware. lookup is consulted on
+// every request: a token alone would keep a deleted, demoted or logged-out
+// user's old rights until it expires.
+func NewAuthMiddleware(jwtManager *auth.JWTManager, lookup SessionLookup) *AuthMiddleware {
 	return &AuthMiddleware{
 		jwtManager: jwtManager,
+		lookup:     lookup,
 	}
 }
 
-// Authenticate validates the JWT token from the Authorization header
+// Authenticate validates the JWT token from the Authorization header and
+// replaces its role with the account's current one.
 func (m *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 			return
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			http.Error(w, "Invalid authorization header format", http.StatusUnauthorized)
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenInvalid)
 			return
 		}
 
 		claims, err := m.jwtManager.ValidateToken(parts[1], auth.TokenTypeAccess)
 		if err != nil {
-			switch err {
-			case auth.ErrExpiredToken:
-				http.Error(w, "Token has expired", http.StatusUnauthorized)
-			case auth.ErrInvalidToken, auth.ErrInvalidClaims:
-				http.Error(w, "Invalid token", http.StatusUnauthorized)
-			default:
-				http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			if errors.Is(err, auth.ErrExpiredToken) {
+				writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenExpired)
+			} else {
+				writeError(w, r, http.StatusUnauthorized, i18n.MsgTokenInvalid)
 			}
 			return
 		}
 
-		// Add claims to context
-		next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), claims)))
+		role, err := m.lookup(r.Context(), claims.UserID, claims.SessionID)
+		if errors.Is(err, ErrSessionGone) {
+			writeError(w, r, http.StatusUnauthorized, i18n.MsgSessionRevoked)
+			return
+		}
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, i18n.MsgInternalError)
+			return
+		}
+		current := *claims
+		current.Role = role
+
+		next.ServeHTTP(w, r.WithContext(WithClaims(r.Context(), &current)))
 	})
 }
 
@@ -69,13 +92,13 @@ func RequirePermission(permission string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims := GetClaims(r.Context())
 			if claims == nil {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 				return
 			}
 
 			userRole := models.Role(claims.Role)
 			if !userRole.HasPermission(permission) {
-				http.Error(w, "Forbidden", http.StatusForbidden)
+				writeError(w, r, http.StatusForbidden, i18n.MsgForbidden)
 				return
 			}
 
@@ -141,20 +164,20 @@ func (m *CSRFMiddleware) Protect(next http.Handler) http.Handler {
 		// Get token from cookie
 		cookie, err := r.Cookie(m.cookieName)
 		if err != nil {
-			http.Error(w, "CSRF token missing", http.StatusForbidden)
+			writeError(w, r, http.StatusForbidden, i18n.MsgCSRFRejected)
 			return
 		}
 
 		// Get token from header
 		headerToken := r.Header.Get(m.headerName)
 		if headerToken == "" {
-			http.Error(w, "CSRF token header missing", http.StatusForbidden)
+			writeError(w, r, http.StatusForbidden, i18n.MsgCSRFRejected)
 			return
 		}
 
 		// Compare tokens
 		if cookie.Value != headerToken {
-			http.Error(w, "CSRF token mismatch", http.StatusForbidden)
+			writeError(w, r, http.StatusForbidden, i18n.MsgCSRFRejected)
 			return
 		}
 

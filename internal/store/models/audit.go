@@ -24,9 +24,10 @@ const (
 	AuditActionRecoveryLoginFailed AuditAction = "auth.recovery_login_failed"
 
 	// User management actions
-	AuditActionUserCreate AuditAction = "user.create"
-	AuditActionUserUpdate AuditAction = "user.update"
-	AuditActionUserDelete AuditAction = "user.delete"
+	AuditActionUserCreate   AuditAction = "user.create"
+	AuditActionUserUpdate   AuditAction = "user.update"
+	AuditActionUserDelete   AuditAction = "user.delete"
+	AuditActionUserMFAReset AuditAction = "user.mfa_reset"
 
 	// Server management actions
 	AuditActionServerAdd    AuditAction = "server.add"
@@ -62,9 +63,6 @@ const (
 	AuditActionXMPPUserKick   AuditAction = "xmpp.user_kick"
 	AuditActionXMPPRoomCreate AuditAction = "xmpp.room_create"
 	AuditActionXMPPRoomDelete AuditAction = "xmpp.room_delete"
-
-	// System actions
-	AuditActionSettingChange AuditAction = "system.setting_change"
 )
 
 // ResourceType represents the type of resource being audited
@@ -78,7 +76,6 @@ const (
 	ResourceTypeRoom    ResourceType = "room"
 	ResourceTypeToken   ResourceType = "token"
 	ResourceTypeMedia   ResourceType = "media"
-	ResourceTypeSetting ResourceType = "setting"
 	ResourceTypeXMPP    ResourceType = "xmpp" // retired; stored rows only
 )
 

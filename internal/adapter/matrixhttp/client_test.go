@@ -127,3 +127,25 @@ func isKind(err error, kind adapter.Kind) bool {
 	failure, ok := adapter.AsError(err)
 	return ok && failure.Kind == kind
 }
+
+// A failed connection must not log the secret a path carries: the transport's
+// own error text holds the full URL.
+func TestCallHidesALabelledPathWhenUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	base := srv.URL
+	srv.Close()
+
+	c := &Client{HTTP: &http.Client{Timeout: time.Second}, BaseURL: base}
+	_, err := c.Call(context.Background(), Request{
+		Op: "matrix.regtoken_delete", Method: http.MethodDelete,
+		Path:  "/_synapse/admin/v1/registration_tokens/SECRETTOKEN",
+		Label: "/_synapse/admin/v1/registration_tokens/SECR…",
+	}, nil)
+	failure, ok := adapter.AsError(err)
+	if !ok || failure.Kind != adapter.Unreachable {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(err.Error(), "SECRETTOKEN") {
+		t.Errorf("error text carries the token: %v", err)
+	}
+}

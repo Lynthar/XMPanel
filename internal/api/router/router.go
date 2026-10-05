@@ -1,6 +1,9 @@
 package router
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -112,6 +115,20 @@ func (r *Router) route(method, path, permission string, h http.HandlerFunc) {
 	r.endpoints = append(r.endpoints, endpoint{method, path, permission})
 }
 
+// sessionRole reads the role of a user whose session still exists. Deleting a
+// user cascades to its sessions, so the one join answers both questions.
+func sessionRole(db *store.DB) middleware.SessionLookup {
+	return func(ctx context.Context, userID int64, sessionID string) (string, error) {
+		var role string
+		err := db.QueryRowContext(ctx, `SELECT u.role FROM users u JOIN sessions s ON s.user_id = u.id
+			WHERE u.id = $1 AND s.session_id = $2`, userID, sessionID).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", middleware.ErrSessionGone
+		}
+		return role, err
+	}
+}
+
 // New creates and configures the main router
 func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.Logger) *Router {
 	router := NewRouter()
@@ -125,7 +142,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	)
 
 	// Initialize middlewares
-	authMiddleware := middleware.NewAuthMiddleware(jwtManager)
+	authMiddleware := middleware.NewAuthMiddleware(jwtManager, sessionRole(db))
 	corsMiddleware := middleware.NewCORSMiddleware(cfg.Security.CORS)
 	clientIPResolver := middleware.NewClientIPResolver(
 		cfg.Security.RateLimit.TrustXForwardedFor,
@@ -201,6 +218,7 @@ func New(cfg *config.Config, db *store.DB, keyRing *crypto.KeyRing, logger *zap.
 	router.route("GET", "/api/v1/users/{id}", "users:read", userHandler.Get)
 	router.route("PUT", "/api/v1/users/{id}", "users:write", userHandler.Update)
 	router.route("DELETE", "/api/v1/users/{id}", "users:write", userHandler.Delete)
+	router.route("POST", "/api/v1/users/{id}/mfa/reset", "users:write", userHandler.ResetMFA)
 
 	// Server management
 	router.route("GET", "/api/v1/servers", "servers:read", serverHandler.List)

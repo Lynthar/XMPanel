@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,6 +77,12 @@ func (c *Client) Call(ctx context.Context, req Request, out any) (status int, er
 	}
 	status, respBody, err := Transport(ctx, c.HTTP, req.Method, target, header, payload)
 	if err != nil {
+		// A transport error prints the whole URL, and a path can hold a
+		// credential; it reaches the logs, so it shows what Shown allows.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			urlErr.URL = req.Shown()
+		}
 		if status == 0 {
 			failure.Kind = adapter.Unreachable
 			return 0, fmt.Errorf("failed to connect to server: %w", err)

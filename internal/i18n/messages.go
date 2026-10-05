@@ -22,11 +22,8 @@ var SupportedLocales = []Locale{LocaleEN, LocaleZH}
 // Message keys for API responses
 const (
 	// Auth messages
-	MsgLoginSuccess        = "auth.login.success"
-	MsgLoginFailed         = "auth.login.failed"
 	MsgInvalidCredentials  = "auth.invalid_credentials"
 	MsgAccountLocked       = "auth.account_locked"
-	MsgMFARequired         = "auth.mfa_required"
 	MsgMFAInvalid          = "auth.mfa_invalid"
 	MsgTokenExpired        = "auth.token_expired"
 	MsgTokenInvalid        = "auth.token_invalid"
@@ -40,6 +37,7 @@ const (
 	MsgMFAAlreadyEnabled   = "auth.mfa_already_enabled"
 	MsgMFANotEnabled       = "auth.mfa_not_enabled"
 	MsgRecoveryCodeInvalid = "auth.recovery_code_invalid"
+	MsgCSRFRejected        = "auth.csrf_rejected"
 
 	// User messages
 	MsgUserCreated       = "user.created"
@@ -47,24 +45,35 @@ const (
 	MsgUserDeleted       = "user.deleted"
 	MsgUserNotFound      = "user.not_found"
 	MsgUserAlreadyExists = "user.already_exists"
-	MsgCannotDeleteSelf  = "user.cannot_delete_self"
+	MsgInvalidUserID     = "user.invalid_id"
+	MsgUsernameLength    = "user.username_length"
+	MsgUnknownRole       = "user.unknown_role"
+	MsgSuperadminOnly    = "user.superadmin_only"
+	MsgLastSuperadmin    = "user.last_superadmin"
+	MsgUserMFAReset      = "user.mfa_reset"
+	MsgUserMFAResetSelf  = "user.mfa_reset_self"
 
 	// Server messages
-	MsgServerCreated     = "server.created"
-	MsgServerUpdated     = "server.updated"
-	MsgServerDeleted     = "server.deleted"
-	MsgServerNotFound    = "server.not_found"
-	MsgServerConnFailed  = "server.connection_failed"
-	MsgServerTestSuccess = "server.test_success"
-	MsgServerTestFailed  = "server.test_failed"
+	MsgServerCreated             = "server.created"
+	MsgServerUpdated             = "server.updated"
+	MsgServerDeleted             = "server.deleted"
+	MsgServerNotFound            = "server.not_found"
+	MsgServerTestSuccess         = "server.test_success"
+	MsgInvalidServerID           = "server.invalid_id"
+	MsgServerNameRequired        = "server.name_required"
+	MsgServerEndpointInvalid     = "server.endpoint_invalid"
+	MsgServerDomainRequired      = "server.domain_required"
+	MsgServerCredentialsRequired = "server.credentials_required"
+	MsgServerTokenRequired       = "server.token_required"
+	MsgServerMASSynapseOnly      = "server.mas_synapse_only"
+	MsgServerExists              = "server.exists"
+	MsgInvalidRange              = "server.invalid_range"
 
 	// Backend (managed server) messages
-	MsgAccountCreated        = "backend.account.created"
 	MsgAccountDeleted        = "backend.account.deleted"
 	MsgAccountUpdated        = "backend.account.updated"
 	MsgAccountNotFound       = "backend.account.not_found"
 	MsgAccountExists         = "backend.account.exists"
-	MsgRoomCreated           = "backend.room.created"
 	MsgRoomDeleted           = "backend.room.deleted"
 	MsgRoomNotFound          = "backend.room.not_found"
 	MsgRoomExists            = "backend.room.exists"
@@ -93,23 +102,20 @@ const (
 	MsgUpstreamUnreachable   = "backend.upstream.unreachable"
 	MsgUpstreamFailed        = "backend.upstream.failed"
 	MsgUnsupportedServerType = "server.unsupported_type"
+	MsgLocalpartRequired     = "backend.localpart_required"
+	MsgRoomNameRequired      = "backend.room.name_required"
+	MsgUsesAllowedInvalid    = "matrix.regtoken.uses_invalid"
+	MsgNoticeFieldsRequired  = "matrix.notice.fields_required"
 
 	// Common messages
-	MsgInternalError     = "error.internal"
-	MsgBadRequest        = "error.bad_request"
-	MsgUnauthorized      = "error.unauthorized"
-	MsgForbidden         = "error.forbidden"
-	MsgNotFound          = "error.not_found"
-	MsgValidationFailed  = "error.validation_failed"
-	MsgRateLimitExceeded = "error.rate_limit"
-	MsgInvalidInput      = "error.invalid_input"
-
-	// Validation messages
-	MsgFieldRequired = "validation.field_required"
-	MsgFieldTooShort = "validation.field_too_short"
-	MsgFieldTooLong  = "validation.field_too_long"
-	MsgInvalidEmail  = "validation.invalid_email"
-	MsgInvalidFormat = "validation.invalid_format"
+	MsgInternalError        = "error.internal"
+	MsgBadRequest           = "error.bad_request"
+	MsgUnauthorized         = "error.unauthorized"
+	MsgForbidden            = "error.forbidden"
+	MsgRateLimitExceeded    = "error.rate_limit"
+	MsgNoFieldsToUpdate     = "error.no_fields_to_update"
+	MsgDetailsFilterInvalid = "audit.details_filter_invalid"
+	MsgAuditExportTooLarge  = "audit.export_too_large"
 
 	// Password validation
 	MsgPasswordTooShort  = "password.too_short"
@@ -123,11 +129,8 @@ const (
 var messages = map[Locale]map[string]string{
 	LocaleEN: {
 		// Auth
-		MsgLoginSuccess:        "Login successful",
-		MsgLoginFailed:         "Login failed",
 		MsgInvalidCredentials:  "Invalid username or password",
 		MsgAccountLocked:       "Account is locked due to too many failed attempts",
-		MsgMFARequired:         "Two-factor authentication required",
 		MsgMFAInvalid:          "Invalid verification code",
 		MsgTokenExpired:        "Session has expired, please login again",
 		MsgTokenInvalid:        "Invalid authentication token",
@@ -141,6 +144,7 @@ var messages = map[Locale]map[string]string{
 		MsgMFAAlreadyEnabled:   "Two-factor authentication is already enabled",
 		MsgMFANotEnabled:       "Two-factor authentication is not enabled",
 		MsgRecoveryCodeInvalid: "Invalid recovery code",
+		MsgCSRFRejected:        "Security token missing or stale; reload the page and try again",
 
 		// User
 		MsgUserCreated:       "User created successfully",
@@ -148,24 +152,35 @@ var messages = map[Locale]map[string]string{
 		MsgUserDeleted:       "User deleted successfully",
 		MsgUserNotFound:      "User not found",
 		MsgUserAlreadyExists: "Username or email already exists",
-		MsgCannotDeleteSelf:  "Cannot delete your own account",
+		MsgInvalidUserID:     "Invalid user ID",
+		MsgUsernameLength:    "Username must be 3-32 characters",
+		MsgUnknownRole:       "Unknown role",
+		MsgSuperadminOnly:    "Only a superadmin can do that",
+		MsgLastSuperadmin:    "Cannot delete the last superadmin",
+		MsgUserMFAReset:      "Two-factor authentication reset",
+		MsgUserMFAResetSelf:  "Turn off your own two-factor authentication in Settings",
 
 		// Server
-		MsgServerCreated:     "Server added successfully",
-		MsgServerUpdated:     "Server updated successfully",
-		MsgServerDeleted:     "Server deleted successfully",
-		MsgServerNotFound:    "Server not found",
-		MsgServerConnFailed:  "Failed to connect to server",
-		MsgServerTestSuccess: "Connection test successful",
-		MsgServerTestFailed:  "Connection test failed",
+		MsgServerCreated:             "Server added successfully",
+		MsgServerUpdated:             "Server updated successfully",
+		MsgServerDeleted:             "Server deleted successfully",
+		MsgServerNotFound:            "Server not found",
+		MsgServerTestSuccess:         "Connection test successful",
+		MsgInvalidServerID:           "Invalid server ID",
+		MsgServerNameRequired:        "Name is required",
+		MsgServerEndpointInvalid:     "Endpoint must be an http or https URL",
+		MsgServerDomainRequired:      "Domain is required",
+		MsgServerCredentialsRequired: "Credentials are required",
+		MsgServerTokenRequired:       "Credential token is required",
+		MsgServerMASSynapseOnly:      "MAS credentials apply to Synapse only",
+		MsgServerExists:              "A server with this endpoint and domain already exists",
+		MsgInvalidRange:              "Invalid range",
 
 		// Backend
-		MsgAccountCreated:        "Account created",
 		MsgAccountDeleted:        "Account deleted",
 		MsgAccountUpdated:        "Account updated",
 		MsgAccountNotFound:       "Account not found",
 		MsgAccountExists:         "Account already exists",
-		MsgRoomCreated:           "Room created",
 		MsgRoomDeleted:           "Room deleted",
 		MsgRoomNotFound:          "Room not found",
 		MsgRoomExists:            "Room already exists",
@@ -194,23 +209,20 @@ var messages = map[Locale]map[string]string{
 		MsgUpstreamUnreachable:   "The server could not be reached",
 		MsgUpstreamFailed:        "The server failed to complete the operation",
 		MsgUnsupportedServerType: "Unsupported server protocol or implementation",
+		MsgLocalpartRequired:     "Localpart is required",
+		MsgRoomNameRequired:      "Room name is required",
+		MsgUsesAllowedInvalid:    "Uses allowed must be positive; omit it for unlimited",
+		MsgNoticeFieldsRequired:  "Account and body are required",
 
 		// Common errors
-		MsgInternalError:     "Internal server error",
-		MsgBadRequest:        "Bad request",
-		MsgUnauthorized:      "Authentication required",
-		MsgForbidden:         "Access denied",
-		MsgNotFound:          "Resource not found",
-		MsgValidationFailed:  "Validation failed",
-		MsgRateLimitExceeded: "Too many requests, please try again later",
-		MsgInvalidInput:      "Invalid input data",
-
-		// Validation
-		MsgFieldRequired: "This field is required",
-		MsgFieldTooShort: "Input is too short",
-		MsgFieldTooLong:  "Input is too long",
-		MsgInvalidEmail:  "Invalid email address",
-		MsgInvalidFormat: "Invalid format",
+		MsgInternalError:        "Internal server error",
+		MsgBadRequest:           "Invalid request body",
+		MsgUnauthorized:         "Authentication required",
+		MsgForbidden:            "Access denied",
+		MsgRateLimitExceeded:    "Too many requests, please try again later",
+		MsgNoFieldsToUpdate:     "No fields to update",
+		MsgDetailsFilterInvalid: "details_contains must be valid JSON",
+		MsgAuditExportTooLarge:  "More than 10,000 records match; narrow the time range and export in parts",
 
 		// Password
 		MsgPasswordTooShort:  "Password must be at least %d characters",
@@ -221,11 +233,8 @@ var messages = map[Locale]map[string]string{
 	},
 	LocaleZH: {
 		// Auth
-		MsgLoginSuccess:        "登录成功",
-		MsgLoginFailed:         "登录失败",
 		MsgInvalidCredentials:  "用户名或密码错误",
 		MsgAccountLocked:       "账户已被锁定，登录尝试次数过多",
-		MsgMFARequired:         "需要双因素认证",
 		MsgMFAInvalid:          "验证码无效",
 		MsgTokenExpired:        "会话已过期，请重新登录",
 		MsgTokenInvalid:        "认证令牌无效",
@@ -239,6 +248,7 @@ var messages = map[Locale]map[string]string{
 		MsgMFAAlreadyEnabled:   "双因素认证已经启用",
 		MsgMFANotEnabled:       "双因素认证尚未启用",
 		MsgRecoveryCodeInvalid: "恢复码无效",
+		MsgCSRFRejected:        "安全令牌缺失或已失效，请刷新页面后重试",
 
 		// User
 		MsgUserCreated:       "用户创建成功",
@@ -246,24 +256,35 @@ var messages = map[Locale]map[string]string{
 		MsgUserDeleted:       "用户删除成功",
 		MsgUserNotFound:      "用户不存在",
 		MsgUserAlreadyExists: "用户名或邮箱已存在",
-		MsgCannotDeleteSelf:  "不能删除自己的账户",
+		MsgInvalidUserID:     "用户 ID 无效",
+		MsgUsernameLength:    "用户名长度须为 3–32 个字符",
+		MsgUnknownRole:       "未知角色",
+		MsgSuperadminOnly:    "只有超级管理员可以执行此操作",
+		MsgLastSuperadmin:    "不能删除最后一个超级管理员",
+		MsgUserMFAReset:      "已重置两步验证",
+		MsgUserMFAResetSelf:  "请在设置页关闭自己的两步验证",
 
 		// Server
-		MsgServerCreated:     "服务器添加成功",
-		MsgServerUpdated:     "服务器更新成功",
-		MsgServerDeleted:     "服务器删除成功",
-		MsgServerNotFound:    "服务器不存在",
-		MsgServerConnFailed:  "连接服务器失败",
-		MsgServerTestSuccess: "连接测试成功",
-		MsgServerTestFailed:  "连接测试失败",
+		MsgServerCreated:             "服务器添加成功",
+		MsgServerUpdated:             "服务器更新成功",
+		MsgServerDeleted:             "服务器删除成功",
+		MsgServerNotFound:            "服务器不存在",
+		MsgServerTestSuccess:         "连接测试成功",
+		MsgInvalidServerID:           "服务器 ID 无效",
+		MsgServerNameRequired:        "名称不能为空",
+		MsgServerEndpointInvalid:     "地址必须是 http 或 https URL",
+		MsgServerDomainRequired:      "域名不能为空",
+		MsgServerCredentialsRequired: "凭据不能为空",
+		MsgServerTokenRequired:       "凭据令牌不能为空",
+		MsgServerMASSynapseOnly:      "MAS 凭据只适用于 Synapse",
+		MsgServerExists:              "已存在地址与域名都相同的服务器",
+		MsgInvalidRange:              "时间范围无效",
 
 		// XMPP
-		MsgAccountCreated:        "账号已创建",
 		MsgAccountDeleted:        "账号已删除",
 		MsgAccountUpdated:        "账号已更新",
 		MsgAccountNotFound:       "账号不存在",
 		MsgAccountExists:         "账号已存在",
-		MsgRoomCreated:           "房间已创建",
 		MsgRoomDeleted:           "房间已删除",
 		MsgRoomNotFound:          "房间不存在",
 		MsgRoomExists:            "房间已存在",
@@ -292,23 +313,20 @@ var messages = map[Locale]map[string]string{
 		MsgUpstreamUnreachable:   "无法连接到服务器",
 		MsgUpstreamFailed:        "服务器未能完成该操作",
 		MsgUnsupportedServerType: "不支持的服务器协议或实现",
+		MsgLocalpartRequired:     "用户名不能为空",
+		MsgRoomNameRequired:      "房间名不能为空",
+		MsgUsesAllowedInvalid:    "可用次数必须为正数；不限次数请留空",
+		MsgNoticeFieldsRequired:  "账号与内容不能为空",
 
 		// Common errors
-		MsgInternalError:     "服务器内部错误",
-		MsgBadRequest:        "请求格式错误",
-		MsgUnauthorized:      "请先登录",
-		MsgForbidden:         "没有访问权限",
-		MsgNotFound:          "资源不存在",
-		MsgValidationFailed:  "数据验证失败",
-		MsgRateLimitExceeded: "请求过于频繁，请稍后再试",
-		MsgInvalidInput:      "输入数据无效",
-
-		// Validation
-		MsgFieldRequired: "此字段为必填项",
-		MsgFieldTooShort: "输入内容过短",
-		MsgFieldTooLong:  "输入内容过长",
-		MsgInvalidEmail:  "邮箱地址格式无效",
-		MsgInvalidFormat: "格式无效",
+		MsgInternalError:        "服务器内部错误",
+		MsgBadRequest:           "请求格式错误",
+		MsgUnauthorized:         "请先登录",
+		MsgForbidden:            "没有访问权限",
+		MsgRateLimitExceeded:    "请求过于频繁，请稍后再试",
+		MsgNoFieldsToUpdate:     "没有要更新的字段",
+		MsgDetailsFilterInvalid: "details_contains 必须是合法的 JSON",
+		MsgAuditExportTooLarge:  "匹配的记录超过一万条，请缩小时间范围后分批导出",
 
 		// Password
 		MsgPasswordTooShort:  "密码长度至少为 %d 个字符",

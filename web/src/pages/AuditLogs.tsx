@@ -46,6 +46,7 @@ const actionColors: Record<string, string> = {
   'user.create': 'text-blue-400',
   'user.update': 'text-yellow-400',
   'user.delete': 'text-red-400',
+  'user.mfa_reset': 'text-orange-400',
   'server.add': 'text-blue-400',
   'server.update': 'text-yellow-400',
   'server.remove': 'text-red-400',
@@ -72,12 +73,11 @@ const actionColors: Record<string, string> = {
   'xmpp.user_kick': 'text-orange-400',
   'xmpp.room_create': 'text-blue-400',
   'xmpp.room_delete': 'text-red-400',
-  'system.setting_change': 'text-yellow-400',
 }
 
 const ACTION_OPTIONS = Object.keys(actionColors)
 
-const RESOURCE_TYPE_OPTIONS = ['user', 'server', 'account', 'session', 'room', 'token', 'media', 'setting', 'xmpp']
+const RESOURCE_TYPE_OPTIONS = ['user', 'server', 'account', 'session', 'room', 'token', 'media', 'xmpp']
 
 interface Filters {
   action: string
@@ -180,8 +180,9 @@ export default function AuditLogs() {
       a.click()
       window.URL.revokeObjectURL(url)
       toast.success(t('audit.exportSuccess'))
-    } catch {
-      toast.error(t('audit.exportError'))
+    } catch (error) {
+      const status = (error as { response?: { status?: number } } | null)?.response?.status
+      toast.error(t(status === 422 ? 'audit.exportTooLarge' : 'audit.exportError'))
     }
   }
 

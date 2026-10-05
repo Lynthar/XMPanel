@@ -173,6 +173,15 @@
       "tuwunel": "Tuwunel",
       "matrix-generic": "Other Matrix homeserver"
     },
+    "authModes": {
+      "legacy": "Synapse admin token",
+      "mas": "Delegated to MAS"
+    },
+    "warnings": {
+      "looks_like_tuwunel": "This server identifies itself as Tuwunel. Edit it and choose Tuwunel, or some operations will fail.",
+      "tuwunel_unconfirmed": "Could not confirm this is Tuwunel: /_tuwunel/server_version was not found. If it is Synapse, choose Synapse; if your reverse proxy does not forward /_tuwunel/, ignore this.",
+      "admin_unconfirmed": "Nothing shows that this token belongs to a server admin; account and session management may be unavailable."
+    },
     "stats": {
       "title": "Server Statistics",
       "registeredUsers": "Registered Users",
@@ -246,7 +255,11 @@
       "auditor": "Auditor"
     },
     "confirmDelete": "Delete user?",
-    "cannotDeleteSelf": "You cannot delete your own account"
+    "cannotDeleteSelf": "You cannot delete your own account",
+    "resetMFA": "Reset 2FA",
+    "resetMFAPrompt": "Turn off two-factor authentication for <strong>{{username}}</strong>? They can sign in with their password alone until they set it up again.",
+    "resetMFASuccess": "Two-factor authentication reset",
+    "resetMFAFailed": "Failed to reset two-factor authentication"
   },
   "audit": {
     "title": "Audit Logs",
@@ -265,6 +278,7 @@
     "allActions": "All Actions",
     "exportSuccess": "Export downloaded",
     "exportError": "Failed to export logs",
+    "exportTooLarge": "More than 10,000 records match; narrow the time range and export in parts",
     "verifySuccess": "Records #{{first}}–#{{last}} ({{count}}) form an unbroken chain. Removal of the newest records cannot be detected.",
     "verifyFailure": "Audit log integrity check failed!",
     "filters": {
@@ -288,8 +302,7 @@
       "xmpp": "XMPP",
       "room": "Room",
       "token": "Registration token",
-      "media": "Media",
-      "setting": "Setting"
+      "media": "Media"
     },
     "verify": {
       "title": "Verify Integrity",
@@ -314,6 +327,7 @@
       "user.create": "User Created",
       "user.update": "User Updated",
       "user.delete": "User Deleted",
+      "user.mfa_reset": "User 2FA Reset",
       "server.add": "Server Added",
       "server.update": "Server Updated",
       "server.remove": "Server Removed",
@@ -339,8 +353,7 @@
       "xmpp.user_delete": "XMPP User Deleted",
       "xmpp.user_kick": "XMPP User Kicked",
       "xmpp.room_create": "Room Created",
-      "xmpp.room_delete": "Room Deleted",
-      "system.setting_change": "Setting Changed"
+      "xmpp.room_delete": "Room Deleted"
     }
   },
   "settings": {
@@ -539,6 +552,7 @@
       "deleteTitle": "Delete room?",
       "deletePrompt": "This destroys <strong>{{id}}</strong> on the server. This action cannot be undone.",
       "deleted": "Room deleted",
+      "deleteStarted": "Deletion started; the room stays listed until the server finishes purging it",
       "deleteFailed": "Failed to delete room",
       "block": "Block",
       "unblock": "Unblock",

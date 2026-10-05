@@ -37,6 +37,11 @@ func NewValidator(cfg config.PasswordConfig) *Validator {
 	}
 }
 
+// MinLength is the shortest password the policy accepts.
+func (v *Validator) MinLength() int {
+	return v.minLength
+}
+
 // Validate checks if a password meets the policy requirements
 // Returns nil if valid, or an error describing the first failed requirement
 func (v *Validator) Validate(password string) error {

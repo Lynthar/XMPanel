@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
+	"github.com/xmpanel/xmpanel/internal/i18n"
 	"github.com/xmpanel/xmpanel/internal/store"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
@@ -79,7 +81,7 @@ func (h *AuditHandler) List(w http.ResponseWriter, r *http.Request) {
 	if dc := r.URL.Query().Get("details_contains"); dc != "" {
 		var probe interface{}
 		if err := json.Unmarshal([]byte(dc), &probe); err != nil {
-			writeError(w, r, http.StatusBadRequest, "details_contains must be valid JSON")
+			writeError(w, r, http.StatusBadRequest, i18n.MsgDetailsFilterInvalid)
 			return
 		}
 		whereClause += " AND details @> $" + strconv.Itoa(paramNum) + "::jsonb"
@@ -253,6 +255,10 @@ func (h *AuditHandler) Verify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// maxExportRows bounds an export that is collected whole before writing; the
+// panel shares 1 GB with its database and chat server.
+const maxExportRows = 10000
+
 // Export exports audit logs as CSV
 func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	// Parse filters (same as List)
@@ -281,7 +287,9 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 		args = append(args, endTime)
 	}
 
-	query += " ORDER BY created_at DESC LIMIT 10000"
+	// One row past the cap tells a full export from a cut one: the audit log
+	// has no second copy, so a silently partial file is worse than none.
+	query += " ORDER BY created_at DESC LIMIT " + strconv.Itoa(maxExportRows+1)
 
 	rows, err := h.db.Query(query, args...)
 	if err != nil {
@@ -314,6 +322,10 @@ func (h *AuditHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		writeInternalError(w, r, h.logger, "failed to read audit logs for export", err)
+		return
+	}
+	if len(collected) > maxExportRows {
+		writeError(w, r, http.StatusUnprocessableEntity, i18n.MsgAuditExportTooLarge)
 		return
 	}
 
@@ -403,8 +415,22 @@ func (s *AuditService) LogEvent(
 	}
 }
 
+// maxUsernameLength is the width of users.username and audit_logs.username.
+const maxUsernameLength = 255
+
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
+
 // Log writes an audit log entry using a transaction to prevent race conditions
 func (s *AuditService) Log(entry *models.AuditLogEntry) error {
+	// A name longer than the column, such as a probe at the login form,
+	// would fail the insert and lose the row.
+	entry.Username = truncateRunes(entry.Username, maxUsernameLength)
+
 	// Convert details to JSON. Use sql.NullString so nil details lands as
 	// SQL NULL (the JSONB column rejects empty strings).
 	var detailsJSON sql.NullString

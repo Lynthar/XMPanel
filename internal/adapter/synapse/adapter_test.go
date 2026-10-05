@@ -234,6 +234,121 @@ func TestMASPasswordResetRevokesDevices(t *testing.T) {
 	if !requestedContaining(fake, "/delete_devices") {
 		t.Errorf("no device revocation was sent: %v", fake.Requests)
 	}
+	if active := fake.ActiveMASSessions(bob); len(active) != 0 {
+		t.Errorf("MAS sessions survived a password reset: %v", active)
+	}
+}
+
+// Deleting the Synapse device alone is not a logout under MAS: the session
+// there stays active, its refresh token keeps working and the next device
+// sync recreates the device. The MAS session holding the device must end.
+func TestMASTerminateSessionFinishesTheMASSession(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	alice, bob := "@alice:"+fakeDomain, "@bob:"+fakeDomain
+	if err := a.TerminateSession(ctx, alice, "DEV1"); err != nil {
+		t.Fatal(err)
+	}
+	if active := fake.ActiveMASSessions(alice); len(active) != 0 {
+		t.Errorf("compat session of the deleted device still active: %v", active)
+	}
+	if !requestedContaining(fake, "/compat-sessions/") || !requestedContaining(fake, "/finish") {
+		t.Errorf("no finish was sent: %v", fake.Requests)
+	}
+	if devices, err := a.ListAccountSessions(ctx, alice); err != nil || len(devices) != 0 {
+		t.Errorf("Synapse device survived: %+v, %v", devices, err)
+	}
+	// A device without a MAS session (one MAS never knew) is deleted as before.
+	before := len(fake.Requests)
+	if err := a.TerminateSession(ctx, bob, "UNKNOWN"); err != nil {
+		t.Errorf("terminate a device MAS does not hold: %v", err)
+	}
+	for _, r := range fake.Requests[before:] {
+		if strings.Contains(r, "/finish") || strings.Contains(r, "/revoke") {
+			t.Errorf("a session was ended for a device nobody holds: %s", r)
+		}
+	}
+	if active := fake.ActiveMASSessions(bob); len(active) != 2 {
+		t.Errorf("bob's sessions = %v, want both untouched", active)
+	}
+	// The personal session's device: revoked, not finished.
+	if err := a.TerminateSession(ctx, bob, "DEV3"); err != nil {
+		t.Fatal(err)
+	}
+	if active := fake.ActiveMASSessions(bob); len(active) != 1 {
+		t.Errorf("bob's sessions after revoking the personal one = %v", active)
+	}
+	if !requestedContaining(fake, "/personal-sessions/") || !requestedContaining(fake, "/revoke") {
+		t.Errorf("personal session was not revoked: %v", fake.Requests)
+	}
+}
+
+// Terminate-all ends every active MAS session of the account, device or
+// not, across pages, even when Synapse already lists no device.
+func TestMASTerminateAccountSessionsFinishesEverySession(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	bob := "@bob:" + fakeDomain
+	fake.MASPageCap(1)
+	fake.AddMASSession(synapsetest.MASCompatSession, bob, "")
+	fake.AddMASSession(synapsetest.MASCompatSession, bob, "GONE") // Synapse lost this device
+	if err := a.TerminateAccountSessions(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	if active := fake.ActiveMASSessions(bob); len(active) != 0 {
+		t.Errorf("MAS sessions still active after terminate-all: %v", active)
+	}
+	if devices, err := a.ListAccountSessions(ctx, bob); err != nil || len(devices) != 0 {
+		t.Errorf("Synapse devices survived: %+v, %v", devices, err)
+	}
+	if !requestedContaining(fake, "page%5Bafter%5D=") && !requestedContaining(fake, "page[after]=") {
+		t.Errorf("the second page was never fetched: %v", fake.Requests)
+	}
+	// With no Synapse device left, a lingering MAS session is still ended.
+	alice := "@alice:" + fakeDomain
+	if err := a.TerminateSession(ctx, alice, "DEV1"); err != nil {
+		t.Fatal(err)
+	}
+	lingering := fake.AddMASSession(synapsetest.MASOAuth2Session, alice, "DEV1")
+	if err := a.TerminateAccountSessions(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if fake.MASSessionActive(lingering) {
+		t.Error("a MAS session with no Synapse device was left active")
+	}
+}
+
+// A failure on the MAS side is reported and leaves the Synapse device alone,
+// so the operator does not take a half-done kick for a finished one.
+func TestMASTerminateFailureIsReportedBeforeAnyDeviceGoes(t *testing.T) {
+	a, fake := startMAS(t)
+	ctx := context.Background()
+	alice := "@alice:" + fakeDomain
+	fake.FailSessionEnd(true)
+	if err := a.TerminateSession(ctx, alice, "DEV1"); !isKind(err, adapter.Upstream) {
+		t.Errorf("terminate with MAS failing: %v", err)
+	}
+	if err := a.TerminateAccountSessions(ctx, alice); !isKind(err, adapter.Upstream) {
+		t.Errorf("terminate-all with MAS failing: %v", err)
+	}
+	if devices, err := a.ListAccountSessions(ctx, alice); err != nil || len(devices) != 1 {
+		t.Errorf("device deleted although MAS failed: %+v, %v", devices, err)
+	}
+}
+
+// In legacy mode nothing goes to MAS.
+func TestLegacyTerminateNeverTalksToMAS(t *testing.T) {
+	a, fake := start(t)
+	ctx := context.Background()
+	if err := a.TerminateSession(ctx, "@alice:"+fakeDomain, "DEV1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.TerminateAccountSessions(ctx, "@bob:"+fakeDomain); err != nil {
+		t.Fatal(err)
+	}
+	if requestedContaining(fake, "/api/admin/") {
+		t.Errorf("legacy termination reached MAS: %v", fake.Requests)
+	}
 }
 
 // One token fetch serves every concurrent caller, and a caller whose own
@@ -376,7 +491,12 @@ func TestDelegatedAuthNarrowsCapabilities(t *testing.T) {
 	if _, err := a.CreateAccount(ctx, adapter.CreateAccount{Localpart: "new", Password: "x"}); !isKind(err, adapter.NotSupported) {
 		t.Errorf("create under MAS: %v", err)
 	}
-	if requested(fake, "PUT /_synapse/admin/v2/users/") {
+	// A device removed on Synapse alone comes back from its MAS session, so
+	// without MAS credentials there is no kick to offer.
+	if err := a.TerminateSession(ctx, "@alice:"+fakeDomain, "DEV1"); !isKind(err, adapter.NotSupported) {
+		t.Errorf("kick under MAS without MAS credentials: %v", err)
+	}
+	if requested(fake, "PUT /_synapse/admin/v2/users/") || requested(fake, "DELETE /_synapse/admin/v2/users/") {
 		t.Errorf("a lifecycle write reached Synapse under MAS: %v", fake.Requests)
 	}
 	fake.DelegateAuth(false)

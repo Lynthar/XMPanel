@@ -10,6 +10,7 @@ import {
   serversApi, errorMessage, implementationsFor, protocols,
   type CreateServerRequest, type Implementation, type Protocol, type Server,
 } from '@/lib/api'
+import { announceTestResult } from '@/lib/serverTest'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import Modal from '@/components/Modal'
 import Field from '@/components/Field'
@@ -40,8 +41,7 @@ export default function Servers() {
     mutationFn: (id: number) => serversApi.test(id),
     onSuccess: (response, id) => {
       queryClient.invalidateQueries({ queryKey: ['server-caps', id] })
-      if (response.data.success) toast.success(t('servers.testSuccess'))
-      else toast.error(`${t('servers.testFailed')}: ${response.data.error}`)
+      announceTestResult(response.data, t)
     },
     onError: () => toast.error(t('servers.testError')),
   })

@@ -140,10 +140,8 @@ func ResetAdmin(db *DB, hasher PasswordHasher) (*InitResult, error) {
 		return nil, fmt.Errorf("failed to upsert admin: %w", err)
 	}
 
-	// Revoke any existing sessions for the admin account so old refresh
-	// tokens stop working immediately. Old access tokens are still valid
-	// until their 15-minute TTL expires (acceptable trade-off — operator
-	// can wait or restart the server to invalidate JWT issuer state).
+	// Revoking the sessions ends every token issued for them at once: each
+	// request checks that its session still exists.
 	_, _ = db.Exec(`DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = $1)`, "admin")
 
 	log.Printf("========================================")

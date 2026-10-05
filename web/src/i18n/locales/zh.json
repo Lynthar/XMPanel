@@ -173,6 +173,15 @@
       "tuwunel": "Tuwunel",
       "matrix-generic": "其他 Matrix 服务器"
     },
+    "authModes": {
+      "legacy": "Synapse 管理令牌",
+      "mas": "MAS 托管认证"
+    },
+    "warnings": {
+      "looks_like_tuwunel": "该服务器自称 Tuwunel。请编辑服务器改选 Tuwunel，否则部分操作会失败。",
+      "tuwunel_unconfirmed": "无法确认这是 Tuwunel：找不到 /_tuwunel/server_version。如果它是 Synapse，请改选 Synapse；如果是反向代理没有转发 /_tuwunel/，可忽略此提示。",
+      "admin_unconfirmed": "无法确认该令牌属于服务器管理员，账号与会话管理可能不可用。"
+    },
     "stats": {
       "title": "服务器统计",
       "registeredUsers": "注册用户",
@@ -246,7 +255,11 @@
       "auditor": "审计员"
     },
     "confirmDelete": "删除用户？",
-    "cannotDeleteSelf": "您不能删除自己的账户"
+    "cannotDeleteSelf": "您不能删除自己的账户",
+    "resetMFA": "重置两步验证",
+    "resetMFAPrompt": "确定关闭 <strong>{{username}}</strong> 的两步验证吗？在对方重新设置之前，只凭密码即可登录。",
+    "resetMFASuccess": "已重置两步验证",
+    "resetMFAFailed": "重置两步验证失败"
   },
   "audit": {
     "title": "审计日志",
@@ -265,6 +278,7 @@
     "allActions": "全部操作",
     "exportSuccess": "导出已下载",
     "exportError": "导出审计日志失败",
+    "exportTooLarge": "匹配的记录超过一万条，请缩小时间范围后分批导出",
     "verifySuccess": "记录 #{{first}}–#{{last}}（共 {{count}} 条）链条完整。最新记录被删除无法检出。",
     "verifyFailure": "审计日志完整性验证失败！",
     "filters": {
@@ -288,8 +302,7 @@
       "xmpp": "XMPP",
       "room": "聊天室",
       "token": "注册令牌",
-      "media": "媒体",
-      "setting": "系统设置"
+      "media": "媒体"
     },
     "verify": {
       "title": "验证完整性",
@@ -314,6 +327,7 @@
       "user.create": "创建用户",
       "user.update": "更新用户",
       "user.delete": "删除用户",
+      "user.mfa_reset": "重置用户两步验证",
       "server.add": "添加服务器",
       "server.update": "更新服务器",
       "server.remove": "删除服务器",
@@ -339,8 +353,7 @@
       "xmpp.user_delete": "删除 XMPP 用户",
       "xmpp.user_kick": "踢出 XMPP 用户",
       "xmpp.room_create": "创建聊天室",
-      "xmpp.room_delete": "删除聊天室",
-      "system.setting_change": "修改系统设置"
+      "xmpp.room_delete": "删除聊天室"
     }
   },
   "settings": {
@@ -539,6 +552,7 @@
       "deleteTitle": "删除房间？",
       "deletePrompt": "此操作将在服务器上销毁 <strong>{{id}}</strong>，无法撤销。",
       "deleted": "房间已删除",
+      "deleteStarted": "已开始删除；服务器清除完成前房间仍会留在列表里",
       "deleteFailed": "删除房间失败",
       "block": "封禁",
       "unblock": "解封",

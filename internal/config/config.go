@@ -147,20 +147,20 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg := unsetConfig()
+	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	// Apply defaults for missing values
-	applyDefaults(&cfg)
+	applyDefaults(cfg)
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // CookieSecure decides whether auth cookies get the Secure attribute,
@@ -231,8 +231,16 @@ func generateRandomSecret(length int) (string, error) {
 
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
-	cfg := &Config{}
+	cfg := unsetConfig()
 	applyDefaults(cfg)
+	return cfg
+}
+
+// unsetConfig holds the defaults a zero value cannot express: a boolean the
+// file leaves out stays false, and rate limiting must not switch off that way.
+func unsetConfig() *Config {
+	cfg := &Config{}
+	cfg.Security.RateLimit.Enabled = true
 	return cfg
 }
 

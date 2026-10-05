@@ -96,8 +96,10 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit
+      # Runtime dependencies only: build tooling never reaches the bundle, and an
+      # advisory with no fixed release there would hold every run red.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev
 
       - name: Typecheck
         run: npx tsc --noEmit

@@ -243,7 +243,19 @@ type ServerInfo struct {
 	Version  string         `json:"version"`
 	Domains  []string       `json:"domains"`
 	AuthMode string         `json:"auth_mode,omitempty"`
+	// Warnings are Warn* codes the UI translates: the probe passed, but what
+	// it saw contradicts the configuration it was given.
+	Warnings []string `json:"warnings,omitempty"`
 }
+
+const (
+	// WarnLooksLikeTuwunel: registered as synapse, the server names itself Tuwunel.
+	WarnLooksLikeTuwunel = "looks_like_tuwunel"
+	// WarnTuwunelUnconfirmed: registered as tuwunel, /_tuwunel/server_version is absent.
+	WarnTuwunelUnconfirmed = "tuwunel_unconfirmed"
+	// WarnAdminUnconfirmed: nothing the probe read shows the token is an admin.
+	WarnAdminUnconfirmed = "admin_unconfirmed"
+)
 
 // ListQuery is a page request. Cursor is opaque to callers; "" is the first
 // page. Handlers clamp Limit before the query reaches an adapter.

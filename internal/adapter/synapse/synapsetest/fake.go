@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -81,6 +82,19 @@ type room struct {
 	blocked                       bool
 }
 
+// masSession is one MAS session of a user: kind is the admin API collection
+// it lives in, device the Matrix device it carries ("" for none).
+type masSession struct {
+	ulid, kind, user, device string
+	ended                    bool
+}
+
+const (
+	MASCompatSession   = "compat-sessions"
+	MASOAuth2Session   = "oauth2-sessions"
+	MASPersonalSession = "personal-sessions"
+)
+
 // Fake is safe for concurrent use; Requests records every request that got
 // past the failure injection, as "METHOD path?query".
 type Fake struct {
@@ -95,22 +109,28 @@ type Fake struct {
 	provisioning bool
 	noAdminRoom  bool
 	// MAS knobs: password login off makes set-password answer 403; a set-
-	// password failure injection answers 500; a slow token delays the grant.
+	// password failure injection answers 500; a slow token delays the grant;
+	// a page cap shrinks the session listings so their links.next is walked.
 	noPasswords     bool
 	failSetPassword bool
 	slowToken       time.Duration
-	users           map[string]*user
-	devices         map[string][]device
-	rooms           map[string]*room
-	media           map[string]*media
-	tokens          map[string]*regToken
-	reports         []report
-	notices         map[string][]string // notices sent, by recipient
-	noNotices       bool                // server_notices not configured
-	deletes         int
-	sequence        int
-	mux             *http.ServeMux
-	Requests        []string
+	masPageCap      int
+	failSessionEnd  bool
+	masSessions     []*masSession
+	// A proxy in front answers /_tuwunel/* itself with this status when set.
+	tuwunelRouteFail int
+	users            map[string]*user
+	devices          map[string][]device
+	rooms            map[string]*room
+	media            map[string]*media
+	tokens           map[string]*regToken
+	reports          []report
+	notices          map[string][]string // notices sent, by recipient
+	noNotices        bool                // server_notices not configured
+	deletes          int
+	sequence         int
+	mux              *http.ServeMux
+	Requests         []string
 }
 
 var localpartPattern = regexp.MustCompile(`^[a-z0-9._=/+-]+$`)
@@ -122,6 +142,7 @@ func New(domain, token string) *Fake {
 	f.mux.HandleFunc("GET /_matrix/client/v3/account/whoami", f.whoami)
 	f.mux.HandleFunc("GET /_matrix/client/v1/auth_metadata", f.authMetadata)
 	f.mux.HandleFunc("GET /_synapse/admin/v1/server_version", f.serverVersion)
+	f.mux.HandleFunc("GET /_tuwunel/server_version", f.tuwunelServerVersion)
 	f.mux.HandleFunc("GET /_synapse/admin/v3/users", f.listUsers)
 	f.mux.HandleFunc("GET /_synapse/admin/v2/users/{id}", f.getUser)
 	f.mux.HandleFunc("PUT /_synapse/admin/v2/users/{id}", f.putUser)
@@ -155,6 +176,12 @@ func New(domain, token string) *Fake {
 	f.mux.HandleFunc("GET /api/admin/v1/user-registration-tokens", f.masListTokens)
 	f.mux.HandleFunc("POST /api/admin/v1/user-registration-tokens", f.masCreateToken)
 	f.mux.HandleFunc("POST /api/admin/v1/user-registration-tokens/{id}/{action}", f.masTokenAction)
+	f.mux.HandleFunc("GET /api/admin/v1/compat-sessions", f.masListSessions)
+	f.mux.HandleFunc("GET /api/admin/v1/oauth2-sessions", f.masListSessions)
+	f.mux.HandleFunc("GET /api/admin/v1/personal-sessions", f.masListSessions)
+	f.mux.HandleFunc("POST /api/admin/v1/compat-sessions/{id}/finish", f.masEndSession)
+	f.mux.HandleFunc("POST /api/admin/v1/oauth2-sessions/{id}/finish", f.masEndSession)
+	f.mux.HandleFunc("POST /api/admin/v1/personal-sessions/{id}/revoke", f.masEndSession)
 	f.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
 	})
@@ -192,6 +219,11 @@ func (f *Fake) Reset() adaptertest.Population {
 		"MEDIA1": {id: "MEDIA1", mediaType: "image/png", name: "one.png", owner: admin, size: 67, createdTS: 1732919539393},
 		"MEDIA2": {id: "MEDIA2", mediaType: "application/octet-stream", owner: admin, size: 1337, createdTS: 1732919540000},
 	}
+	// Every device has the MAS session that created it, one of each kind.
+	f.masSessions = nil
+	f.addMASSession(MASCompatSession, alice, "DEV1")
+	f.addMASSession(MASOAuth2Session, bob, "DEV2")
+	f.addMASSession(MASPersonalSession, bob, "DEV3")
 	f.tokens = map[string]*regToken{"seed-token": {token: "seed-token", completed: 1, ulid: f.nextULID(), createdAt: "2026-01-01T00:00:00Z"}}
 	f.reports = []report{{id: 2, receivedTS: 1570897107409, roomID: "!room1:" + f.domain, name: "Room One", alias: "#one:" + f.domain, eventID: "$event1", userID: bob, sender: alice, reason: "spam", score: -100}}
 	f.notices = map[string][]string{}
@@ -300,6 +332,69 @@ func (f *Fake) SlowToken(d time.Duration) {
 	f.slowToken = d
 }
 
+// MASPageCap caps the page size of MAS's session listings below what
+// page[first] asks for, so a handful of sessions span several pages.
+func (f *Fake) MASPageCap(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.masPageCap = n
+}
+
+// AddMASSession adds an active session of the given kind (MASCompatSession,
+// MASOAuth2Session or MASPersonalSession) for an account, carrying device
+// (may be ""), and returns its ULID.
+func (f *Fake) AddMASSession(kind, mxid, device string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.addMASSession(kind, mxid, device)
+}
+
+func (f *Fake) addMASSession(kind, mxid, device string) string {
+	s := &masSession{ulid: f.nextULID(), kind: kind, user: mxid, device: device}
+	f.masSessions = append(f.masSessions, s)
+	return s.ulid
+}
+
+// MASSessionActive reports whether a MAS session exists and is not finished.
+func (f *Fake) MASSessionActive(ulid string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.masSessions {
+		if s.ulid == ulid {
+			return !s.ended
+		}
+	}
+	return false
+}
+
+// ActiveMASSessions lists the ULIDs of an account's unfinished MAS sessions.
+func (f *Fake) ActiveMASSessions(mxid string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []string
+	for _, s := range f.masSessions {
+		if s.user == mxid && !s.ended {
+			ids = append(ids, s.ulid)
+		}
+	}
+	return ids
+}
+
+// FailSessionEnd makes every MAS finish and revoke answer 500 until switched off.
+func (f *Fake) FailSessionEnd(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failSessionEnd = on
+}
+
+// FailTuwunelRoute makes /_tuwunel/server_version answer a bare status, as a
+// proxy forwarding only the Matrix paths (404) or a broken one (5xx) would.
+func (f *Fake) FailTuwunelRoute(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tuwunelRouteFail = status
+}
+
 // SetHomeserverAdmin flips Synapse's own admin column, which MAS never writes.
 func (f *Fake) SetHomeserverAdmin(mxid string, admin bool) {
 	f.mu.Lock()
@@ -336,6 +431,11 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.Requests = append(f.Requests, r.Method+" "+r.URL.RequestURI())
 	switch {
 	case r.URL.Path == "/_matrix/client/versions" || r.URL.Path == "/_matrix/client/v1/auth_metadata" || r.URL.Path == "/oauth2/token":
+	case r.URL.Path == "/_tuwunel/server_version":
+		if f.tuwunelRouteFail != 0 {
+			http.Error(w, http.StatusText(f.tuwunelRouteFail), f.tuwunelRouteFail)
+			return
+		}
 	case strings.HasPrefix(r.URL.Path, "/api/admin/"):
 		if !f.mas {
 			http.NotFound(w, r)
@@ -414,6 +514,16 @@ func (f *Fake) serverVersion(w http.ResponseWriter, _ *http.Request) {
 		version = TuwunelVersion
 	}
 	reply(w, http.StatusOK, map[string]string{"server_version": version})
+}
+
+// tuwunelServerVersion is Tuwunel's own unauthenticated version route;
+// Synapse has no such path and the fallback answers M_UNRECOGNIZED for it.
+func (f *Fake) tuwunelServerVersion(w http.ResponseWriter, _ *http.Request) {
+	if !f.tuwunel {
+		matrixError(w, http.StatusNotFound, "M_UNRECOGNIZED", "Unrecognized request")
+		return
+	}
+	reply(w, http.StatusOK, map[string]string{"name": "Tuwunel", "version": TuwunelVersion})
 }
 
 func (f *Fake) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -1356,6 +1466,121 @@ func (f *Fake) masUserAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, http.StatusOK, f.masResource(id, u))
+}
+
+// masSessionJSON renders a session as the admin API does: compat sessions
+// carry device_id, the other two kinds encode the device in a scope token
+// (the stable prefix for OAuth 2.0 sessions, the MSC2967 one for personal).
+func (f *Fake) masSessionJSON(s *masSession) map[string]any {
+	u := f.users[s.user]
+	attrs := map[string]any{"created_at": "2026-01-01T00:00:00Z", "last_active_at": nil, "last_active_ip": nil}
+	ended := any(nil)
+	if s.ended {
+		ended = "2026-01-02T00:00:00Z"
+	}
+	switch s.kind {
+	case MASCompatSession:
+		attrs["user_id"], attrs["device_id"], attrs["finished_at"] = u.ulid, nilIfEmpty(s.device), ended
+		attrs["user_session_id"], attrs["redirect_uri"], attrs["user_agent"], attrs["human_name"] = nil, nil, nil, nil
+	case MASOAuth2Session:
+		scope := "urn:matrix:client:api:*"
+		if s.device != "" {
+			scope += " urn:matrix:client:device:" + s.device
+		}
+		attrs["user_id"], attrs["scope"], attrs["finished_at"] = u.ulid, scope, ended
+		attrs["user_session_id"], attrs["client_id"], attrs["user_agent"] = nil, MASClientID, nil
+	case MASPersonalSession:
+		scope := "urn:matrix:client:api:*"
+		if s.device != "" {
+			scope += " urn:matrix:org.matrix.msc2967.client:device:" + s.device
+		}
+		attrs["actor_user_id"], attrs["owner_user_id"], attrs["owner_client_id"] = u.ulid, u.ulid, nil
+		attrs["scope"], attrs["revoked_at"], attrs["human_name"], attrs["expires_at"] = scope, ended, "token", nil
+	}
+	self := "/api/admin/v1/" + s.kind + "/" + s.ulid
+	return map[string]any{"type": strings.TrimSuffix(s.kind, "s"), "id": s.ulid, "attributes": attrs, "links": map[string]string{"self": self}}
+}
+
+// masListSessions serves the three session collections with the user and
+// status filters and cursor paging; an unknown user ULID is 404 as in MAS.
+func (f *Fake) masListSessions(w http.ResponseWriter, r *http.Request) {
+	kind := strings.TrimPrefix(r.URL.Path, "/api/admin/v1/")
+	q := r.URL.Query()
+	userFilter := "filter[user]"
+	if kind == MASPersonalSession {
+		userFilter = "filter[actor_user]"
+	}
+	var owner string
+	if ulid := q.Get(userFilter); ulid != "" {
+		if owner, _ = f.userByULID(ulid); owner == "" {
+			masError(w, http.StatusNotFound, "User not found")
+			return
+		}
+	}
+	status := q.Get("filter[status]")
+	size := 10
+	if n, err := strconv.Atoi(q.Get("page[first]")); err == nil && n > 0 {
+		size = n
+	}
+	if f.masPageCap > 0 && size > f.masPageCap {
+		size = f.masPageCap
+	}
+	after := q.Get("page[after]")
+	data := make([]any, 0)
+	next := ""
+	for _, s := range f.masSessions {
+		switch {
+		case s.kind != kind, owner != "" && s.user != owner,
+			status == "active" && s.ended, status != "active" && status != "" && !s.ended,
+			after != "" && s.ulid <= after:
+			continue
+		}
+		if len(data) == size {
+			params := url.Values{}
+			for key, values := range q {
+				if key != "page[after]" {
+					params[key] = values
+				}
+			}
+			params.Set("page[after]", data[len(data)-1].(map[string]any)["id"].(string))
+			next = r.URL.Path + "?" + params.Encode()
+			break
+		}
+		data = append(data, f.masSessionJSON(s))
+	}
+	links := map[string]any{"self": r.URL.RequestURI()}
+	if next != "" {
+		links["next"] = next
+	}
+	reply(w, http.StatusOK, map[string]any{"meta": map[string]int{"count": len(data)}, "data": data, "links": links})
+}
+
+// masEndSession finishes or revokes one session; ending it twice is 400 for
+// compat and OAuth 2.0 sessions and 409 for personal ones, as in MAS.
+func (f *Fake) masEndSession(w http.ResponseWriter, r *http.Request) {
+	kind := strings.TrimPrefix(r.URL.Path, "/api/admin/v1/")
+	kind = kind[:strings.Index(kind, "/")]
+	if f.failSessionEnd {
+		masError(w, http.StatusInternalServerError, "Internal error")
+		return
+	}
+	for _, s := range f.masSessions {
+		if s.kind != kind || s.ulid != r.PathValue("id") {
+			continue
+		}
+		if s.ended {
+			if kind == MASPersonalSession {
+				masError(w, http.StatusConflict, "Personal session is already revoked")
+			} else {
+				masError(w, http.StatusBadRequest, "Session is already finished")
+			}
+			return
+		}
+		s.ended = true
+		reply(w, http.StatusOK, map[string]any{"data": f.masSessionJSON(s), "links": map[string]string{"self": r.URL.Path}})
+		return
+	}
+	masError(w, http.StatusNotFound, "Session not found")
 }
 
 func (f *Fake) userByULID(ulid string) (string, *user) {

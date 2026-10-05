@@ -19,12 +19,13 @@ import (
 // listed and be revoked by the adapter rather than by the client. Login and
 // logout go to loginBase, which is MAS when authentication is delegated.
 type matrixClient struct {
-	loginBase string
-	base      string
-	token     string
-	DeviceID  string
-	UserID    string
-	http      *http.Client
+	loginBase    string
+	base         string
+	token        string
+	refreshToken string
+	DeviceID     string
+	UserID       string
+	http         *http.Client
 }
 
 type matrixError struct {
@@ -38,23 +39,57 @@ func (e *matrixError) Error() string {
 }
 
 func matrixLogin(loginBase, base, localpart, password, deviceName string) (*matrixClient, error) {
+	return passwordLogin(loginBase, base, localpart, password, deviceName, false)
+}
+
+// matrixLoginRefreshable logs in with a refresh token as well, the way a
+// current client does, so the token exchange can be tried after a kick.
+func matrixLoginRefreshable(loginBase, base, localpart, password, deviceName string) (*matrixClient, error) {
+	return passwordLogin(loginBase, base, localpart, password, deviceName, true)
+}
+
+func passwordLogin(loginBase, base, localpart, password, deviceName string, refreshable bool) (*matrixClient, error) {
 	c := &matrixClient{loginBase: strings.TrimRight(loginBase, "/"), base: strings.TrimRight(base, "/"), http: &http.Client{Timeout: 15 * time.Second}}
 	var out struct {
-		AccessToken string `json:"access_token"`
-		DeviceID    string `json:"device_id"`
-		UserID      string `json:"user_id"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		DeviceID     string `json:"device_id"`
+		UserID       string `json:"user_id"`
 	}
-	err := c.doAt(c.loginBase, http.MethodPost, "/_matrix/client/v3/login", map[string]any{
+	body := map[string]any{
 		"type":                        "m.login.password",
 		"identifier":                  map[string]string{"type": "m.id.user", "user": localpart},
 		"password":                    password,
 		"initial_device_display_name": deviceName,
-	}, &out)
-	if err != nil {
+	}
+	if refreshable {
+		body["refresh_token"] = true
+	}
+	if err := c.doAt(c.loginBase, http.MethodPost, "/_matrix/client/v3/login", body, &out); err != nil {
 		return nil, err
 	}
-	c.token, c.DeviceID, c.UserID = out.AccessToken, out.DeviceID, out.UserID
+	if refreshable && out.RefreshToken == "" {
+		return nil, fmt.Errorf("login answered no refresh_token")
+	}
+	c.token, c.refreshToken, c.DeviceID, c.UserID = out.AccessToken, out.RefreshToken, out.DeviceID, out.UserID
 	return c, nil
+}
+
+// refresh exchanges the refresh token for a new token pair at the login
+// server; a refused exchange leaves the client's tokens as they were.
+func (c *matrixClient) refresh() error {
+	var out struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := c.doAt(c.loginBase, http.MethodPost, "/_matrix/client/v3/refresh", map[string]any{"refresh_token": c.refreshToken}, &out); err != nil {
+		return err
+	}
+	c.token = out.AccessToken
+	if out.RefreshToken != "" {
+		c.refreshToken = out.RefreshToken
+	}
+	return nil
 }
 
 // matrixRegister creates an account through the client API with a

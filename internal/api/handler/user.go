@@ -61,10 +61,10 @@ func callerRole(r *http.Request) (models.Role, bool) {
 // writeRoleError maps a checkRoleGrant / checkTargetWritable result to a status.
 func writeRoleError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, errUnknownRole) {
-		writeError(w, r, http.StatusBadRequest, "Unknown role")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgUnknownRole)
 		return
 	}
-	writeError(w, r, http.StatusForbidden, "Only a superadmin can do that")
+	writeError(w, r, http.StatusForbidden, i18n.MsgSuperadminOnly)
 }
 
 // UserHandler handles user management endpoints
@@ -132,7 +132,7 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidUserID)
 		return
 	}
 
@@ -161,19 +161,19 @@ func (h *UserHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req models.CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
 	// Validate
 	if len(req.Username) < 3 || len(req.Username) > 32 {
-		writeError(w, r, http.StatusBadRequest, "Username must be 3-32 characters")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgUsernameLength)
 		return
 	}
 	if err := checkRoleGrant(caller, req.Role); err != nil {
@@ -181,7 +181,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.passwordValidator.Validate(req.Password); err != nil {
-		writeError(w, r, http.StatusBadRequest, err.Error())
+		writePasswordError(w, r, err, h.passwordValidator.MinLength())
 		return
 	}
 
@@ -230,19 +230,19 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidUserID)
 		return
 	}
 
 	var req models.UpdateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -274,7 +274,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Password != nil {
 		if err := h.passwordValidator.Validate(*req.Password); err != nil {
-			writeError(w, r, http.StatusBadRequest, err.Error())
+			writePasswordError(w, r, err, h.passwordValidator.MinLength())
 			return
 		}
 		hash, err := h.hasher.Hash(*req.Password)
@@ -286,7 +286,7 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(updates) == 0 {
-		writeError(w, r, http.StatusBadRequest, "No fields to update")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgNoFieldsToUpdate)
 		return
 	}
 
@@ -349,8 +349,12 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 			updatedFields = append(updatedFields, k)
 		}
 	}
-	h.audit.LogEvent(r, models.AuditActionUserUpdate, models.ResourceTypeUser, idStr, "",
-		map[string]interface{}{"fields": updatedFields})
+	details := map[string]interface{}{"fields": updatedFields}
+	if req.Role != nil {
+		details["role_from"] = targetRole
+		details["role_to"] = *req.Role
+	}
+	h.audit.LogEvent(r, models.AuditActionUserUpdate, models.ResourceTypeUser, idStr, "", details)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgUserUpdated)})
 }
@@ -360,13 +364,13 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid user ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidUserID)
 		return
 	}
 
 	caller, ok := callerRole(r)
 	if !ok {
-		writeError(w, r, http.StatusUnauthorized, "Unauthorized")
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
 		return
 	}
 
@@ -392,7 +396,7 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if superadminCount <= 1 {
-			writeError(w, r, http.StatusForbidden, "Cannot delete the last superadmin")
+			writeError(w, r, http.StatusForbidden, i18n.MsgLastSuperadmin)
 			return
 		}
 	}
@@ -413,4 +417,53 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		map[string]interface{}{"role": userRole})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgUserDeleted)})
+}
+
+// ResetMFA turns off another user's two-factor authentication, for someone who
+// lost both the authenticator and the recovery codes. Callers reset their own
+// through DisableMFA, which asks for a current code.
+func (h *UserHandler) ResetMFA(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidUserID)
+		return
+	}
+	claims := middleware.GetClaims(r.Context())
+	if claims == nil {
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgUnauthorized)
+		return
+	}
+	if claims.UserID == id {
+		writeError(w, r, http.StatusBadRequest, i18n.MsgUserMFAResetSelf)
+		return
+	}
+
+	targetRole, err := h.roleOf(id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, r, http.StatusNotFound, i18n.MsgUserNotFound)
+		return
+	}
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to read target user role", err)
+		return
+	}
+	if err := checkTargetWritable(models.Role(claims.Role), targetRole); err != nil {
+		writeRoleError(w, r, err)
+		return
+	}
+
+	result, err := h.db.Exec(`UPDATE users SET mfa_enabled = FALSE, mfa_secret = NULL, recovery_codes = NULL, updated_at = NOW()
+		WHERE id = $1 AND mfa_enabled`, id)
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to reset MFA", err)
+		return
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		writeError(w, r, http.StatusConflict, i18n.MsgMFANotEnabled)
+		return
+	}
+
+	h.audit.LogEvent(r, models.AuditActionUserMFAReset, models.ResourceTypeUser, idStr, "", nil)
+	writeJSON(w, http.StatusOK, map[string]string{"message": middleware.T(r.Context(), i18n.MsgUserMFAReset)})
 }

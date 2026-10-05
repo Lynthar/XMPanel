@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/i18n"
+	"github.com/xmpanel/xmpanel/internal/security/password"
 
 	"go.uber.org/zap"
 )
@@ -29,6 +31,26 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // key, or a literal that i18n.T passes through untouched.
 func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": middleware.T(r.Context(), msg)})
+}
+
+// writePasswordError answers 400 for a password.Validator failure in the
+// request's locale; the validator's own error text is English only.
+func writePasswordError(w http.ResponseWriter, r *http.Request, err error, minLength int) {
+	key := i18n.MsgPasswordWeak
+	switch {
+	case errors.Is(err, password.ErrPasswordTooShort):
+		writeError(w, r, http.StatusBadRequest, fmt.Sprintf(middleware.T(r.Context(), i18n.MsgPasswordTooShort), minLength))
+		return
+	case errors.Is(err, password.ErrPasswordNoUpper):
+		key = i18n.MsgPasswordNoUpper
+	case errors.Is(err, password.ErrPasswordNoLower):
+		key = i18n.MsgPasswordNoLower
+	case errors.Is(err, password.ErrPasswordNoNumber):
+		key = i18n.MsgPasswordNoNumber
+	case errors.Is(err, password.ErrPasswordNoSpecial):
+		key = i18n.MsgPasswordNoSpecial
+	}
+	writeError(w, r, http.StatusBadRequest, key)
 }
 
 // writeInternalError logs cause under what, then answers 500 with the generic

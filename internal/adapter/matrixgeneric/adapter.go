@@ -49,8 +49,8 @@ func New(cfg adapter.ServerConfig) *Adapter {
 }
 
 // Probe checks reachability, the token and the server name, then reads what
-// the server advertises: m.account_moderation for lock and suspend, a
-// version from federation or a vendor route, and whether whois is served.
+// the server advertises: m.account_moderation, a version, and whether whois
+// is served. A token it cannot prove to be an admin warns, never fails.
 func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	const op = "server.probe"
 	if a.cfg.Creds.MAS != nil {
@@ -93,7 +93,7 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 		return nil, err
 	}
 	name, version := a.version(ctx, op)
-	whois, err := a.servesWhois(ctx, op, who.UserID)
+	whois, err := a.servesWhois(ctx, op)
 	if err != nil {
 		return nil, err
 	}
@@ -106,17 +106,25 @@ func (a *Adapter) Probe(ctx context.Context) (*adapter.ServerInfo, error) {
 	if moderation.Suspend {
 		set[adapter.CapMatrixSuspend] = struct{}{}
 	}
-	if whois {
+	if whois == whoisServed {
 		set[adapter.CapSessionsListByAcct] = struct{}{}
 	}
+	vendor := vendorOf(name)
+	var warnings []string
+	// Continuwuity and Tuwunel show m.account_moderation to admins only, so an
+	// empty block that whois could not explain leaves the token unconfirmed.
+	if whois == whoisRefused || (whois == whoisUnknown && vendor != "" && !moderation.Lock && !moderation.Suspend) {
+		warnings = append(warnings, adapter.WarnAdminUnconfirmed)
+	}
 	a.mu.Lock()
-	a.lock, a.suspend, a.whois, a.vendor, a.caps = moderation.Lock, moderation.Suspend, whois, vendorOf(name), set
+	a.lock, a.suspend, a.whois, a.vendor, a.caps = moderation.Lock, moderation.Suspend, whois == whoisServed, vendor, set
 	a.mu.Unlock()
 	return &adapter.ServerInfo{
 		Protocol: adapter.ProtocolMatrix,
 		Impl:     adapter.ImplMatrixGeneric,
 		Version:  version,
 		Domains:  []string{serverName},
+		Warnings: warnings,
 	}, nil
 }
 
@@ -145,17 +153,37 @@ func (a *Adapter) version(ctx context.Context, op string) (name, version string)
 	return "", ""
 }
 
-// servesWhois tries the admin's own record: an unserved route or a token
-// without admin rights leave the capability out, anything else is a failure.
-func (a *Adapter) servesWhois(ctx context.Context, op, mxid string) (bool, error) {
+type whoisProbe int
+
+const (
+	whoisUnknown whoisProbe = iota // the route is not served
+	whoisRefused                   // served, but the token is not an admin
+	whoisServed                    // served and the token is an admin
+)
+
+// probeLocalpart is the id servesWhois asks about: a fixed local account that
+// is not the admin's own, so a 200 can only come from an admin token.
+const probeLocalpart = "xmpanel-probe"
+
+// servesWhois must not look the admin up: Synapse and Tuwunel answer a self
+// lookup without admin rights, which would declare a capability every later
+// lookup fails with 403. Only a 200 proves admin; 403 refuses the token.
+func (a *Adapter) servesWhois(ctx context.Context, op string) (whoisProbe, error) {
+	mxid := "@" + probeLocalpart + ":" + a.cfg.Domain
 	_, err := a.call(ctx, matrixhttp.Request{Op: op, Resource: mxid, Method: http.MethodGet, Path: whoisPath(mxid)}, nil)
 	if err == nil {
-		return true, nil
+		return whoisServed, nil
 	}
-	if failure, ok := adapter.AsError(err); ok && (failure.Kind == adapter.NotSupported || failure.Kind == adapter.Forbidden || failure.Status == http.StatusNotFound) {
-		return false, nil
+	failure, ok := adapter.AsError(err)
+	switch {
+	case !ok:
+		return whoisUnknown, err
+	case failure.Kind == adapter.Forbidden:
+		return whoisRefused, nil
+	case failure.Kind == adapter.NotSupported || failure.Status == http.StatusNotFound:
+		return whoisUnknown, nil
 	}
-	return false, err
+	return whoisUnknown, err
 }
 
 func vendorOf(name string) string {

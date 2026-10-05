@@ -59,8 +59,11 @@ func TestProbeDeclaresWhatTheServerAdvertises(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Impl != adapter.ImplMatrixGeneric || info.Version != generictest.Version || info.AuthMode != "" || info.Domains[0] != fakeDomain {
+	if info.Impl != adapter.ImplMatrixGeneric || info.Version != generictest.Version || info.AuthMode != "" || info.Domains[0] != fakeDomain || len(info.Warnings) != 0 {
 		t.Fatalf("info = %+v", info)
+	}
+	if !a.Capabilities().Has(adapter.CapSessionsListByAcct) {
+		t.Errorf("admin token with whois served: %v", a.Capabilities().Sorted())
 	}
 	for _, r := range fake.Requests {
 		if strings.Contains(r, "auth_metadata") {
@@ -89,9 +92,15 @@ func TestProbeDeclaresWhatTheServerAdvertises(t *testing.T) {
 	if err := a.SetEnabled(ctx, "@alice:"+fakeDomain, false); !isKind(err, adapter.NotSupported) {
 		t.Errorf("lock without the capability: %v", err)
 	}
+	fake.Moderation(true, true)
+	if info, err := a.Probe(ctx); err != nil || a.Capabilities().Has(adapter.CapSessionsListByAcct) || len(info.Warnings) != 0 {
+		t.Errorf("whois unserved with moderation: %v %v %+v", err, a.Capabilities().Sorted(), info)
+	}
+	// Whois is still unserved: with moderation absent too, nothing proves the
+	// token is an admin on a server that advertises moderation to admins only.
 	fake.Moderation(false, false)
-	if _, err := a.Probe(ctx); err != nil || len(a.Capabilities()) != 1 || !a.Capabilities().Has(adapter.CapAccountsGet) {
-		t.Errorf("no moderation: %v %v", err, a.Capabilities().Sorted())
+	if info, err := a.Probe(ctx); err != nil || len(a.Capabilities()) != 1 || !a.Capabilities().Has(adapter.CapAccountsGet) || !warnedOnce(info) {
+		t.Errorf("no moderation: %v %v %+v", err, a.Capabilities().Sorted(), info)
 	}
 	pop := fake.Reset()
 	adaptertest.CheckConsistency(t, ctx, a, pop)
@@ -100,14 +109,18 @@ func TestProbeDeclaresWhatTheServerAdvertises(t *testing.T) {
 		t.Errorf("profile-only account: %+v, %v", got, err)
 	}
 
-	// A token without admin rights sees no moderation and no whois; the
-	// probe passes with the lookup alone rather than failing.
+	// A token without admin rights sees no moderation and is refused whois on
+	// anyone else; the probe passes with the lookup alone and one warning.
 	fake.Moderation(true, true)
 	fake.Whois(true)
 	fake.SetAdmin(false)
-	if _, err := a.Probe(ctx); err != nil || len(a.Capabilities()) != 1 {
-		t.Errorf("non-admin token: %v %v", err, a.Capabilities().Sorted())
+	if info, err := a.Probe(ctx); err != nil || len(a.Capabilities()) != 1 || !warnedOnce(info) {
+		t.Errorf("non-admin token: %v %v %+v", err, a.Capabilities().Sorted(), info)
 	}
+}
+
+func warnedOnce(info *adapter.ServerInfo) bool {
+	return info != nil && len(info.Warnings) == 1 && info.Warnings[0] == adapter.WarnAdminUnconfirmed
 }
 
 func TestProbeRefusesMASCredentialsAndForeignServerName(t *testing.T) {

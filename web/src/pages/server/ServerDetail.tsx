@@ -9,6 +9,7 @@ import {
   serversApi, errorMessage,
   type Capability, type Server, type ServerCapabilities, type Stats,
 } from '@/lib/api'
+import { announceTestResult } from '@/lib/serverTest'
 import Overview from './Overview'
 import Accounts from './Accounts'
 import Sessions from './Sessions'
@@ -60,12 +61,8 @@ export default function ServerDetail() {
   const testMutation = useMutation({
     mutationFn: () => serversApi.test(serverId),
     onSuccess: (response) => {
-      if (response.data.success) {
-        toast.success(t('servers.testSuccess'))
-        capsQuery.refetch()
-      } else {
-        toast.error(`${t('servers.testFailed')}: ${response.data.error}`)
-      }
+      announceTestResult(response.data, t)
+      if (response.data.success) capsQuery.refetch()
     },
     onError: () => toast.error(t('servers.testError')),
   })
@@ -105,6 +102,7 @@ export default function ServerDetail() {
           <p className="text-gray-400 truncate">
             {t(`servers.implementations.${server.implementation}`)} · {server.domain} · {server.endpoint}
             {caps?.info.version && <> · {caps.info.version}</>}
+            {caps?.info.auth_mode && <> · {t(`servers.authModes.${caps.info.auth_mode}`)}</>}
           </p>
         </div>
         <button onClick={() => testMutation.mutate()} disabled={testMutation.isPending} className="btn btn-secondary flex items-center gap-2">
@@ -121,6 +119,12 @@ export default function ServerDetail() {
         <p className="card text-gray-400">{t('backend.serverDisabled')}</p>
       ) : (
         <>
+          {caps?.info.warnings?.map((code) => (
+            <div key={code} className="card flex items-start gap-3 border-yellow-900/50">
+              <AlertTriangle className="w-5 h-5 text-yellow-400 mt-0.5" />
+              <p className="text-gray-300 text-sm">{t(`servers.warnings.${code}`)}</p>
+            </div>
+          ))}
           {capsQuery.isError && (
             <div className="card flex items-start gap-3 border-red-900/50">
               <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />

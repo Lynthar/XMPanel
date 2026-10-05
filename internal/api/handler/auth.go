@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/auth"
@@ -27,6 +29,10 @@ const (
 	csrfCookieName    = "csrf_token"
 	authCookiePath    = "/api/v1/auth"
 )
+
+// maxLoginBody bounds what an unauthenticated caller can make the login
+// decoder read; a real login is a few hundred bytes.
+const maxLoginBody = 64 << 10
 
 // AuthHandler handles authentication endpoints
 type AuthHandler struct {
@@ -130,8 +136,17 @@ func (h *AuthHandler) clearAuthCookies(w http.ResponseWriter) {
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 	var req models.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBody)).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
+		return
+	}
+
+	// No account has a longer name. Answering before the limiter keeps an
+	// attacker-sized string out of its key set; the attempt is still audited.
+	if utf8.RuneCountInString(req.Username) > maxUsernameLength {
+		h.audit.LogEvent(r, models.AuditActionLoginFailed, models.ResourceTypeUser, "", req.Username,
+			map[string]interface{}{"reason": "user_not_found"})
+		writeError(w, r, http.StatusUnauthorized, i18n.MsgInvalidCredentials)
 		return
 	}
 
@@ -139,7 +154,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	clientIP := middleware.GetClientIP(r)
 	allowed, lockDuration := h.loginLimiter.Check(clientIP + ":" + req.Username)
 	if !allowed {
-		w.Header().Set("Retry-After", lockDuration.String())
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(lockDuration.Seconds()))))
 		writeError(w, r, http.StatusTooManyRequests, i18n.MsgRateLimitExceeded)
 		return
 	}
@@ -484,6 +499,18 @@ func (h *AuthHandler) SetupMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A second setup would replace the secret the user's authenticator holds
+	// while MFA stays on, so their next login fails.
+	var enabled bool
+	if err := h.db.QueryRow(`SELECT mfa_enabled FROM users WHERE id = $1`, claims.UserID).Scan(&enabled); err != nil {
+		writeInternalError(w, r, h.logger, "failed to read MFA state", err)
+		return
+	}
+	if enabled {
+		writeError(w, r, http.StatusConflict, i18n.MsgMFAAlreadyEnabled)
+		return
+	}
+
 	// Generate TOTP secret
 	secret, err := h.totpManager.GenerateSecret(claims.Username)
 	if err != nil {
@@ -532,30 +559,29 @@ func (h *AuthHandler) VerifyMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enable MFA
-	_, err = h.db.Exec(`UPDATE users SET mfa_enabled = TRUE WHERE id = $1`, claims.UserID)
-	if err != nil {
-		writeInternalError(w, r, h.logger, "failed to enable MFA", err)
-		return
-	}
-
-	// Generate recovery codes
+	// MFA is switched on in the same statement that stores the recovery
+	// codes: handing out codes that were never saved leaves a user who loses
+	// the authenticator locked out.
 	recoveryManager := auth.NewRecoveryCodeManager()
 	codes, err := recoveryManager.GenerateCodes()
 	if err != nil {
 		writeInternalError(w, r, h.logger, "failed to generate recovery codes", err)
 		return
 	}
-
-	// Hash and store recovery codes
 	hashedCodes, err := recoveryManager.HashCodes(codes, h.hasher)
 	if err != nil {
-		h.logger.Error("failed to hash recovery codes", zap.Error(err))
-	} else {
-		codesJSON, _ := json.Marshal(hashedCodes)
-		if _, err := h.db.Exec(`UPDATE users SET recovery_codes = $1 WHERE id = $2`, string(codesJSON), claims.UserID); err != nil {
-			h.logger.Error("failed to store recovery codes", zap.Error(err))
-		}
+		writeInternalError(w, r, h.logger, "failed to hash recovery codes", err)
+		return
+	}
+	codesJSON, err := json.Marshal(hashedCodes)
+	if err != nil {
+		writeInternalError(w, r, h.logger, "failed to encode recovery codes", err)
+		return
+	}
+	if _, err := h.db.Exec(`UPDATE users SET mfa_enabled = TRUE, recovery_codes = $1 WHERE id = $2`,
+		string(codesJSON), claims.UserID); err != nil {
+		writeInternalError(w, r, h.logger, "failed to enable MFA", err)
+		return
 	}
 
 	h.audit.LogEvent(r, models.AuditActionMFAEnabled, models.ResourceTypeUser, strconv.FormatInt(claims.UserID, 10), "", nil)
@@ -639,7 +665,7 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 
 	// Validate new password against policy
 	if err := h.passwordValidator.Validate(req.NewPassword); err != nil {
-		writeError(w, r, http.StatusBadRequest, i18n.MsgPasswordWeak)
+		writePasswordError(w, r, err, h.passwordValidator.MinLength())
 		return
 	}
 

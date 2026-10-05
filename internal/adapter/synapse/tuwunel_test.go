@@ -155,6 +155,50 @@ func TestTuwunelSetAdminUsesTheModifyPUT(t *testing.T) {
 	}
 }
 
+// Both implementations pass each other's probe, so the probe asks Tuwunel's
+// own version route and warns when the answer contradicts the registration;
+// a correct registration carries no warning at all.
+func TestProbeWarnsWhenTheImplementationLooksWrong(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		impl    adapter.Implementation
+		tuwunel bool
+		proxy   int // status a proxy answers for /_tuwunel/* itself
+		want    []string
+	}{
+		{"synapse-is-synapse", adapter.ImplSynapse, false, 0, nil},
+		{"tuwunel-is-tuwunel", adapter.ImplTuwunel, true, 0, nil},
+		{"tuwunel-registered-as-synapse", adapter.ImplSynapse, true, 0, []string{adapter.WarnLooksLikeTuwunel}},
+		{"synapse-registered-as-tuwunel", adapter.ImplTuwunel, false, 0, []string{adapter.WarnTuwunelUnconfirmed}},
+		{"tuwunel-behind-a-proxy-dropping-its-routes", adapter.ImplTuwunel, true, 404, []string{adapter.WarnTuwunelUnconfirmed}},
+		{"tuwunel-behind-a-failing-proxy", adapter.ImplTuwunel, true, 503, nil},
+		{"synapse-behind-a-failing-proxy", adapter.ImplSynapse, false, 503, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := synapsetest.New(fakeDomain, fakeToken)
+			fake.Tuwunel(tc.tuwunel)
+			fake.FailTuwunelRoute(tc.proxy)
+			srv := httptest.NewServer(fake)
+			defer srv.Close()
+			a := New(adapter.ServerConfig{
+				Protocol: adapter.ProtocolMatrix, Impl: tc.impl, Endpoint: srv.URL, Domain: fakeDomain,
+				Creds: adapter.Credentials{Kind: adapter.CredentialsBearer, Token: fakeToken},
+			})
+			defer func() { _ = a.Close() }()
+			info, err := a.Probe(context.Background())
+			if err != nil {
+				t.Fatalf("probe: %v", err)
+			}
+			if strings.Join(info.Warnings, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("warnings = %v, want %v", info.Warnings, tc.want)
+			}
+			if !requested(fake, "GET /_tuwunel/server_version") {
+				t.Errorf("the version route was not asked: %v", fake.Requests)
+			}
+		})
+	}
+}
+
 // server_version is open to any token on both implementations, so the probe
 // proves admin rights on the admin's own record instead.
 func TestProbeRejectsANonAdminToken(t *testing.T) {

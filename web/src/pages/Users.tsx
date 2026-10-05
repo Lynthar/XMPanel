@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation, Trans } from 'react-i18next'
-import { usersApi, listErrorMessage, type User } from '@/lib/api'
+import { usersApi, listErrorMessage, errorMessage, type User } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -14,6 +14,7 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  ShieldOff,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -38,6 +39,7 @@ export default function Users() {
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingUser, setEditingUser] = useState<User | null>(null)
   const [pendingDelete, setPendingDelete] = useState<User | null>(null)
+  const [pendingMFAReset, setPendingMFAReset] = useState<User | null>(null)
 
   const { data: users, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['users'],
@@ -58,6 +60,16 @@ export default function Users() {
       toast.error(err.response?.data?.error || t('users.deleteFailed'))
     },
     onSettled: () => setPendingDelete(null),
+  })
+
+  const resetMFAMutation = useMutation({
+    mutationFn: (id: number) => usersApi.resetMFA(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+      toast.success(t('users.resetMFASuccess'))
+    },
+    onError: (error: unknown) => toast.error(errorMessage(error) ?? t('users.resetMFAFailed')),
+    onSettled: () => setPendingMFAReset(null),
   })
 
   const handleDelete = (user: User) => {
@@ -158,6 +170,15 @@ export default function Users() {
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
+                        {user.mfa_enabled && user.id !== currentUser?.id && (
+                          <button
+                            onClick={() => setPendingMFAReset(user)}
+                            className="p-1 text-gray-400 hover:text-orange-400"
+                            title={t('users.resetMFA')}
+                          >
+                            <ShieldOff className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           onClick={() => handleDelete(user)}
                           className="p-1 text-gray-400 hover:text-red-400"
@@ -217,6 +238,26 @@ export default function Users() {
           if (pendingDelete) deleteMutation.mutate(pendingDelete.id)
         }}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingMFAReset !== null}
+        title={t('users.resetMFA')}
+        message={
+          <Trans
+            i18nKey="users.resetMFAPrompt"
+            values={{ username: pendingMFAReset?.username ?? '' }}
+            components={{ strong: <span className="font-semibold text-white" /> }}
+          />
+        }
+        confirmLabel={t('users.resetMFA')}
+        cancelLabel={t('common.cancel')}
+        variant="danger"
+        loading={resetMFAMutation.isPending}
+        onConfirm={() => {
+          if (pendingMFAReset) resetMFAMutation.mutate(pendingMFAReset.id)
+        }}
+        onCancel={() => setPendingMFAReset(null)}
       />
     </div>
   )

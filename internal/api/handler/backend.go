@@ -11,6 +11,7 @@ import (
 	"github.com/xmpanel/xmpanel/internal/adapter/registry"
 	"github.com/xmpanel/xmpanel/internal/api/middleware"
 	"github.com/xmpanel/xmpanel/internal/i18n"
+	"github.com/xmpanel/xmpanel/internal/security/password"
 	"github.com/xmpanel/xmpanel/internal/store/models"
 
 	"go.uber.org/zap"
@@ -19,6 +20,7 @@ import (
 const (
 	backendListTimeout  = 30 * time.Second
 	backendWriteTimeout = 10 * time.Second
+	minBackendPassword  = 8
 )
 
 // BackendHandler serves the protocol-neutral account, session and room routes.
@@ -38,7 +40,7 @@ func NewBackendHandler(adapters *registry.Registry, audit *AuditService, logger 
 func (h *BackendHandler) target(w http.ResponseWriter, r *http.Request) (adapter.Adapter, int64, bool) {
 	serverID, err := strconv.ParseInt(r.PathValue("serverId"), 10, 64)
 	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid server ID")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgInvalidServerID)
 		return nil, 0, false
 	}
 	a, _, err := h.adapters.Get(r.Context(), serverID)
@@ -104,15 +106,15 @@ func (h *BackendHandler) GetAccount(w http.ResponseWriter, r *http.Request) {
 func (h *BackendHandler) CreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req adapter.CreateAccount
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	if req.Localpart == "" {
-		writeError(w, r, http.StatusBadRequest, "Localpart is required")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgLocalpartRequired)
 		return
 	}
-	if len(req.Password) < 8 {
-		writeError(w, r, http.StatusBadRequest, "Password must be at least 8 characters")
+	if len(req.Password) < minBackendPassword {
+		writePasswordError(w, r, password.ErrPasswordTooShort, minBackendPassword)
 		return
 	}
 	a, serverID, ok := h.target(w, r)
@@ -152,11 +154,11 @@ func (h *BackendHandler) SetPassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
-	if len(req.Password) < 8 {
-		writeError(w, r, http.StatusBadRequest, "Password must be at least 8 characters")
+	if len(req.Password) < minBackendPassword {
+		writePasswordError(w, r, password.ErrPasswordTooShort, minBackendPassword)
 		return
 	}
 	a, serverID, ok := h.target(w, r)
@@ -179,7 +181,7 @@ func (h *BackendHandler) SetEnabled(w http.ResponseWriter, r *http.Request) {
 		Enabled *bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	a, serverID, ok := h.target(w, r)
@@ -203,7 +205,7 @@ func (h *BackendHandler) SetAdmin(w http.ResponseWriter, r *http.Request) {
 		Admin *bool `json:"admin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Admin == nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	a, serverID, ok := h.target(w, r)
@@ -322,11 +324,11 @@ func (h *BackendHandler) GetRoom(w http.ResponseWriter, r *http.Request) {
 func (h *BackendHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	var req adapter.CreateRoom
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusBadRequest, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgBadRequest)
 		return
 	}
 	if req.Name == "" {
-		writeError(w, r, http.StatusBadRequest, "Room name is required")
+		writeError(w, r, http.StatusBadRequest, i18n.MsgRoomNameRequired)
 		return
 	}
 	a, serverID, ok := h.target(w, r)
